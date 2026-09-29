@@ -4,6 +4,7 @@ import (
 	"image"
 	"math"
 	"math/bits"
+	"unsafe"
 )
 
 // FillRule selects how winding numbers map to inside/outside.
@@ -526,6 +527,11 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 	}
 
 	x := e.xAt(yA)
+	// Indices below are in range by construction: x ∈ [0, w·256], so a cell
+	// and its right neighbour are < stride, and ri < bandH. The single-cell
+	// case, by far the most common, is written without bounds checks.
+	accp := unsafe.Pointer(unsafe.SliceData(acc))
+	dirp := unsafe.Pointer(unsafe.SliceData(dirty))
 	for y := yA; y < yB; {
 		rowEnd := (y | 255) + 1
 		if rowEnd > yB {
@@ -533,8 +539,24 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 		}
 		xn := e.xAt(rowEnd)
 		ri := int(y>>8) - bandRow
-		base := int32(y) &^ 255
-		lo, hi := cellLine(acc[ri*stride:(ri+1)*stride], dirty[ri*nw:(ri+1)*nw], x, y-base, xn, rowEnd-base, dir, e.dydx)
+		c0, c1 := x>>8, xn>>8
+		var lo, hi int32
+		if c0 == c1 {
+			d := (rowEnd - y) * dir
+			sx := (x & 255) + (xn & 255)
+			p := (*[2]int32)(unsafe.Add(accp, (ri*stride+int(c0))*4))
+			p[0] += d * (512 - sx)
+			p[1] += d * sx
+			b0, b1 := uint(c0)>>blkShift, uint(c0+1)>>blkShift
+			w := (*uint64)(unsafe.Add(dirp, (ri*nw+int(b0>>6))*8))
+			*w |= 1 << (b0 & 63)
+			w = (*uint64)(unsafe.Add(dirp, (ri*nw+int(b1>>6))*8))
+			*w |= 1 << (b1 & 63)
+			lo, hi = c0, c0+1
+		} else {
+			base := y &^ 255
+			lo, hi = cellLine(acc[ri*stride:(ri+1)*stride], dirty[ri*nw:(ri+1)*nw], x, y-base, xn, rowEnd-base, dir, e.dydx)
+		}
 		if lo < r.rmin[ri] {
 			r.rmin[ri] = lo
 		}
@@ -673,21 +695,27 @@ func (r *Rasterizer) sweep(bandRow int, mask uint64, rule FillRule, b Blitter) {
 					cv := cov[c0:e]
 					switch {
 					case r.aliased:
+						ac := acc[c0:e]
+						ac = ac[:len(cv)]
 						for i := range cv {
-							s += acc[c0+i]
-							acc[c0+i] = 0
+							s += ac[i]
+							ac[i] = 0
 							cv[i] = aliasAlpha(s, rule)
 						}
 					case rule == EvenOdd:
+						ac := acc[c0:e]
+						ac = ac[:len(cv)]
 						for i := range cv {
-							s += acc[c0+i]
-							acc[c0+i] = 0
+							s += ac[i]
+							ac[i] = 0
 							cv[i] = evenOddAlpha(s)
 						}
 					default:
+						ac := acc[c0:e]
+						ac = ac[:len(cv)]
 						for i := range cv {
-							s += acc[c0+i]
-							acc[c0+i] = 0
+							s += ac[i]
+							ac[i] = 0
 							cv[i] = nonZeroAlpha(s)
 						}
 					}
@@ -724,14 +752,8 @@ func emitCoverage(b Blitter, y, x int, cv []uint8) {
 }
 
 func nonZeroAlpha(s int32) uint8 {
-	if s < 0 {
-		s = -s
-	}
-	s >>= 9
-	if s > 255 {
-		return 255
-	}
-	return uint8(s)
+	m := s >> 31
+	return uint8(min(((s^m)-m)>>9, 255))
 }
 
 func evenOddAlpha(s int32) uint8 {

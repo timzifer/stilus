@@ -43,9 +43,6 @@ func main() {
 			canvases[i] = stilus.NewCanvas(img)
 		}
 		render := func() {
-			for i := range img.Pix {
-				img.Pix[i] = 0xff
-			}
 			if len(bands) == 1 {
 				canvases[0].Reset(img, bands[0])
 				s.Draw(canvases[0], *dpi)
@@ -62,12 +59,18 @@ func main() {
 			}
 			wg.Wait()
 		}
+		for i := range img.Pix {
+			img.Pix[i] = 0xff
+		}
 		render() // warm-up
 		var ms runtime.MemStats
 		runtime.ReadMemStats(&ms)
 		mallocs := ms.Mallocs
 		times := make([]float64, 0, *runs)
 		for i := 0; i < *runs; i++ {
+			for i := range img.Pix {
+				img.Pix[i] = 0xff
+			}
 			t := time.Now()
 			render()
 			times = append(times, float64(time.Since(t).Microseconds())/1000)

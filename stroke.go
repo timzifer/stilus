@@ -542,9 +542,9 @@ func (s *Stroker) dot(x, y, dx, dy float64) {
 // arc appends points on the circle around (cx, cy), rotating the vector
 // (ax, ay) by ang radians; the start point is excluded, the end included.
 func (s *Stroker) arc(pc []float64, cx, cy, ax, ay, ang float64) []float64 {
-	n := int(math.Ceil(math.Abs(ang) / s.stepA))
-	if n < 1 {
-		n = 1
+	n := 1
+	if v := math.Abs(ang) / s.stepA; v > 1 {
+		n = int(math.Ceil(min(v, maxSegs)))
 	}
 	sn, cs := math.Sincos(ang / float64(n))
 	x, y := ax, ay
