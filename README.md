@@ -53,14 +53,14 @@ span, never per pixel) or consume `Stroker` output through a `LineSink`.
   what it reads – there is no clearing pass.
 - **Hairlines** (thinner than one device pixel) are drawn analytically as
   coverage rows, without building a polygon.
-- **Straight stroke segments** (butt/square caps, including every dash on
-  a straight line) are parallelograms in device space. Rows away from the
-  caps are bounded by two parallel lines, so each pixel's area is the
-  difference of two closed-form half-plane areas – no cells, no sweep. Cap
-  rows go through the accumulator together with the rest of the stroke, so
-  segments meeting at their ends are united exactly. Result: within 2/255
-  of the outline path (`TestSegmentFastPath`), 1.8× faster on long thin
-  strokes.
+- **Analytic strokes**: between the corners of a polyline (joins, caps,
+  inner notches), each segment is bounded by two parallel lines, so each
+  pixel's area is the difference of two closed-form half-plane areas – no
+  cells, no sweep. Only the bands of rows around corners go through the
+  accumulator, with the stroke's real outline edges, so corners, caps,
+  round joins and segments meeting end to end are exactly as on the outline
+  path. Covers polylines, flattened curves, closed shapes and straight
+  dashes; within 2/255 of the outline path (`TestPolylineFastPath`).
 - **Rectangle clips** (91 % of real PDF clips) cost nothing per pixel;
   other clips are rasterized once into a mask that is never cleared as a
   whole and keeps fully opaque runs as runs.
@@ -80,6 +80,7 @@ A3 landscape at 150 dpi (2481×1754 px), rectangle page clip, cloud Xeon
 | 20 000 short strokes, hairline | 25 ms | 8 ms | – |
 | 30 000 glyph outlines, uncached | 64 ms | 25 ms | – |
 | mixed drawing (fills with alpha, dashes, curves) | 48 ms | 15 ms | – |
+| 3 000 polylines + 600 circles, 0.35 mm | 94 ms | – | – |
 | 2 000 hatch lines through an elliptic mask clip | 48 ms | 17 ms | – |
 
 Allocations per rendered scene after warm-up: **0**.
@@ -165,5 +166,6 @@ Blend modes, transparency groups and soft masks (M6), shadings and images
 (M5/M7), glyph cache (M4), display list and PDF interpretation (M3). The
 `Blitter`/`Shader` interfaces are where these plug in.
 
-Next speed levers: extend the analytic segment path to polylines (joins)
-and round caps, and vectorize the sweep for wide rows.
+Next speed levers: most remaining stroke time is compositing latency on
+the destination (cache misses per row); a band-sorted display list (M3)
+is where that can be attacked. Vectorizing the sweep helps wide fills.

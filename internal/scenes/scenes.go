@@ -194,6 +194,34 @@ func Mixed() *Scene {
 	return &Scene{Name: "mixed-drawing", Clip: pageClip(), Ops: ops}
 }
 
+// Contours: CAD-like outlines – 3 000 open polylines of 6 vertices and
+// 600 circles, 0.35 mm wide, miter joins.
+func Contours() *Scene {
+	rng := rand.New(rand.NewSource(3000))
+	st := &stilus.StrokeStyle{Width: 0.35 * mm, Join: stilus.MiterJoin, MiterLimit: 10}
+	var ops []Op
+	for i := 0; i < 3000; i++ {
+		var p stilus.Path
+		x, y := rng.Float64()*PageW, rng.Float64()*PageH
+		p.MoveTo(float32(x), float32(y))
+		a := rng.Float64() * 2 * math.Pi
+		for k := 0; k < 5; k++ {
+			a += (rng.Float64() - 0.5) * 2.5
+			l := (5 + rng.Float64()*15) * mm
+			x, y = x+l*math.Cos(a), y+l*math.Sin(a)
+			p.LineTo(float32(x), float32(y))
+		}
+		ops = append(ops, Op{Stroke: true, Path: &p, Style: st, Paint: black})
+	}
+	for i := 0; i < 600; i++ {
+		var p stilus.Path
+		r := float32((2 + rng.Float64()*20) * mm)
+		p.Ellipse(float32(rng.Float64()*PageW), float32(rng.Float64()*PageH), r, r)
+		ops = append(ops, Op{Stroke: true, Path: &p, Style: st, Paint: black})
+	}
+	return &Scene{Name: "contours-3000", Clip: pageClip(), Ops: ops}
+}
+
 // MaskClip: 2 000 hatch hairlines through an elliptical clip mask.
 func MaskClip() *Scene {
 	var m stilus.Path
@@ -203,5 +231,5 @@ func MaskClip() *Scene {
 
 // All returns every scene.
 func All() []*Scene {
-	return []*Scene{Hatch(), HatchThick(), Short(), ShortHair(), Glyphs(), Mixed(), MaskClip()}
+	return []*Scene{Hatch(), HatchThick(), Short(), ShortHair(), Glyphs(), Mixed(), Contours(), MaskClip()}
 }

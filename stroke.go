@@ -65,15 +65,21 @@ type Stroker struct {
 	// MaxDashes overrides DefaultMaxDashes when non-zero.
 	MaxDashes int
 
-	sink  LineSink
-	hair  *hairliner
-	seg   segmentFiller // optional fast path for straight segments
-	m     Matrix
-	st    *StrokeStyle
-	hw    float64 // half width, user space
-	tolU  float64 // flattening tolerance, user space
-	stepA float64 // angular step for round joins/caps
-	det   float64
+	sink LineSink
+	hair *hairliner
+	seg  segmentFiller // optional analytic path for straight segments
+	jag  bool          // an inner corner was routed through its vertex
+	// Dash pieces take the analytic path only on straight subpaths with
+	// gaps wide enough that neighbouring pieces never share a pixel.
+	dashFast, dashing, dashStraight bool
+	fastHits, fastTries             int // statistics for tests
+	fast                            fastState
+	m                               Matrix
+	st                              *StrokeStyle
+	hw                              float64 // half width, user space
+	tolU                            float64 // flattening tolerance, user space
+	stepA                           float64 // angular step for round joins/caps
+	det                             float64
 
 	poly  []float64
 	dpoly []float64
@@ -108,11 +114,15 @@ func (s *Stroker) strokeHair(h *hairliner, p *Path, m Matrix, st *StrokeStyle) {
 	s.run(p, m, st)
 }
 
-// segmentFiller draws a stroked straight segment given as the device-space
-// parallelogram A, B, C, D (AB ∥ DC are the long sides, AD and BC the caps).
-// It returns false when the stroker should emit the outline instead.
+// segmentFiller is the device side of the analytic stroke path (see
+// strip.go): it fills rows bounded by two parallel lines and restricts the
+// rows of edges sent to the stroke's LineSink.
 type segmentFiller interface {
-	fillSegment(ax, ay, bx, by, cx, cy, dx, dy float64) bool
+	// middle fills rows [y0, y1) of the strip between the line through
+	// (ax, ay)-(bx, by) and the parallel line through (dx, dy).
+	middle(ax, ay, bx, by, dx, dy float64, y0, y1 int)
+	limitRows(y0, y1 int)
+	unlimitRows()
 }
 
 // strokeFast is Stroke with a segment fast path.
@@ -131,6 +141,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		return
 	}
 	s.m, s.st = m, st
+	s.dashFast = s.seg != nil && dashFastOK(m, st)
 	s.det = m.Det()
 	s.hw = st.Width / 2
 	s.tolU = flattenTol / sm
@@ -267,6 +278,9 @@ func (s *Stroker) cubic(c1, c2, e Point) {
 
 // dash splits a polyline according to the dash pattern and strokes each dash.
 func (s *Stroker) dash(poly []float64, closed bool) {
+	s.dashing = true
+	s.dashStraight = !closed && len(poly) == 4
+	defer func() { s.dashing = false }()
 	pat := s.st.Dash
 	period := 0.0
 	for _, d := range pat {
@@ -419,22 +433,8 @@ func (s *Stroker) strokePoly(pts []float64, closed bool, dx, dy float64) {
 	}
 	s.segs = seg
 	hw := s.hw
-	if !closed && nv == 2 && s.seg != nil && s.st.Cap != RoundCap {
-		// A single straight segment: a parallelogram in device space.
-		ux, uy := seg[0], seg[1]
-		x0, y0, x1, y1 := v[0], v[1], v[2], v[3]
-		if s.st.Cap == SquareCap {
-			x0, y0, x1, y1 = x0-ux*hw, y0-uy*hw, x1+ux*hw, y1+uy*hw
-		}
-		nx, ny := -uy*hw, ux*hw
-		m := s.m
-		ax, ay := m.Apply(x0+nx, y0+ny)
-		bx, by := m.Apply(x1+nx, y1+ny)
-		cx, cy := m.Apply(x1-nx, y1-ny)
-		dx, dy := m.Apply(x0-nx, y0-ny)
-		if s.seg.fillSegment(ax, ay, bx, by, cx, cy, dx, dy) {
-			return
-		}
+	if s.seg != nil && s.fastPoly(v, seg, closed) {
+		return
 	}
 	pc := s.piece[:0]
 	if !closed {
@@ -491,6 +491,7 @@ func (s *Stroker) joinPts(pc []float64, x, y, ax, ay, bx, by, la, lb float64) []
 			k := 1 / (1 + dot)
 			return append(pc, x+(nax+nbx)*k, y+(nay+nby)*k)
 		}
+		s.jag = true
 		return append(pc, x+nax, y+nay, x, y, x+nbx, y+nby)
 	}
 	// Outer corner.
@@ -604,4 +605,29 @@ func (s *Stroker) emitLoop(pc []float64) {
 		px, py = x, y
 	}
 	k.AddLine(px, py, fx, fy)
+}
+
+// dashFastOK reports whether every dash gap stays at least two device
+// pixels wide after the caps' extension.
+func dashFastOK(m Matrix, st *StrokeStyle) bool {
+	if len(st.Dash) == 0 {
+		return true
+	}
+	sm := sigmaMax(m)
+	if sm == 0 {
+		return false
+	}
+	smin := math.Abs(m.Det()) / sm
+	ext := 0.0
+	if st.Cap != ButtCap {
+		ext = st.Width
+	}
+	gap := math.Inf(1)
+	for i, d := range st.Dash {
+		// With an odd count the pattern repeats with on and off swapped.
+		if i%2 == 1 || len(st.Dash)%2 == 1 {
+			gap = min(gap, d)
+		}
+	}
+	return (gap-ext)*smin >= 2
 }
