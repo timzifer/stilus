@@ -40,6 +40,7 @@ type Canvas struct {
 
 	dst    *image.RGBA
 	r      Rasterizer
+	seg    segFast
 	s      Stroker
 	h      hairliner
 	solid  SolidBlitter
@@ -170,7 +171,15 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	}
 	c.setClip(cs.bounds)
 	c.r.Reset()
-	c.s.Stroke(&c.r, p, m, st)
+	if paint.Shader == nil && paint.Color.A == 255 && !dashesOverlap(st) {
+		// Opaque: the analytic middle rows of straight segments may be
+		// composited before the rest of the stroke (the order of opaque
+		// layers of one color does not matter).
+		c.seg.r, c.seg.b = &c.r, b
+		c.s.strokeFast(&c.r, &c.seg, p, m, st)
+	} else {
+		c.s.Stroke(&c.r, p, m, st)
+	}
 	c.checkBudget()
 	c.r.Rasterize(NonZero, b)
 }
@@ -256,3 +265,17 @@ func (c *Canvas) PopClip() {
 
 // ClipDepth returns the number of clips pushed since Reset.
 func (c *Canvas) ClipDepth() int { return len(c.stack) - 1 }
+
+// dashesOverlap reports whether square caps can make neighbouring dashes
+// overlap; drawn one by one they would then differ from the union.
+func dashesOverlap(st *StrokeStyle) bool {
+	if st.Cap != SquareCap {
+		return false
+	}
+	for i := 1; i < len(st.Dash); i += 2 {
+		if st.Dash[i] < st.Width {
+			return true
+		}
+	}
+	return len(st.Dash)%2 == 1 && len(st.Dash) > 0 && st.Dash[0] < st.Width
+}

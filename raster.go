@@ -74,6 +74,8 @@ func (e *edge) xAt(y int32) int32 {
 // allocations.
 type Rasterizer struct {
 	clip   image.Rectangle
+	ry0    float64 // rows accepted by AddLine: the clip, or a sub-range
+	ry1    float64
 	cx0    float64 // clip in float
 	cy0    float64
 	cx1    float64
@@ -118,6 +120,7 @@ func (r *Rasterizer) SetClip(clip image.Rectangle) {
 	r.clip = clip
 	r.cx0, r.cy0 = float64(clip.Min.X), float64(clip.Min.Y)
 	r.cx1, r.cy1 = float64(clip.Max.X), float64(clip.Max.Y)
+	r.ry0, r.ry1 = r.cy0, r.cy1
 	r.w, r.h = clip.Dx(), clip.Dy()
 	r.stride = r.w + 2
 	r.nw = (r.stride>>blkShift)/64 + 1
@@ -340,7 +343,7 @@ func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 		x0, y0, x1, y1 = x1, y1, x0, y0
 		dir = -1
 	}
-	cy0, cy1 := r.cy0, r.cy1
+	cy0, cy1 := r.ry0, r.ry1
 	if y1 <= cy0 || y0 >= cy1 {
 		return
 	}
@@ -874,3 +877,12 @@ func (r *Rasterizer) sweepRange(acc []int32, y, ri int, rule FillRule, b Blitter
 		}
 	}
 }
+
+// limitRows restricts subsequently added edges to device rows [y0, y1)
+// within the clip; unlimitRows lifts the restriction.
+func (r *Rasterizer) limitRows(y0, y1 int) {
+	r.ry0 = max(r.cy0, float64(y0))
+	r.ry1 = min(r.cy1, float64(y1))
+}
+
+func (r *Rasterizer) unlimitRows() { r.ry0, r.ry1 = r.cy0, r.cy1 }

@@ -67,6 +67,7 @@ type Stroker struct {
 
 	sink  LineSink
 	hair  *hairliner
+	seg   segmentFiller // optional fast path for straight segments
 	m     Matrix
 	st    *StrokeStyle
 	hw    float64 // half width, user space
@@ -92,7 +93,7 @@ func sigmaMax(m Matrix) float64 {
 
 // Stroke emits the outline of p stroked with st under m into sink.
 func (s *Stroker) Stroke(sink LineSink, p *Path, m Matrix, st *StrokeStyle) {
-	s.sink, s.hair = sink, nil
+	s.sink, s.hair, s.seg = sink, nil, nil
 	s.run(p, m, st)
 }
 
@@ -105,6 +106,20 @@ func IsHairline(m Matrix, st *StrokeStyle) bool {
 func (s *Stroker) strokeHair(h *hairliner, p *Path, m Matrix, st *StrokeStyle) {
 	s.sink, s.hair = nil, h
 	s.run(p, m, st)
+}
+
+// segmentFiller draws a stroked straight segment given as the device-space
+// parallelogram A, B, C, D (AB ∥ DC are the long sides, AD and BC the caps).
+// It returns false when the stroker should emit the outline instead.
+type segmentFiller interface {
+	fillSegment(ax, ay, bx, by, cx, cy, dx, dy float64) bool
+}
+
+// strokeFast is Stroke with a segment fast path.
+func (s *Stroker) strokeFast(sink LineSink, seg segmentFiller, p *Path, m Matrix, st *StrokeStyle) {
+	s.sink, s.hair, s.seg = sink, nil, seg
+	s.run(p, m, st)
+	s.seg = nil
 }
 
 func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
@@ -404,6 +419,23 @@ func (s *Stroker) strokePoly(pts []float64, closed bool, dx, dy float64) {
 	}
 	s.segs = seg
 	hw := s.hw
+	if !closed && nv == 2 && s.seg != nil && s.st.Cap != RoundCap {
+		// A single straight segment: a parallelogram in device space.
+		ux, uy := seg[0], seg[1]
+		x0, y0, x1, y1 := v[0], v[1], v[2], v[3]
+		if s.st.Cap == SquareCap {
+			x0, y0, x1, y1 = x0-ux*hw, y0-uy*hw, x1+ux*hw, y1+uy*hw
+		}
+		nx, ny := -uy*hw, ux*hw
+		m := s.m
+		ax, ay := m.Apply(x0+nx, y0+ny)
+		bx, by := m.Apply(x1+nx, y1+ny)
+		cx, cy := m.Apply(x1-nx, y1-ny)
+		dx, dy := m.Apply(x0-nx, y0-ny)
+		if s.seg.fillSegment(ax, ay, bx, by, cx, cy, dx, dy) {
+			return
+		}
+	}
 	pc := s.piece[:0]
 	if !closed {
 		// Left side forward.

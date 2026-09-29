@@ -89,12 +89,15 @@ func FuzzStroke(f *testing.F) {
 		if len(data) > 0 {
 			w = float64(data[len(data)-1]) / 16
 		}
+		opaque := &Paint{Color: color.RGBA{10, 20, 30, 255}} // analytic segment path
 		for _, st := range []*StrokeStyle{
 			{Width: w, Join: RoundJoin, Cap: RoundCap},
 			{Width: w, Join: MiterJoin, MiterLimit: 4, Cap: SquareCap, Dash: []float64{1, 0.5}},
 		} {
 			c.Stroke(p, m, st, paint)
+			c.Stroke(p, m, st, opaque)
 		}
+		c.Stroke(p, m, &StrokeStyle{Width: w, Dash: []float64{2, 3}}, opaque)
 		c.ClipPath(p, m, NonZero)
 		c.Fill(p, m, EvenOdd, paint)
 		if err := c.Err(); err != nil && err != ErrEdgeBudget {

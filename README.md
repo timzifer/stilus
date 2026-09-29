@@ -53,6 +53,14 @@ span, never per pixel) or consume `Stroker` output through a `LineSink`.
   what it reads – there is no clearing pass.
 - **Hairlines** (thinner than one device pixel) are drawn analytically as
   coverage rows, without building a polygon.
+- **Straight stroke segments** (butt/square caps, including every dash on
+  a straight line) are parallelograms in device space. Rows away from the
+  caps are bounded by two parallel lines, so each pixel's area is the
+  difference of two closed-form half-plane areas – no cells, no sweep. Cap
+  rows go through the accumulator together with the rest of the stroke, so
+  segments meeting at their ends are united exactly. Result: within 2/255
+  of the outline path (`TestSegmentFastPath`), 1.8× faster on long thin
+  strokes.
 - **Rectangle clips** (91 % of real PDF clips) cost nothing per pixel;
   other clips are rasterized once into a mask that is never cleared as a
   whole and keeps fully opaque runs as runs.
@@ -66,13 +74,13 @@ A3 landscape at 150 dpi (2481×1754 px), rectangle page clip, cloud Xeon
 
 | scene | 1 core | 4 cores (bands) | spec target (1 core) |
 |---|---:|---:|---:|
-| 2 000 long hatch lines, hairline | 67 ms | 16 ms | ≤ 60 ms |
-| 2 000 long hatch lines, 0.35 mm | 167 ms | 43 ms | – |
-| 20 000 short strokes, 0.35 mm | 50 ms | 16 ms | ≤ 40 ms |
-| 20 000 short strokes, hairline | 24 ms | 8 ms | – |
-| 30 000 glyph outlines, uncached | 64 ms | 26 ms | – |
-| mixed drawing (fills with alpha, dashes, curves) | 50 ms | 15 ms | – |
-| 2 000 hatch lines through an elliptic mask clip | 50 ms | 20 ms | – |
+| 2 000 long hatch lines, hairline | 58 ms | 15 ms | ≤ 60 ms ✓ |
+| 2 000 long hatch lines, 0.35 mm | 89 ms | 25 ms | – |
+| 20 000 short strokes, 0.35 mm | 41 ms | 13 ms | ≤ 40 ms (≈) |
+| 20 000 short strokes, hairline | 25 ms | 8 ms | – |
+| 30 000 glyph outlines, uncached | 64 ms | 25 ms | – |
+| mixed drawing (fills with alpha, dashes, curves) | 48 ms | 15 ms | – |
+| 2 000 hatch lines through an elliptic mask clip | 48 ms | 17 ms | – |
 
 Allocations per rendered scene after warm-up: **0**.
 
@@ -157,5 +165,5 @@ Blend modes, transparency groups and soft masks (M6), shadings and images
 (M5/M7), glyph cache (M4), display list and PDF interpretation (M3). The
 `Blitter`/`Shader` interfaces are where these plug in.
 
-Next speed levers for thin strokes: an analytic path for straight segments
-wider than a hairline, and SIMD for the sweep and compositing loops.
+Next speed levers: extend the analytic segment path to polylines (joins)
+and round caps, and vectorize the sweep for wide rows.
