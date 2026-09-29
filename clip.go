@@ -199,6 +199,10 @@ func (b *fracBlitter) colFactor(x int) uint32 {
 }
 
 func (b *fracBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
+	if y != b.b.Min.Y && y != b.b.Max.Y-1 && x0 != b.b.Min.X && x1 != b.b.Max.X {
+		b.next.BlitRun(y, x0, x1, alpha)
+		return
+	}
 	a := div255(uint32(alpha) * b.rowFactor(y))
 	if a == 0 {
 		return
@@ -227,6 +231,10 @@ func (b *fracBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
 }
 
 func (b *fracBlitter) BlitCoverage(y, x int, cov []uint8) {
+	if y != b.b.Min.Y && y != b.b.Max.Y-1 && x != b.b.Min.X && x+len(cov) != b.b.Max.X {
+		b.next.BlitCoverage(y, x, cov)
+		return
+	}
 	if cap(b.scratch) < len(cov) {
 		b.scratch = make([]uint8, len(cov)+len(cov)/2+64)
 	}

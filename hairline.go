@@ -30,9 +30,13 @@ func (h *hairliner) reset(clip image.Rectangle, b Blitter) {
 	}
 }
 
-// overlap returns the length of [a0, a1] ∩ [b0, b1].
-func overlap(a0, a1, b0, b1 float64) float64 {
-	return math.Min(a1, b1) - math.Max(a0, b0)
+// ffloor is floor for the moderate magnitudes used here (|v| < 2^31).
+func ffloor(v float64) int {
+	i := int(v)
+	if float64(i) > v {
+		i--
+	}
+	return i
 }
 
 func toCov(f float64) uint8 {
@@ -102,57 +106,72 @@ func (h *hairliner) xMajor(x0, y0, x1, y1 float64) {
 	k := (y1 - y0) / (x1 - x0)
 	t := 0.5 * math.Sqrt(1+k*k)
 	clip := h.clip
-	jy0 := int(math.Floor(math.Min(y0, y1) - t))
-	jy1 := int(math.Floor(math.Max(y0, y1) + t))
-	if jy0 < clip.Min.Y {
-		jy0 = clip.Min.Y
+	ylo, yhi := y0, y1
+	if ylo > yhi {
+		ylo, yhi = yhi, ylo
 	}
-	if jy1 >= clip.Max.Y {
-		jy1 = clip.Max.Y - 1
-	}
-	ix0 := int(math.Floor(x0))
-	ix1 := int(math.Ceil(x1)) - 1
-	if ix0 < clip.Min.X {
-		ix0 = clip.Min.X
-	}
-	if ix1 >= clip.Max.X {
-		ix1 = clip.Max.X - 1
-	}
+	jy0 := max(ffloor(ylo-t), clip.Min.Y)
+	jy1 := min(ffloor(yhi+t), clip.Max.Y-1)
+	ix0 := max(ffloor(x0), clip.Min.X)
+	ix1 := min(ffloor(x1-1e-9), clip.Max.X-1)
 	if ix0 > ix1 {
 		return
+	}
+	var ik float64
+	if k != 0 {
+		ik = 1 / k
 	}
 	for j := jy0; j <= jy1; j++ {
 		fj := float64(j)
 		a, b := ix0, ix1
 		if k != 0 {
-			xa := x0 + (fj-t-y0)/k
-			xb := x0 + (fj+1+t-y0)/k
+			xa := x0 + (fj-t-y0)*ik
+			xb := x0 + (fj+1+t-y0)*ik
 			if xa > xb {
 				xa, xb = xb, xa
 			}
-			if lo := int(math.Floor(xa)) - 1; lo > a {
-				a = lo
-			}
-			if hi := int(math.Floor(xb)) + 1; hi < b {
-				b = hi
-			}
+			a = max(a, ffloor(xa)-1)
+			b = min(b, ffloor(xb)+1)
 		}
 		if a > b {
 			continue
 		}
 		cov := h.cov[:b-a+1]
-		for i := a; i <= b; i++ {
-			fi := float64(i)
-			l, r := math.Max(fi, x0), math.Min(fi+1, x1)
-			c := 0.0
-			if r > l {
-				yc := y0 + ((l+r)/2-x0)*k
-				c = overlap(yc-t, yc+t, fj, fj+1)
-				if c > 0 {
-					c *= r - l
+		// Column i covers [i, i+1] ∩ [x0, x1]; its line centre is taken
+		// at the middle of that interval.
+		fi := float64(a)
+		yc := y0 + (fi+0.5-x0)*k
+		for i := range cov {
+			l, r := fi, fi+1
+			ox := 1.0
+			ycc := yc
+			if l < x0 || r > x1 {
+				if l < x0 {
+					l = x0
 				}
+				if r > x1 {
+					r = x1
+				}
+				ox = r - l
+				ycc = y0 + ((l+r)/2-x0)*k
 			}
-			cov[i-a] = toCov(c)
+			lo, hi := ycc-t, ycc+t
+			if lo < fj {
+				lo = fj
+			}
+			if hi > fj+1 {
+				hi = fj + 1
+			}
+			c := (hi - lo) * ox
+			if c <= 0 {
+				cov[i] = 0
+			} else if c >= 1 {
+				cov[i] = 255
+			} else {
+				cov[i] = uint8(c*255 + 0.5)
+			}
+			fi++
+			yc += k
 		}
 		emitCoverage(h.b, j, a, cov)
 	}
@@ -165,38 +184,57 @@ func (h *hairliner) yMajor(x0, y0, x1, y1 float64) {
 	k := (x1 - x0) / (y1 - y0)
 	t := 0.5 * math.Sqrt(1+k*k)
 	clip := h.clip
-	jy0 := int(math.Floor(y0))
-	jy1 := int(math.Ceil(y1)) - 1
-	if jy0 < clip.Min.Y {
-		jy0 = clip.Min.Y
-	}
-	if jy1 >= clip.Max.Y {
-		jy1 = clip.Max.Y - 1
-	}
+	jy0 := max(ffloor(y0), clip.Min.Y)
+	jy1 := min(ffloor(y1-1e-9), clip.Max.Y-1)
+	cx0, cx1 := clip.Min.X, clip.Max.X-1
+	fj := float64(jy0)
+	xc := x0 + (fj+0.5-y0)*k
 	for j := jy0; j <= jy1; j++ {
-		fj := float64(j)
-		lo, hi := math.Max(fj, y0), math.Min(fj+1, y1)
-		oy := hi - lo
+		oy, xm := 1.0, xc
+		if fj < y0 || fj+1 > y1 {
+			lo, hi := fj, fj+1
+			if lo < y0 {
+				lo = y0
+			}
+			if hi > y1 {
+				hi = y1
+			}
+			oy = hi - lo
+			xm = x0 + ((lo+hi)/2-y0)*k
+		}
+		fj++
+		xc += k
 		if oy <= 0 {
 			continue
 		}
-		xc := x0 + ((lo+hi)/2-y0)*k
-		a := int(math.Floor(xc - t))
-		b := int(math.Floor(xc + t))
-		if a < clip.Min.X {
-			a = clip.Min.X
+		a, b := xm-t, xm+t
+		ia, ib := ffloor(a), ffloor(b)
+		if ib > cx1 || ia < cx0 {
+			if ia > cx1 || ib < cx0 {
+				continue
+			}
 		}
-		if b >= clip.Max.X {
-			b = clip.Max.X - 1
+		cov := h.cov[:ib-ia+1]
+		if ia == ib {
+			cov[0] = toCov((b - a) * oy)
+		} else {
+			cov[0] = toCov((float64(ia+1) - a) * oy)
+			m := toCov(oy)
+			for i := 1; i < len(cov)-1; i++ {
+				cov[i] = m
+			}
+			cov[len(cov)-1] = toCov((b - float64(ib)) * oy)
 		}
-		if a > b {
-			continue
+		// Clip columns.
+		if ia < cx0 {
+			cov = cov[cx0-ia:]
+			ia = cx0
 		}
-		cov := h.cov[:b-a+1]
-		for i := a; i <= b; i++ {
-			fi := float64(i)
-			cov[i-a] = toCov(overlap(xc-t, xc+t, fi, fi+1) * oy)
+		if ib > cx1 {
+			cov = cov[:len(cov)-(ib-cx1)]
 		}
-		emitCoverage(h.b, j, a, cov)
+		if len(cov) > 0 {
+			emitCoverage(h.b, j-1+1, ia, cov)
+		}
 	}
 }

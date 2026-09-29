@@ -18,6 +18,9 @@ var alphaShift = func() uint {
 	return 0
 }()
 
+// alphaLane is the bit position of alpha in the expanded 64-bit layout.
+var alphaLane = map[uint]uint{24: 48, 0: 0}[alphaShift]
+
 // PackRGBA packs a premultiplied color into the native pixel layout used by
 // Shader.ShadeSpan.
 func PackRGBA(c color.RGBA) uint32 {
@@ -44,6 +47,36 @@ func mul255(x, a uint32) uint32 {
 // over composites premultiplied src over dst.
 func over(src, dst uint32) uint32 {
 	return src + mul255(dst, 255-(src>>alphaShift)&0xff)
+}
+
+// The 64-bit lane layout spreads the four channels of a pixel into 16-bit
+// lanes, so one multiplication scales all of them.
+const lanes = 0x00ff00ff00ff00ff
+
+func expand(v uint32) uint64 {
+	x := uint64(v)
+	return (x | x<<24) & lanes
+}
+
+func compact(y uint64) uint32 { return uint32(y) | uint32(y>>24) }
+
+// div255x divides every lane by 255 with rounding.
+func div255x(y uint64) uint64 {
+	y += 0x0080008000800080
+	return ((y + (y>>8)&lanes) >> 8) & lanes
+}
+
+// lerpx blends expanded opaque src into dst with coverage a:
+// dst·(255−a)/255 + src·a/255, two multiplications for four channels.
+func lerpx(src uint64, dst uint32, a uint32) uint32 {
+	return compact(div255x(expand(dst)*uint64(255-a) + src*uint64(a)))
+}
+
+// overx composites expanded premultiplied src, scaled by coverage a, over dst.
+func overx(src uint64, dst uint32, a uint32) uint32 {
+	s := div255x(src * uint64(a))
+	sa := uint32(s>>(alphaLane)) & 0xff
+	return compact(s + div255x(expand(dst)*uint64(255-sa)))
 }
 
 // fill32 sets every element of d to v; long spans are filled at memmove speed.
@@ -98,6 +131,7 @@ func (t *target) row(y, x0, x1 int) []uint32 {
 type SolidBlitter struct {
 	t      target
 	c      uint32
+	cx     uint64 // expanded c
 	opaque bool
 }
 
@@ -117,6 +151,7 @@ func (b *SolidBlitter) Reset(dst *image.RGBA, c color.RGBA) {
 // SetColor changes the paint color (premultiplied).
 func (b *SolidBlitter) SetColor(c color.RGBA) {
 	b.c = PackRGBA(c)
+	b.cx = expand(b.c)
 	b.opaque = c.A == 255
 }
 
@@ -141,7 +176,8 @@ func (b *SolidBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
 
 func (b *SolidBlitter) BlitCoverage(y, x int, cov []uint8) {
 	d := b.t.row(y, x, x+len(cov))
-	c := b.c
+	d = d[:len(cov)]
+	c, cx := b.c, b.cx
 	if b.opaque {
 		for i, a := range cov {
 			switch a {
@@ -149,14 +185,14 @@ func (b *SolidBlitter) BlitCoverage(y, x int, cov []uint8) {
 			case 255:
 				d[i] = c
 			default:
-				d[i] = over(mul255(c, uint32(a)), d[i])
+				d[i] = lerpx(cx, d[i], uint32(a))
 			}
 		}
 		return
 	}
 	for i, a := range cov {
 		if a != 0 {
-			d[i] = over(mul255(c, uint32(a)), d[i])
+			d[i] = overx(cx, d[i], uint32(a))
 		}
 	}
 }

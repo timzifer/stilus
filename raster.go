@@ -30,7 +30,7 @@ type Blitter interface {
 const (
 	bandShift = 5
 	bandH     = 1 << bandShift // rows per accumulation band
-	blkShift  = 3              // one dirty bit per 1<<blkShift cells
+	blkShift  = 2              // one dirty bit per 1<<blkShift cells
 	// maxCoord bounds device coordinates before clipping; values beyond it
 	// are clamped. It keeps all intermediate products finite.
 	maxCoord = 1 << 40
@@ -49,6 +49,7 @@ type edge struct {
 	x0, y0, x1, y1 int32
 	dir            int32   // +1 downward in the original path, -1 upward
 	dxdy           float64 // (x1-x0)/(y1-y0)
+	dydx           float64 // |(y1-y0)/(x1-x0)|, 0 for vertical edges
 }
 
 // xAt returns the edge's x at fixed-point y (y0 <= y <= y1). The same formula
@@ -89,6 +90,8 @@ type Rasterizer struct {
 	maxY   int32
 	acc    []int32
 	dirty  []uint64
+	rmin   [bandH]int32 // per band row: first and last touched cell
+	rmax   [bandH]int32
 	cov    []uint8
 	bucket []int32
 	order  []int32
@@ -124,6 +127,9 @@ func (r *Rasterizer) SetClip(clip image.Rectangle) {
 	}
 	if cap(r.cov) < r.stride {
 		r.cov = make([]uint8, r.stride)
+	}
+	for i := range r.rmin {
+		r.rmin[i], r.rmax[i] = math.MaxInt32, -1
 	}
 	r.Reset()
 }
@@ -384,9 +390,13 @@ func (r *Rasterizer) emit(x0, y0, x1, y1 float64, dir int32) {
 	}
 	fx0 := int32((x0-r.cx0)*256 + 0.5)
 	fx1 := int32((x1-r.cx0)*256 + 0.5)
+	var dydx float64
+	if fx1 != fx0 {
+		dydx = math.Abs(float64(fy1-fy0) / float64(fx1-fx0))
+	}
 	r.edges = append(r.edges, edge{
 		x0: fx0, y0: fy0, x1: fx1, y1: fy1, dir: dir,
-		dxdy: float64(fx1-fx0) / float64(fy1-fy0),
+		dxdy: float64(fx1-fx0) / float64(fy1-fy0), dydx: dydx,
 	})
 	if fy0 < r.minY {
 		r.minY = fy0
@@ -503,6 +513,12 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 			d := ri * nw
 			dirty[d+bw] |= bb
 			dirty[d+bw1] |= bb1
+			if int32(c) < r.rmin[ri] {
+				r.rmin[ri] = int32(c)
+			}
+			if int32(c+1) > r.rmax[ri] {
+				r.rmax[ri] = int32(c + 1)
+			}
 			mask |= 1 << uint(ri)
 			y = rowEnd
 		}
@@ -518,7 +534,13 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 		xn := e.xAt(rowEnd)
 		ri := int(y>>8) - bandRow
 		base := int32(y) &^ 255
-		r.cellLine(acc[ri*stride:(ri+1)*stride], dirty[ri*nw:(ri+1)*nw], x, y-base, xn, rowEnd-base, dir)
+		lo, hi := cellLine(acc[ri*stride:(ri+1)*stride], dirty[ri*nw:(ri+1)*nw], x, y-base, xn, rowEnd-base, dir, e.dydx)
+		if lo < r.rmin[ri] {
+			r.rmin[ri] = lo
+		}
+		if hi > r.rmax[ri] {
+			r.rmax[ri] = hi
+		}
 		mask |= 1 << uint(ri)
 		x, y = xn, rowEnd
 	}
@@ -526,8 +548,9 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 }
 
 // cellLine accumulates a segment that lies within one pixel row, from
-// (x0, fy0) to (x1, fy1), with 0 <= fy0 < fy1 <= 256.
-func (r *Rasterizer) cellLine(acc []int32, dirty []uint64, x0, fy0, x1, fy1, dir int32) {
+// (x0, fy0) to (x1, fy1), with 0 <= fy0 < fy1 <= 256, and returns the range
+// of touched cells [lo, hi].
+func cellLine(acc []int32, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx float64) (lo, hi int32) {
 	c0 := x0 >> 8
 	c1 := x1 >> 8
 	if c0 == c1 {
@@ -536,15 +559,13 @@ func (r *Rasterizer) cellLine(acc []int32, dirty []uint64, x0, fy0, x1, fy1, dir
 		acc[c0] += d * (512 - s)
 		acc[c0+1] += d * s
 		markRange(dirty, int(c0), int(c0)+1)
-		return
+		return c0, c0 + 1
 	}
-	dy := float64(fy1 - fy0)
 	if x1 > x0 {
-		dydx := dy / float64(x1-x0)
 		xa, ya := x0, fy0
 		for c := c0; c < c1; c++ {
 			bx := (c + 1) << 8
-			yb := fy0 + int32(float64(bx-x0)*dydx+0.5)
+			yb := min(fy0+int32(float64(bx-x0)*dydx+0.5), fy1)
 			d := (yb - ya) * dir
 			s := (xa - c<<8) + 256
 			acc[c] += d * (512 - s)
@@ -556,13 +577,12 @@ func (r *Rasterizer) cellLine(acc []int32, dirty []uint64, x0, fy0, x1, fy1, dir
 		acc[c1] += d * (512 - s)
 		acc[c1+1] += d * s
 		markRange(dirty, int(c0), int(c1)+1)
-		return
+		return c0, c1 + 1
 	}
-	dydx := dy / float64(x0-x1)
 	xa, ya := x0, fy0
 	for c := c0; c > c1; c-- {
 		bx := c << 8
-		yb := fy0 + int32(float64(x0-bx)*dydx+0.5)
+		yb := min(fy0+int32(float64(x0-bx)*dydx+0.5), fy1)
 		d := (yb - ya) * dir
 		s := xa - c<<8
 		acc[c] += d * (512 - s)
@@ -574,6 +594,7 @@ func (r *Rasterizer) cellLine(acc []int32, dirty []uint64, x0, fy0, x1, fy1, dir
 	acc[c1] += d * (512 - s)
 	acc[c1+1] += d * s
 	markRange(dirty, int(c1), int(c0)+1)
+	return c1, c0 + 1
 }
 
 // markRange sets the dirty bits covering cells [lo, hi].
@@ -608,7 +629,11 @@ func (r *Rasterizer) sweep(bandRow int, mask uint64, rule FillRule, b Blitter) {
 		dirty := r.dirty[ri*nw : (ri+1)*nw]
 		var s int32
 		x := 0 // first cell not yet emitted
-		for wi, word := range dirty {
+		wlo := int(r.rmin[ri]) >> (blkShift + 6)
+		whi := int(r.rmax[ri]) >> (blkShift + 6)
+		r.rmin[ri], r.rmax[ri] = math.MaxInt32, -1
+		for wi := wlo; wi <= whi; wi++ {
+			word := dirty[wi]
 			if word == 0 {
 				continue
 			}
