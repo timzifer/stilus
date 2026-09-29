@@ -18,7 +18,7 @@
 //   - Stroker turns a stroke (width, caps, joins, miter limit, dashes; all
 //     in user space, exact under anisotropic transforms) into fill geometry
 //     for a LineSink, such as a Rasterizer or a PathSink.
-//   - Canvas combines both with hairlines, a clip stack and compositing
+//   - Canvas combines both with a clip stack and compositing
 //     onto a caller-owned *image.RGBA. Its methods map one to one onto a
 //     display-list device: Fill, Stroke, ClipPath, ClipRect, PopClip.
 //
@@ -32,9 +32,12 @@
 // per-pixel loop. Nothing is cleared as a whole: the sweep zeroes what it
 // reads.
 //
-// Strokes thinner than one device pixel take an analytic hairline path
-// that writes coverage rows directly. Rectangle clips cost nothing per
-// pixel; other clips are rasterized once into a mask over their bounds.
+// Strokes are filled analytically between their corners: rows bounded only
+// by a segment's two parallel sides get each pixel's exact area in closed
+// form; only the rows around joins and caps go through the accumulator.
+// Strokes thinner than one device pixel are drawn one pixel wide.
+// Rectangle clips cost nothing per pixel; other clips are rasterized once
+// into a mask over their bounds.
 //
 // All buffers grow on demand and are retained: after warm-up, drawing
 // performs no allocations. Rasterizer, Stroker and Canvas are not safe for

@@ -66,7 +66,7 @@ type Stroker struct {
 	MaxDashes int
 
 	sink LineSink
-	hair *hairliner
+	dev  bool          // hairline: geometry in device space, one pixel wide
 	seg  segmentFiller // optional analytic path for straight segments
 	jag  bool          // an inner corner was routed through its vertex
 	// Dash pieces take the analytic path only on straight subpaths with
@@ -86,6 +86,7 @@ type Stroker struct {
 	dpts  []float64
 	segs  []float64
 	piece []float64
+	hbuf  []float64
 }
 
 // sigmaMax returns the largest singular value of m's linear part.
@@ -99,19 +100,15 @@ func sigmaMax(m Matrix) float64 {
 
 // Stroke emits the outline of p stroked with st under m into sink.
 func (s *Stroker) Stroke(sink LineSink, p *Path, m Matrix, st *StrokeStyle) {
-	s.sink, s.hair, s.seg = sink, nil, nil
+	s.sink, s.seg = sink, nil
 	s.run(p, m, st)
 }
 
 // IsHairline reports whether st under m is thinner than one device pixel in
-// every direction. Such strokes are drawn as 1-pixel lines, like PDFium.
+// every direction. Such strokes are drawn one pixel wide in device space,
+// like PDFium.
 func IsHairline(m Matrix, st *StrokeStyle) bool {
 	return st.Width*sigmaMax(m) < 1
-}
-
-func (s *Stroker) strokeHair(h *hairliner, p *Path, m Matrix, st *StrokeStyle) {
-	s.sink, s.hair = nil, h
-	s.run(p, m, st)
 }
 
 // segmentFiller is the device side of the analytic stroke path (see
@@ -127,7 +124,7 @@ type segmentFiller interface {
 
 // strokeFast is Stroke with a segment fast path.
 func (s *Stroker) strokeFast(sink LineSink, seg segmentFiller, p *Path, m Matrix, st *StrokeStyle) {
-	s.sink, s.hair, s.seg = sink, nil, seg
+	s.sink, s.seg = sink, seg
 	s.run(p, m, st)
 	s.seg = nil
 }
@@ -141,17 +138,21 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		return
 	}
 	s.m, s.st = m, st
-	s.dashFast = s.seg != nil && dashFastOK(m, st)
+	s.dashFast = s.seg != nil && dashFastOK(m, st, s.dev)
 	s.det = m.Det()
+	// Strokes thinner than a device pixel are drawn one pixel wide, like
+	// PDFium: their offsets are taken in device space.
+	s.dev = st.Width*sm < 1
 	s.hw = st.Width / 2
+	r := s.hw * sm
+	if s.dev {
+		s.hw, r = 0.5, 0.5
+	}
 	s.tolU = flattenTol / sm
-	if r := s.hw * sm; r > flattenTol {
+	if r > flattenTol {
 		s.stepA = 2 * math.Acos(1-flattenTol/r)
 	} else {
 		s.stepA = math.Pi
-	}
-	if s.hair == nil && s.hw == 0 {
-		return
 	}
 	dashed := len(st.Dash) > 0
 	if dashed {
@@ -372,30 +373,33 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 // inner corners fall back to routing through the vertex, which is still
 // correct under NonZero.
 func (s *Stroker) strokePoly(pts []float64, closed bool, dx, dy float64) {
+	if s.dev {
+		// Hairline: take the polyline to device space and stroke it one
+		// pixel wide there.
+		m := s.m
+		d := s.hbuf[:0]
+		for i := 0; i+1 < len(pts); i += 2 {
+			x, y := m.Apply(pts[i], pts[i+1])
+			d = append(d, x, y)
+		}
+		s.hbuf = d
+		dx, dy = m.ApplyVec(dx, dy)
+		s.m = Identity
+		s.strokePolyAt(d, closed, dx, dy)
+		s.m = m
+		return
+	}
+	s.strokePolyAt(pts, closed, dx, dy)
+}
+
+// strokePolyAt strokes a polyline in the space s.m maps to device space.
+func (s *Stroker) strokePolyAt(pts []float64, closed bool, dx, dy float64) {
 	n := len(pts) / 2
 	// Drop duplicate closing point.
 	if closed && n > 1 && pts[0] == pts[2*n-2] && pts[1] == pts[2*n-1] {
 		n--
 	}
 	if n == 0 {
-		return
-	}
-	if s.hair != nil {
-		if n == 1 || (n == 2 && pts[0] == pts[2] && pts[1] == pts[3]) {
-			s.dot(pts[0], pts[1], dx, dy)
-			return
-		}
-		m := s.m
-		px, py := m.Apply(pts[0], pts[1])
-		for i := 1; i < n; i++ {
-			x, y := m.Apply(pts[2*i], pts[2*i+1])
-			s.hair.line(px, py, x, y)
-			px, py = x, y
-		}
-		if closed {
-			x, y := m.Apply(pts[0], pts[1])
-			s.hair.line(px, py, x, y)
-		}
 		return
 	}
 	// Vertices without zero-length segments, and per-segment direction and
@@ -536,21 +540,6 @@ func (s *Stroker) capPts(pc []float64, x, y, ux, uy float64) []float64 {
 // dot draws a zero-length subpath: a disc for round caps, a square aligned
 // with (dx, dy) for square caps, nothing for butt caps.
 func (s *Stroker) dot(x, y, dx, dy float64) {
-	if s.hair != nil {
-		if s.st.Cap == ButtCap {
-			return
-		}
-		// A one-pixel dot along the direction.
-		ddx, ddy := s.m.ApplyVec(dx, dy)
-		l := math.Hypot(ddx, ddy)
-		if l == 0 {
-			ddx, ddy, l = 1, 0, 1
-		}
-		ddx, ddy = ddx/l*0.5, ddy/l*0.5
-		cx, cy := s.m.Apply(x, y)
-		s.hair.line(cx-ddx, cy-ddy, cx+ddx, cy+ddy)
-		return
-	}
 	hw := s.hw
 	pc := s.piece[:0]
 	switch s.st.Cap {
@@ -609,7 +598,7 @@ func (s *Stroker) emitLoop(pc []float64) {
 
 // dashFastOK reports whether every dash gap stays at least two device
 // pixels wide after the caps' extension.
-func dashFastOK(m Matrix, st *StrokeStyle) bool {
+func dashFastOK(m Matrix, st *StrokeStyle, dev bool) bool {
 	if len(st.Dash) == 0 {
 		return true
 	}
@@ -618,9 +607,12 @@ func dashFastOK(m Matrix, st *StrokeStyle) bool {
 		return false
 	}
 	smin := math.Abs(m.Det()) / sm
-	ext := 0.0
+	ext := 0.0 // cap extension in device pixels
 	if st.Cap != ButtCap {
-		ext = st.Width
+		ext = st.Width * sm
+		if dev {
+			ext = 1
+		}
 	}
 	gap := math.Inf(1)
 	for i, d := range st.Dash {
@@ -629,5 +621,5 @@ func dashFastOK(m Matrix, st *StrokeStyle) bool {
 			gap = min(gap, d)
 		}
 	}
-	return (gap-ext)*smin >= 2
+	return gap*smin-ext >= 2
 }

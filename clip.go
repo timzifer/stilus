@@ -315,3 +315,13 @@ func (s clipState) intersectRect(r Rect) clipState {
 	n.frac[3] = pick(n.bounds.Max.Y, s.bounds.Max.Y, y1, s.frac[3], fb)
 	return n
 }
+
+func toCov(f float64) uint8 {
+	if f >= 1 {
+		return 255
+	}
+	if f <= 0 {
+		return 0
+	}
+	return uint8(f*255 + 0.5)
+}

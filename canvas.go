@@ -26,7 +26,7 @@ var (
 const DefaultMaxClipDepth = 256
 
 // Canvas draws paths onto a caller-owned *image.RGBA (premultiplied, as
-// image.RGBA always is). It combines the rasterizer, the stroker, hairlines
+// image.RGBA always is). It combines the rasterizer, the stroker
 // and a clip stack, and maps one to one onto a display-list device:
 // Fill/Stroke/ClipPath/ClipRect/PopClip.
 //
@@ -42,7 +42,6 @@ type Canvas struct {
 	r      Rasterizer
 	seg    segFast
 	s      Stroker
-	h      hairliner
 	solid  SolidBlitter
 	shader ShaderBlitter
 	mread  maskBlitter
@@ -143,7 +142,7 @@ func (c *Canvas) Fill(p *Path, m Matrix, rule FillRule, paint *Paint) {
 }
 
 // Stroke strokes p with style st (in user space) under m. Strokes thinner
-// than a device pixel are drawn as antialiased one-pixel hairlines.
+// than a device pixel are drawn one device pixel wide.
 func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	defer c.guard()
 	cs := c.top()
@@ -152,7 +151,7 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	}
 	sm := sigmaMax(m)
 	// Cull against the clip with the widest possible outline extent.
-	pad := st.Width / 2 * sm * math.Max(math.Max(st.MiterLimit, 1.5), 1)
+	pad := math.Max(st.Width*sm, 1) / 2 * math.Max(math.Max(st.MiterLimit, 1.5), 1)
 	if !(pad < 1<<30) {
 		pad = 1 << 30
 	}
@@ -164,11 +163,6 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 		return
 	}
 	b := c.chain(cs, c.paint(paint))
-	if st.Width*sm < 1 {
-		c.h.reset(cs.bounds, b)
-		c.s.strokeHair(&c.h, p, m, st)
-		return
-	}
 	c.setClip(cs.bounds)
 	c.r.Reset()
 	if paint.Shader == nil && paint.Color.A == 255 {

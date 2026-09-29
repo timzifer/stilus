@@ -10,12 +10,6 @@ func strokeMask(p *Path, m Matrix, st *StrokeStyle, clip image.Rectangle) *image
 	img := image.NewAlpha(clip)
 	r := NewRasterizer(clip)
 	var s Stroker
-	if IsHairline(m, st) {
-		var h hairliner
-		h.reset(clip, &MaskBlitter{img})
-		s.strokeHair(&h, p, m, st)
-		return img
-	}
 	s.Stroke(r, p, m, st)
 	r.Rasterize(NonZero, &MaskBlitter{img})
 	return img

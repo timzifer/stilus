@@ -384,3 +384,12 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 		emitCoverage(f.b, j, i0, cov)
 	}
 }
+
+// ffloor is floor for the moderate magnitudes used here (|v| < 2^31).
+func ffloor(v float64) int {
+	i := int(v)
+	if float64(i) > v {
+		i--
+	}
+	return i
+}
