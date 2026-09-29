@@ -125,13 +125,10 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 		f.loops[1] = len(pts) / 2
 	}
 	f.pts, f.own = pts, own
-	if s.jag {
-		// A sharp inner corner routed through its vertex makes the stroke
-		// overlap itself beyond the corner's band.
-		return false
-	}
 
-	// Device space and per-vertex bands.
+	// Device space and per-vertex bands. From here on every way out uses
+	// the outline just built: either split into bands and analytic rows, or
+	// emitted whole (emitOutline) when the analytic path does not apply.
 	m := s.m
 	f.vlo = grow32(f.vlo, nv)
 	f.vhi = grow32(f.vhi, nv)
@@ -140,15 +137,22 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 		f.vlo[i], f.vhi[i] = math.MaxInt32, math.MinInt32
 		f.parent[i] = int32(i)
 	}
+	huge := false
 	for k := 0; k < len(pts); k += 2 {
 		x, y := m.Apply(pts[k], pts[k+1])
 		if !(math.Abs(x) < 1<<30 && math.Abs(y) < 1<<30) {
-			return false
+			huge = true
+			x, y = clampCoord(x), clampCoord(y)
 		}
 		pts[k], pts[k+1] = x, y
 		o := own[k/2]
 		f.vlo[o] = min(f.vlo[o], int32(math.Floor(y)))
 		f.vhi[o] = max(f.vhi[o], int32(math.Ceil(y)))
+	}
+	if s.jag || huge {
+		// A sharp inner corner routed through its vertex makes the stroke
+		// overlap itself beyond the corner's band.
+		return s.emitOutline()
 	}
 
 	// At a V-shaped corner (both segments leave the vertex towards the same
@@ -170,7 +174,7 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 		ux0, uy0, ux1, uy1 := seg[3*ka], seg[3*ka+1], seg[3*kb], seg[3*kb+1]
 		cross, dot := ux0*uy1-uy0*ux1, ux0*ux1+uy0*uy1
 		if 1+dot < 1e-9 {
-			return false
+			return s.emitOutline()
 		}
 		sg := -hw / (1 + dot) // right side is inner for cross < 0
 		if cross > 0 {
@@ -196,7 +200,7 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 	f.hhi = grow32(f.hhi, nv)
 	for round := 0; ; round++ {
 		if round == maxMergeRounds {
-			return false
+			return s.emitOutline()
 		}
 		for i := 0; i < nv; i++ {
 			f.hlo[i], f.hhi[i] = math.MaxInt32, math.MinInt32
@@ -211,7 +215,7 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 			f.hhi[r] = max(f.hhi[r], f.vhi[i])
 		}
 		if len(f.roots) == 1 {
-			return false // one cluster: the outline path is the same, cheaper
+			return s.emitOutline() // one cluster: the plain outline, cheaper
 		}
 		changed := false
 		for k := 0; k < nseg; k++ {
@@ -282,6 +286,24 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 		fill.middle(ax, ay, bx, by, dx, dy, int(y0), int(y1))
 	}
 	s.fastHits++
+	return true
+}
+
+// emitOutline sends the whole device-space outline built by fastPoly to the
+// sink, as the outline path would, and reports the polyline as done.
+func (s *Stroker) emitOutline() bool {
+	f := &s.fast
+	pts, start := f.pts, 0
+	for _, end := range f.loops {
+		for k := start; k < end; k++ {
+			k1 := k + 1
+			if k1 == end {
+				k1 = start
+			}
+			s.sink.AddLine(pts[2*k], pts[2*k+1], pts[2*k1], pts[2*k1+1])
+		}
+		start = end
+	}
 	return true
 }
 
@@ -361,6 +383,10 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	if cap(f.cov) < clip.Dx() {
 		f.cov = make([]uint8, clip.Dx())
 	}
+	// A pixel is fully covered when its whole projection lies between the
+	// lines: k2 + h <= n·c <= k1 - h. n·c is linear in the column, so the
+	// covered columns of a row form one interval, emitted as a run.
+	lo, hi := k2+h, k1-h
 	for j := y0; j < y1; j++ {
 		fy := float64(j)
 		i0 := max(ffloor(xl+(fy+dtop-yl)*sl), cx0)
@@ -368,21 +394,56 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 		if i0 >= i1 {
 			continue
 		}
-		cov := f.cov[:i1-i0]
-		d := nx*(float64(i0)+0.5) + ny*(fy+0.5)
-		for i := range cov {
-			// Same quantization as the accumulation rasterizer.
-			v := int32((area(k1-d) - area(k2-d)) * 256)
-			if v > 255 {
-				v = 255
-			} else if v < 0 {
-				v = 0
+		d0 := nx*(float64(i0)+0.5) + ny*(fy+0.5)
+		// Interior columns [a, b) relative to i0.
+		a, b := 0, 0
+		if lo <= hi {
+			ta, tb := (lo-d0)/nx, (hi-d0)/nx
+			if ta > tb {
+				ta, tb = tb, ta
 			}
-			cov[i] = uint8(v)
+			a = max(int(math.Ceil(ta-1e-9)), 0)
+			b = min(ffloor(tb+1e-9)+1, i1-i0)
+			if a >= b {
+				a, b = 0, 0
+			}
+		}
+		n := i1 - i0
+		if b == 0 {
+			a, b = n, n
+		}
+		cov := f.cov[:n]
+		d := d0
+		for i := 0; i < a; i++ {
+			cov[i] = quant(area(k1-d) - area(k2-d))
 			d += nx
 		}
-		emitCoverage(f.b, j, i0, cov)
+		if a > 0 {
+			emitCoverage(f.b, j, i0, cov[:a])
+		}
+		if b > a {
+			f.b.BlitRun(j, i0+a, i0+b, 255)
+		}
+		d = d0 + float64(b)*nx
+		for i := b; i < n; i++ {
+			cov[i] = quant(area(k1-d) - area(k2-d))
+			d += nx
+		}
+		if n > b {
+			emitCoverage(f.b, j, i0+b, cov[b:n])
+		}
 	}
+}
+
+// quant maps a covered area to coverage like the accumulation rasterizer.
+func quant(c float64) uint8 {
+	v := int32(c * 256)
+	if v > 255 {
+		return 255
+	} else if v < 0 {
+		return 0
+	}
+	return uint8(v)
 }
 
 // ffloor is floor for the moderate magnitudes used here (|v| < 2^31).

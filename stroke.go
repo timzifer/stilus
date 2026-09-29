@@ -81,12 +81,13 @@ type Stroker struct {
 	stepA                           float64 // angular step for round joins/caps
 	det                             float64
 
-	poly  []float64
-	dpoly []float64
-	dpts  []float64
-	segs  []float64
-	piece []float64
-	hbuf  []float64
+	poly   []float64
+	dpoly  []float64
+	dfirst []float64
+	dpts   []float64
+	segs   []float64
+	piece  []float64
+	hbuf   []float64
 }
 
 // sigmaMax returns the largest singular value of m's linear part.
@@ -304,17 +305,24 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 		s.strokePoly(poly, closed, 1, 0)
 		return
 	}
-	// Position in the pattern after the phase.
+	// An odd pattern repeats with on and off swapped: walk it as if it were
+	// written out twice, with the on/off parity taken from the step count.
+	np := len(pat)
+	steps := np
+	if np%2 == 1 {
+		steps = 2 * np
+		period *= 2
+	}
 	idx := 0
 	phase := math.Mod(s.st.DashPhase, period)
 	if phase < 0 {
 		phase += period
 	}
-	for phase >= pat[idx] && phase > 0 {
-		phase -= pat[idx]
-		idx = (idx + 1) % len(pat)
+	for phase >= pat[idx%np] && phase > 0 {
+		phase -= pat[idx%np]
+		idx = (idx + 1) % steps
 	}
-	rem := pat[idx] - phase
+	rem := pat[idx%np] - phase
 	on := idx%2 == 0
 
 	if len(poly) == 2 {
@@ -323,6 +331,11 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 		}
 		return
 	}
+	// On a closed subpath a dash running through the start point is one
+	// dash: the first piece is held back and joined to the last.
+	hold := closed && on
+	held := false
+	var fdx, fdy float64
 	s.dpoly = s.dpoly[:0]
 	if on {
 		s.dpoly = append(s.dpoly, poly[0], poly[1])
@@ -343,22 +356,40 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 			x, y := x0+dx*pos, y0+dy*pos
 			if on {
 				s.dpoly = append(s.dpoly, x, y)
-				s.strokePoly(s.dpoly, false, dx, dy)
+				if hold && !held {
+					s.dfirst = append(s.dfirst[:0], s.dpoly...)
+					fdx, fdy, held = dx, dy, true
+				} else {
+					s.strokePoly(s.dpoly, false, dx, dy)
+				}
 				s.dpoly = s.dpoly[:0]
 			} else {
 				s.dpoly = append(s.dpoly[:0], x, y)
 			}
 			on = !on
-			idx = (idx + 1) % len(pat)
-			rem = pat[idx]
+			idx = (idx + 1) % steps
+			rem = pat[idx%np]
 		}
 		rem -= segLen - pos
 		if on {
 			s.dpoly = append(s.dpoly, x1, y1)
 		}
 	}
-	if on && len(s.dpoly) >= 2 {
+	switch {
+	case on && hold && !held:
+		// The whole subpath lies in one dash: it stays closed.
+		s.strokePoly(poly, true, dx, dy)
+	case on && held:
+		// The last dash runs into the first: one piece through the start.
+		s.dpoly = append(s.dpoly, s.dfirst[2:]...)
 		s.strokePoly(s.dpoly, false, dx, dy)
+	default:
+		if on && len(s.dpoly) >= 2 {
+			s.strokePoly(s.dpoly, false, dx, dy)
+		}
+		if held {
+			s.strokePoly(s.dfirst, false, fdx, fdy)
+		}
 	}
 }
 

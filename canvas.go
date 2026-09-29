@@ -49,8 +49,12 @@ type Canvas struct {
 	writer maskWriter
 	stack  []clipState
 	masks  []*clipMask
-	tmp    Path
-	err    error
+	// overflow counts clips pushed beyond MaxClipDepth; they clip away
+	// everything (empty) without growing the stack.
+	overflow int
+	empty    clipState
+	tmp      Path
+	err      error
 }
 
 // NewCanvas returns a canvas drawing onto dst.
@@ -66,7 +70,8 @@ func (c *Canvas) Reset(dst *image.RGBA, region image.Rectangle) {
 	c.dst = dst
 	c.solid.t.set(dst)
 	c.shader.t.set(dst)
-	c.stack = append(c.stack[:0], clipState{bounds: region.Intersect(dst.Bounds()), frac: noFrac})
+	c.stack = append(c.stack[:0], newClipState(region.Intersect(dst.Bounds())))
+	c.overflow = 0
 	c.err = nil
 }
 
@@ -88,7 +93,12 @@ func (c *Canvas) guard() {
 	}
 }
 
-func (c *Canvas) top() *clipState { return &c.stack[len(c.stack)-1] }
+func (c *Canvas) top() *clipState {
+	if c.overflow > 0 {
+		return &c.empty
+	}
+	return &c.stack[len(c.stack)-1]
+}
 
 // Clip returns the device-space bounds of the current clip.
 func (c *Canvas) Clip() image.Rectangle { return c.top().bounds }
@@ -165,10 +175,10 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	b := c.chain(cs, c.paint(paint))
 	c.setClip(cs.bounds)
 	c.r.Reset()
-	if paint.Shader == nil && paint.Color.A == 255 {
-		// Opaque: the analytic middle rows of straight segments may be
-		// composited before the rest of the stroke (the order of opaque
-		// layers of one color does not matter).
+	if paint.Shader == nil && paint.Color.A == 255 && fullCoverage(cs, bb, pad) {
+		// Opaque and not reduced by a clip: the analytic middle rows may
+		// be composited separately from the rest of the stroke, because
+		// layers of one opaque color at full coverage are idempotent.
 		c.seg.r, c.seg.b = &c.r, b
 		c.s.strokeFast(&c.r, &c.seg, p, m, st)
 	} else {
@@ -178,14 +188,20 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	c.r.Rasterize(NonZero, b)
 }
 
-func (c *Canvas) push(s clipState) {
+// full reports whether the clip stack is at MaxClipDepth.
+func (c *Canvas) full() bool {
 	max := c.MaxClipDepth
 	if max == 0 {
 		max = DefaultMaxClipDepth
 	}
-	if len(c.stack) >= max {
+	return c.overflow > 0 || len(c.stack) >= max
+}
+
+func (c *Canvas) push(s clipState) {
+	if c.full() {
 		c.setErr(ErrClipDepth)
-		s = clipState{} // clip everything rather than draw unclipped
+		c.overflow++ // clip everything rather than draw unclipped
+		return
 	}
 	c.stack = append(c.stack, s)
 }
@@ -217,7 +233,7 @@ func (c *Canvas) ClipPath(p *Path, m Matrix, rule FillRule) {
 
 func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule) {
 	cur := *c.top()
-	if cur.bounds.Empty() || !m.finite() {
+	if c.full() || cur.bounds.Empty() || !m.finite() {
 		c.push(clipState{})
 		return
 	}
@@ -246,16 +262,45 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule) {
 	c.r.Reset()
 	c.r.AddPath(p, m)
 	c.checkBudget()
-	c.r.Rasterize(rule, c.chain(&cur, &c.writer))
-	c.push(clipState{bounds: ib, frac: noFrac, mask: mk})
+	// The mask holds the path's coverage times the enclosing masks; the
+	// rectangle clips stay exact in rect and are applied when drawing.
+	var b Blitter = &c.writer
+	if cur.mask != nil {
+		c.mread.m, c.mread.next = cur.mask, b
+		b = &c.mread
+	}
+	c.r.Rasterize(rule, b)
+	n := cur
+	n.mask = mk
+	n.lim = cur.lim.Intersect(ib)
+	n.derive()
+	c.push(n)
 }
 
 // PopClip removes the most recent clip.
 func (c *Canvas) PopClip() {
+	if c.overflow > 0 {
+		c.overflow--
+		return
+	}
 	if len(c.stack) > 1 {
 		c.stack = c.stack[:len(c.stack)-1]
 	}
 }
 
 // ClipDepth returns the number of clips pushed since Reset.
-func (c *Canvas) ClipDepth() int { return len(c.stack) - 1 }
+func (c *Canvas) ClipDepth() int { return len(c.stack) - 1 + c.overflow }
+
+// fullCoverage reports whether the clip leaves full coverage everywhere a
+// stroke with device bounding box bb (plus pad) can reach: no mask, and no
+// fractional rectangle-clip border within reach.
+func fullCoverage(cs *clipState, bb Rect, pad float64) bool {
+	if cs.mask != nil {
+		return false
+	}
+	b := cs.bounds
+	return (cs.frac[0] == 255 || bb.X0-pad >= float64(b.Min.X+1)) &&
+		(cs.frac[1] == 255 || bb.Y0-pad >= float64(b.Min.Y+1)) &&
+		(cs.frac[2] == 255 || bb.X1+pad <= float64(b.Max.X-1)) &&
+		(cs.frac[3] == 255 || bb.Y1+pad <= float64(b.Max.Y-1))
+}

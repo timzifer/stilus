@@ -53,13 +53,14 @@ func (w *maskWriter) prepare(r int, x0, x1 int) []uint8 {
 	lo, hi := int(m.lo[r]), int(m.hi[r])
 	ox := m.bounds.Min.X
 	row := m.pix[r*m.stride : (r+1)*m.stride]
-	if lo == hi {
-		m.lo[r] = int32(x0)
-	} else if x0 > hi {
+	switch {
+	case lo == hi: // first span of the row
+		m.lo[r], m.hi[r] = int32(x0), int32(x1)
+	case x0 > hi:
 		clear(row[hi-ox : x0-ox])
-	}
-	if x1 > hi {
-		m.hi[r] = int32(x1)
+		fallthrough
+	default:
+		m.hi[r] = int32(max(hi, x1))
 	}
 	return row[x0-ox : x1-ox]
 }
@@ -155,6 +156,10 @@ func (b *maskBlitter) BlitCoverage(y, x int, cov []uint8) {
 		x1 = hi
 	}
 	if x0 >= x1 {
+		return
+	}
+	if int(m.olo[r]) <= x0 && x1 <= int(m.ohi[r]) {
+		b.next.BlitCoverage(y, x0, cov[x0-x:x1-x])
 		return
 	}
 	row := m.pix[r*m.stride+x0-m.bounds.Min.X:]
@@ -253,10 +258,57 @@ func (b *fracBlitter) BlitCoverage(y, x int, cov []uint8) {
 }
 
 // clipState is one level of the clip stack.
+//
+// Rectangle clips are kept as their exact geometric intersection (rect) and
+// only turned into pixels at the end: integer bounds plus the coverage of the
+// border columns and rows. Intersecting the same half-pixel clip twice, or
+// two disjoint rectangles inside one pixel, therefore gives the geometric
+// result instead of a product of coverages. Masks never contain rectangle
+// coverage; they are combined with it when drawing.
 type clipState struct {
-	bounds image.Rectangle
-	frac   [4]uint8 // coverage of the border column/row: left, top, right, bottom
+	bounds image.Rectangle // pixels that can be touched
+	rect   Rect            // exact intersection of all rectangle clips
+	lim    image.Rectangle // integer limit from the region and masks
+	frac   [4]uint8        // coverage of rect in the border column/row: left, top, right, bottom
 	mask   *clipMask
+}
+
+// newClipState starts a clip stack for region.
+func newClipState(region image.Rectangle) clipState {
+	s := clipState{
+		rect: Rect{float64(region.Min.X), float64(region.Min.Y), float64(region.Max.X), float64(region.Max.Y)},
+		lim:  region,
+	}
+	s.derive()
+	return s
+}
+
+// derive computes bounds and border coverage from rect and lim.
+func (s *clipState) derive() {
+	s.frac = noFrac
+	if s.rect.Empty() || s.lim.Empty() {
+		s.bounds = image.Rectangle{}
+		return
+	}
+	x0, x1, fl, fr := rectSpan(s.rect.X0, s.rect.X1)
+	y0, y1, ft, fb := rectSpan(s.rect.Y0, s.rect.Y1)
+	s.bounds = s.lim.Intersect(image.Rect(x0, y0, x1, y1))
+	if s.bounds.Empty() {
+		s.bounds = image.Rectangle{}
+		return
+	}
+	if s.bounds.Min.X == x0 {
+		s.frac[0] = fl
+	}
+	if s.bounds.Min.Y == y0 {
+		s.frac[1] = ft
+	}
+	if s.bounds.Max.X == x1 {
+		s.frac[2] = fr
+	}
+	if s.bounds.Max.Y == y1 {
+		s.frac[3] = fb
+	}
 }
 
 var noFrac = [4]uint8{255, 255, 255, 255}
@@ -289,30 +341,9 @@ func (s clipState) intersectRect(r Rect) clipState {
 	r.Y0 = math.Max(math.Min(r.Y0, lim), -lim)
 	r.X1 = math.Max(math.Min(r.X1, lim), -lim)
 	r.Y1 = math.Max(math.Min(r.Y1, lim), -lim)
-	if r.Empty() {
-		return clipState{}
-	}
-	x0, x1, fl, fr := rectSpan(r.X0, r.X1)
-	y0, y1, ft, fb := rectSpan(r.Y0, r.Y1)
 	n := s
-	n.bounds = s.bounds.Intersect(image.Rect(x0, y0, x1, y1))
-	if n.bounds.Empty() {
-		return clipState{}
-	}
-	pick := func(nv, ov, rv int, of, rf uint8) uint8 {
-		f := uint32(255)
-		if nv == ov {
-			f = uint32(of)
-		}
-		if nv == rv {
-			f = div255(f * uint32(rf))
-		}
-		return uint8(f)
-	}
-	n.frac[0] = pick(n.bounds.Min.X, s.bounds.Min.X, x0, s.frac[0], fl)
-	n.frac[1] = pick(n.bounds.Min.Y, s.bounds.Min.Y, y0, s.frac[1], ft)
-	n.frac[2] = pick(n.bounds.Max.X, s.bounds.Max.X, x1, s.frac[2], fr)
-	n.frac[3] = pick(n.bounds.Max.Y, s.bounds.Max.Y, y1, s.frac[3], fb)
+	n.rect = s.rect.Intersect(r)
+	n.derive()
 	return n
 }
 
