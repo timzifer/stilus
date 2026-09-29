@@ -39,6 +39,10 @@ const minMiddleRows = 3
 // maxMergeRounds bounds cluster merging; beyond it the outline is used.
 const maxMergeRounds = 16
 
+// minInteriorRun is the fully covered width (pixels) from which analytic
+// rows emit their interior as a run.
+const minInteriorRun = 8
+
 type fastState struct {
 	pts    []float64 // outline points, user space, then device space
 	own    []int32   // vertex owning each point
@@ -319,6 +323,44 @@ type segFast struct {
 	r   *Rasterizer // the stroke's rasterizer; composited after the stroke
 	b   Blitter
 	cov []uint8
+	// Border columns and rows of a rectangle clip with partial coverage
+	// (-1 when none). Pixels there are not composited directly: two parts
+	// of the stroke covering the same pixel would be reduced by the clip
+	// twice. They are summed in the stroke's accumulator instead (inject).
+	bx0, bx1, by0, by1 int
+}
+
+// setBorder takes the partially covered border columns and rows of cs, if
+// parts of the stroke may overlap.
+func (f *segFast) setBorder(cs *clipState, overlap bool) {
+	f.bx0, f.bx1, f.by0, f.by1 = -1<<31, -1<<31, -1<<31, -1<<31
+	if !overlap {
+		return
+	}
+	if cs.frac[0] != 255 {
+		f.bx0 = cs.bounds.Min.X
+	}
+	if cs.frac[2] != 255 {
+		f.bx1 = cs.bounds.Max.X - 1
+	}
+	if cs.frac[1] != 255 {
+		f.by0 = cs.bounds.Min.Y
+	}
+	if cs.frac[3] != 255 {
+		f.by1 = cs.bounds.Max.Y - 1
+	}
+}
+
+// inject adds a pixel's covered area c to the stroke's accumulator: a pair
+// of vertical edges at x and x+1 of height c covers exactly that pixel.
+func (f *segFast) inject(x, y int, c float64) {
+	if c <= 0 {
+		return
+	}
+	c = min(c, 1)
+	fx, fy := float64(x), float64(y)
+	f.r.AddLine(fx, fy, fx, fy+c)
+	f.r.AddLine(fx+1, fy+c, fx+1, fy)
 }
 
 func (f *segFast) limitRows(y0, y1 int) { f.r.limitRows(y0, y1) }
@@ -346,28 +388,11 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	if a < b {
 		a, b = b, a
 	}
-	h, mt := (a+b)/2, (a-b)/2
-	inv2ab := 0.0
+	tr := trapezoid{h: (a + b) / 2, mt: (a - b) / 2, inva: 1 / a}
 	if b > 1e-9 {
-		inv2ab = 1 / (2 * a * b)
+		tr.inv2ab = 1 / (2 * a * b)
 	}
-	inva := 1 / a
-	area := func(u float64) float64 { // area of the pixel with n·(p-c) <= u
-		switch {
-		case u <= -h:
-			return 0
-		case u >= h:
-			return 1
-		case u < -mt:
-			t := u + h
-			return t * t * inv2ab
-		case u > mt:
-			t := h - u
-			return 1 - t*t*inv2ab
-		default:
-			return 0.5 + u*inva
-		}
-	}
+	h := tr.h
 	// x of both lines at y: x = px + (y - py)·sl. The left line at a row
 	// is leftmost at the row's top when sl < 0, at its bottom otherwise.
 	sl := vx / vy
@@ -387,6 +412,10 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	// lines: k2 + h <= n·c <= k1 - h. n·c is linear in the column, so the
 	// covered columns of a row form one interval, emitted as a run.
 	lo, hi := k2+h, k1-h
+	inx := 1 / nx
+	// Only strips wide enough to have a real interior are split into edge
+	// pixels and a run; for thin strokes one coverage span is cheaper.
+	runs := (hi-lo)*math.Abs(inx) >= minInteriorRun
 	for j := y0; j < y1; j++ {
 		fy := float64(j)
 		i0 := max(ffloor(xl+(fy+dtop-yl)*sl), cx0)
@@ -395,10 +424,14 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 			continue
 		}
 		d0 := nx*(float64(i0)+0.5) + ny*(fy+0.5)
+		if j == f.by0 || j == f.by1 || (f.bx0 >= i0 && f.bx0 < i1) || (f.bx1 >= i0 && f.bx1 < i1) {
+			f.borderRow(j, i0, i1, d0, nx, k1, k2, tr)
+			continue
+		}
 		// Interior columns [a, b) relative to i0.
 		a, b := 0, 0
-		if lo <= hi {
-			ta, tb := (lo-d0)/nx, (hi-d0)/nx
+		if runs {
+			ta, tb := (lo-d0)*inx, (hi-d0)*inx
 			if ta > tb {
 				ta, tb = tb, ta
 			}
@@ -415,7 +448,7 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 		cov := f.cov[:n]
 		d := d0
 		for i := 0; i < a; i++ {
-			cov[i] = quant(area(k1-d) - area(k2-d))
+			cov[i] = quant(tr.area(k1-d) - tr.area(k2-d))
 			d += nx
 		}
 		if a > 0 {
@@ -426,12 +459,60 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 		}
 		d = d0 + float64(b)*nx
 		for i := b; i < n; i++ {
-			cov[i] = quant(area(k1-d) - area(k2-d))
+			cov[i] = quant(tr.area(k1-d) - tr.area(k2-d))
 			d += nx
 		}
 		if n > b {
 			emitCoverage(f.b, j, i0+b, cov[b:n])
 		}
+	}
+}
+
+// borderRow handles a row touching a partially covered clip border: pixels
+// in border rows and columns go to the accumulator, the rest is blitted.
+func (f *segFast) borderRow(j, i0, i1 int, d, nx, k1, k2 float64, tr trapezoid) {
+	row := j == f.by0 || j == f.by1
+	cov := f.cov[:i1-i0]
+	start := 0
+	for i := range cov {
+		c := tr.area(k1-d) - tr.area(k2-d)
+		d += nx
+		x := i0 + i
+		if row || x == f.bx0 || x == f.bx1 {
+			if i > start {
+				emitCoverage(f.b, j, i0+start, cov[start:i])
+			}
+			f.inject(x, j, c)
+			start = i + 1
+			continue
+		}
+		cov[i] = quant(c)
+	}
+	if len(cov) > start {
+		emitCoverage(f.b, j, i0+start, cov[start:])
+	}
+}
+
+// trapezoid is the distribution of a unit pixel projected onto a unit
+// normal (a >= b are the normal's absolute components): half-width h, flat
+// top of half-width mt and height 1/a.
+type trapezoid struct{ h, mt, inv2ab, inva float64 }
+
+// area of the pixel on the side n·(p-c) <= u.
+func (t trapezoid) area(u float64) float64 {
+	switch {
+	case u <= -t.h:
+		return 0
+	case u >= t.h:
+		return 1
+	case u < -t.mt:
+		v := u + t.h
+		return v * v * t.inv2ab
+	case u > t.mt:
+		v := t.h - u
+		return 1 - v*v*t.inv2ab
+	default:
+		return 0.5 + u*t.inva
 	}
 }
 

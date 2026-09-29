@@ -51,8 +51,8 @@ span, never per pixel) or consume `Stroker` output through a `LineSink`.
   integrated over their touched cell range; wide rows use a dirty bitset
   and emit the constant stretches between edges as runs. The sweep zeroes
   what it reads – there is no clearing pass.
-- **Hairlines** (thinner than one device pixel) are drawn analytically as
-  coverage rows, without building a polygon.
+- **Hairlines** (thinner than one device pixel) are stroked one pixel wide
+  in device space by the same stroker, with exact area coverage.
 - **Analytic strokes**: between the corners of a polyline (joins, caps,
   inner notches), each segment is bounded by two parallel lines, so each
   pixel's area is the difference of two closed-form half-plane areas – no
@@ -74,14 +74,19 @@ A3 landscape at 150 dpi (2481×1754 px), rectangle page clip, cloud Xeon
 
 | scene | 1 core | 4 cores (bands) | spec target (1 core) |
 |---|---:|---:|---:|
-| 2 000 long hatch lines, hairline | 58 ms | 15 ms | ≤ 60 ms ✓ |
-| 2 000 long hatch lines, 0.35 mm | 89 ms | 25 ms | – |
-| 20 000 short strokes, 0.35 mm | 41 ms | 13 ms | ≤ 40 ms (≈) |
-| 20 000 short strokes, hairline | 25 ms | 8 ms | – |
-| 30 000 glyph outlines, uncached | 64 ms | 25 ms | – |
-| mixed drawing (fills with alpha, dashes, curves) | 48 ms | 15 ms | – |
-| 3 000 polylines + 600 circles, 0.35 mm | 94 ms | – | – |
-| 2 000 hatch lines through an elliptic mask clip | 48 ms | 17 ms | – |
+| 2 000 long hatch lines, hairline | 83 ms | – | ≤ 60 ms ✗ |
+| 2 000 long hatch lines, 0.35 mm | 96 ms | – | – |
+| 20 000 short strokes, 0.35 mm | 50 ms | – | ≤ 40 ms ✗ |
+| 20 000 short strokes, hairline | 43 ms | – | – |
+| 30 000 glyph outlines, uncached | 64 ms | – | – |
+| mixed drawing (fills with alpha, dashes, curves) | 57 ms | – | – |
+| 3 000 polylines + 600 circles, 0.35 mm | 110 ms | – | – |
+| 2 000 hatch lines through an elliptic mask clip | 60 ms | – | – |
+
+Hairlines are drawn one device pixel wide with exact area coverage, like
+PDFium (an earlier approximation was faster but 14/255 off on dense
+hatching). Against PDFium on the synthetic drawings of the harness: mean
+deviation 0.3–1.5/255, SSIM ≥ 0.998 (see `harness/`).
 
 Allocations per rendered scene after warm-up: **0**.
 

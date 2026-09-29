@@ -400,13 +400,17 @@ func report(c config, rows []row, splitTotal map[string]float64, splitPerFile ma
 	fmt.Fprintf(&b, "# pdfbench report\n\n%s · %g dpi · %d timed runs/page after warm-up · max %d pages/document · %s/%s, %d CPUs · reference: %s\n\n",
 		time.Now().Format("2006-01-02 15:04"), c.dpi, c.runs, c.maxPages, runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), c.ref)
 
-	b.WriteString("## Speed and allocations\n\n| engine | pages | errors | median ms/page | p90 ms/page | total ms | median allocs/page | median MB alloc/page |\n|---|---:|---:|---:|---:|---:|---:|---:|\n")
+	b.WriteString("## Speed and allocations\n\n| engine | pages | unsupported | errors | median ms/page | p90 ms/page | total ms | median allocs/page | median MB alloc/page |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	for _, e := range c.engines {
 		var ms, al, by []float64
-		var pages, errs int
+		var pages, errs, unsup int
 		var total float64
 		for _, r := range rows {
 			if r.Engine != e {
+				continue
+			}
+			if strings.Contains(r.Err, engine.ErrNoPDF.Error()) {
+				unsup++
 				continue
 			}
 			pages++
@@ -426,7 +430,7 @@ func report(c config, rows []row, splitTotal map[string]float64, splitPerFile ma
 		if len(al) > 0 {
 			alS, byS = fmt.Sprintf("%.0f", median(al)), fmt.Sprintf("%.1f", median(by))
 		}
-		fmt.Fprintf(&b, "| %s | %d | %d | %.1f | %.1f | %.0f | %s | %s |\n", e, pages, errs, median(ms), pct(ms, 0.9), total, alS, byS)
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %.1f | %.1f | %.0f | %s | %s |\n", e, pages, unsup, errs, median(ms), pct(ms, 0.9), total, alS, byS)
 	}
 
 	b.WriteString("\n## Accuracy against " + c.ref + "\n\nTarget: mean < 1/255 and < 0.5 % of pixels deviating by more than 32/255.\n\n| engine | category | pages | pass | mean dev. (median) | >32/255 (median) | SSIM (median) |\n|---|---|---:|---:|---:|---:|---:|\n")

@@ -175,11 +175,16 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	b := c.chain(cs, c.paint(paint))
 	c.setClip(cs.bounds)
 	c.r.Reset()
-	if paint.Shader == nil && paint.Color.A == 255 && fullCoverage(cs, bb, pad) {
-		// Opaque and not reduced by a clip: the analytic middle rows may
-		// be composited separately from the rest of the stroke, because
-		// layers of one opaque color at full coverage are idempotent.
+	overlap := mayOverlap(p, st)
+	if paint.Shader == nil && paint.Color.A == 255 && (cs.mask == nil || !overlap) {
+		// Opaque: the analytic middle rows may be composited separately
+		// from the rest of the stroke, because layers of one opaque color
+		// at full coverage are idempotent. Where parts of the stroke may
+		// overlap and a clip reduces coverage, that no longer holds: at a
+		// rectangle clip's fractional border the pixels are summed in the
+		// accumulator instead, and under a mask the outline path is used.
 		c.seg.r, c.seg.b = &c.r, b
+		c.seg.setBorder(cs, overlap)
 		c.s.strokeFast(&c.r, &c.seg, p, m, st)
 	} else {
 		c.s.Stroke(&c.r, p, m, st)
@@ -291,16 +296,24 @@ func (c *Canvas) PopClip() {
 // ClipDepth returns the number of clips pushed since Reset.
 func (c *Canvas) ClipDepth() int { return len(c.stack) - 1 + c.overflow }
 
-// fullCoverage reports whether the clip leaves full coverage everywhere a
-// stroke with device bounding box bb (plus pad) can reach: no mask, and no
-// fractional rectangle-clip border within reach.
-func fullCoverage(cs *clipState, bb Rect, pad float64) bool {
-	if cs.mask != nil {
-		return false
+// mayOverlap reports whether separate parts of a stroke of p can cover the
+// same pixel outside the bands around its corners: several subpaths,
+// curves (a cubic can loop), dashes, or three or more segments. A single
+// segment or a two-segment polyline cannot.
+func mayOverlap(p *Path, st *StrokeStyle) bool {
+	if len(st.Dash) > 0 {
+		return true
 	}
-	b := cs.bounds
-	return (cs.frac[0] == 255 || bb.X0-pad >= float64(b.Min.X+1)) &&
-		(cs.frac[1] == 255 || bb.Y0-pad >= float64(b.Min.Y+1)) &&
-		(cs.frac[2] == 255 || bb.X1+pad <= float64(b.Max.X-1)) &&
-		(cs.frac[3] == 255 || bb.Y1+pad <= float64(b.Max.Y-1))
+	moves, segs := 0, 0
+	for _, v := range p.Verbs {
+		switch v {
+		case MoveTo:
+			moves++
+		case LineTo, Close:
+			segs++
+		default:
+			return true
+		}
+	}
+	return moves > 1 || segs > 2
 }
