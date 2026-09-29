@@ -87,6 +87,45 @@ module):
 ¹ stilus stroker outlines, filled with one `vector.Rasterizer` sized to each
 outline's bounding box. ² No clip; gg's rectangle clip is slower still.
 
+## SIMD (experimental, Go 1.26 `simd/archsimd`)
+
+Built with `GOEXPERIMENT=simd` on amd64, the compositing kernels
+(`covOpaque`, `covOver`, `runOver`) use AVX2 (4 px per iteration) or
+AVX-512 with VBMI (8 px, `VPMOVWB` pack, `VPERMB` coverage broadcast),
+chosen at runtime. Results are bit-identical to the scalar path
+(`TestSpanKernels`). Any other build uses the scalar kernels unchanged.
+
+```sh
+GOTOOLCHAIN=go1.26.8 GOEXPERIMENT=simd go test ./...
+GOTOOLCHAIN=go1.26.8 GOEXPERIMENT=simd go test -run XXX -bench SpanKernels .
+STILUS_SIMD=0 | 256   # at run time: scalar only | AVX2 only
+```
+
+Kernel throughput, ns per span (same Xeon):
+
+| span | kernel | scalar | AVX2 | AVX-512 |
+|---:|---|---:|---:|---:|
+| 4 px | opaque coverage | 13 | 16 | 17 |
+| 16 px | opaque coverage | 36 | 16 | 14 |
+| 64 px | coverage over (alpha) | 282 | 71 | 35 |
+| 256 px | run with alpha | 517 | 196 | 74 |
+| 1024 px | opaque coverage | 2423 | 846 | 483 |
+
+Spans shorter than 16 px stay scalar: one vector block plus `VZEROUPPER`
+costs more than a few scalar pixels. On the scenes this means: fills with
+transparency (mixed drawing) −15…20 %, stroke-dominated scenes unchanged,
+because their spans are 2–6 px wide.
+
+Pitfalls found on the way (Go 1.26), all avoided in `simd_amd64.go`:
+
+- The compiler emits no `VZEROUPPER`; without `archsimd.ClearAVXUpperBits()`
+  at the end of each kernel, the rasterizer's legacy-SSE float code ran 3–5×
+  slower afterwards.
+- `ShiftAllRight` with a count compiles to a legacy-SSE `MOVQ` inside the
+  AVX loop; division by 255 therefore uses `MulHigh` (`(x+128)·257 >> 16`).
+- Vectors inside a struct are copied with legacy-SSE `MOVUPS`; constants are
+  kept in plain local variables.
+
 ## Accuracy and robustness
 
 - Coverage is exact-area accumulation (like FreeType, AGG/PDFium, Skia);

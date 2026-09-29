@@ -168,28 +168,46 @@ func (b *SolidBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
 	if s == 0 {
 		return
 	}
+	runOver(d, s)
+}
+
+func (b *SolidBlitter) BlitCoverage(y, x int, cov []uint8) {
+	d := b.t.row(y, x, x+len(cov))
+	if b.opaque {
+		covOpaque(d, cov, b.c, b.cx)
+		return
+	}
+	covOver(d, cov, b.cx)
+}
+
+// Scalar span kernels. simd_*.go dispatches to vector versions where the
+// CPU and toolchain allow it.
+
+// runOverScalar composites the premultiplied constant s over every pixel.
+func runOverScalar(d []uint32, s uint32) {
 	inv := 255 - (s>>alphaShift)&0xff
 	for i, v := range d {
 		d[i] = s + mul255(v, inv)
 	}
 }
 
-func (b *SolidBlitter) BlitCoverage(y, x int, cov []uint8) {
-	d := b.t.row(y, x, x+len(cov))
+// covOpaqueScalar blends an opaque color c (cx expanded) with coverage.
+func covOpaqueScalar(d []uint32, cov []uint8, c uint32, cx uint64) {
 	d = d[:len(cov)]
-	c, cx := b.c, b.cx
-	if b.opaque {
-		for i, a := range cov {
-			switch a {
-			case 0:
-			case 255:
-				d[i] = c
-			default:
-				d[i] = lerpx(cx, d[i], uint32(a))
-			}
+	for i, a := range cov {
+		switch a {
+		case 0:
+		case 255:
+			d[i] = c
+		default:
+			d[i] = lerpx(cx, d[i], uint32(a))
 		}
-		return
 	}
+}
+
+// covOverScalar composites a premultiplied color (expanded) with coverage.
+func covOverScalar(d []uint32, cov []uint8, cx uint64) {
+	d = d[:len(cov)]
 	for i, a := range cov {
 		if a != 0 {
 			d[i] = overx(cx, d[i], uint32(a))
