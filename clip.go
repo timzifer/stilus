@@ -337,10 +337,10 @@ func rectSpan(a, b float64) (i0, i1 int, f0, f1 uint8) {
 // intersectRect intersects a clip state with a device-space rectangle.
 func (s clipState) intersectRect(r Rect) clipState {
 	const lim = 1 << 30
-	r.X0 = math.Max(math.Min(r.X0, lim), -lim)
-	r.Y0 = math.Max(math.Min(r.Y0, lim), -lim)
-	r.X1 = math.Max(math.Min(r.X1, lim), -lim)
-	r.Y1 = math.Max(math.Min(r.Y1, lim), -lim)
+	r.X0 = max(min(r.X0, lim), -lim)
+	r.Y0 = max(min(r.Y0, lim), -lim)
+	r.X1 = max(min(r.X1, lim), -lim)
+	r.Y1 = max(min(r.Y1, lim), -lim)
 	n := s
 	n.rect = s.rect.Intersect(r)
 	n.derive()

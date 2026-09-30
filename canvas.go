@@ -188,7 +188,7 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	}
 	sm := sigmaMax(m)
 	// Cull against the clip with the widest possible outline extent.
-	pad := math.Max(st.Width*sm, 1) / 2 * math.Max(math.Max(st.MiterLimit, 1.5), 1)
+	pad := max(st.Width*sm, 1) / 2 * max(max(st.MiterLimit, 1.5), 1)
 	if !(pad < 1<<30) {
 		pad = 1 << 30
 	}
@@ -288,8 +288,8 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule) {
 	}
 	const lim = 1 << 30
 	ib := image.Rect(
-		int(math.Floor(math.Max(bb.X0, -lim))), int(math.Floor(math.Max(bb.Y0, -lim))),
-		int(math.Ceil(math.Min(bb.X1, lim))), int(math.Ceil(math.Min(bb.Y1, lim))),
+		int(math.Floor(max(bb.X0, -lim))), int(math.Floor(max(bb.Y0, -lim))),
+		int(math.Ceil(min(bb.X1, lim))), int(math.Ceil(min(bb.Y1, lim))),
 	).Intersect(cur.bounds)
 	if ib.Empty() {
 		c.push(clipState{})

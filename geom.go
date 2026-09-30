@@ -12,13 +12,18 @@ type Rect struct{ X0, Y0, X1, Y1 float64 }
 // Empty reports whether r has no area. NaN bounds count as empty.
 func (r Rect) Empty() bool { return !(r.X0 < r.X1 && r.Y0 < r.Y1) }
 
+func (r Rect) hasNaN() bool {
+	return math.IsNaN(r.X0) || math.IsNaN(r.Y0) || math.IsNaN(r.X1) || math.IsNaN(r.Y1)
+}
+
 // Intersect returns the intersection of r and s.
 func (r Rect) Intersect(s Rect) Rect {
-	r.X0 = math.Max(r.X0, s.X0)
-	r.Y0 = math.Max(r.Y0, s.Y0)
-	r.X1 = math.Min(r.X1, s.X1)
-	r.Y1 = math.Min(r.Y1, s.Y1)
-	return r
+	b := Rect{max(r.X0, s.X0), max(r.Y0, s.Y0), min(r.X1, s.X1), min(r.Y1, s.Y1)}
+	if b.hasNaN() {
+		// Preserve math.Min/Max's infinity precedence over NaN.
+		return Rect{math.Max(r.X0, s.X0), math.Max(r.Y0, s.Y0), math.Min(r.X1, s.X1), math.Min(r.Y1, s.Y1)}
+	}
+	return b
 }
 
 // Matrix is an affine transform in PDF order [a b c d e f]:
@@ -105,6 +110,12 @@ func (m Matrix) transformRect(r Rect) Rect {
 	x1, y1 := m.Apply(r.X1, r.Y0)
 	x2, y2 := m.Apply(r.X1, r.Y1)
 	x3, y3 := m.Apply(r.X0, r.Y1)
+	b := Rect{min(x0, x1, x2, x3), min(y0, y1, y2, y3), max(x0, x1, x2, x3), max(y0, y1, y2, y3)}
+	if !b.hasNaN() {
+		return b
+	}
+	// Even finite inputs can overflow into infinities and NaNs. Retain
+	// math.Min/Max's original results for these exceptional corners.
 	return Rect{
 		math.Min(math.Min(x0, x1), math.Min(x2, x3)),
 		math.Min(math.Min(y0, y1), math.Min(y2, y3)),

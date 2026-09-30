@@ -34,3 +34,6 @@ go.work.sum
 # harness outputs
 harness/corpus/*/
 harness/report/
+/.idea
+/harness/cmd/pdfbench/corpus
+/harness/cmd/pdfbench/report

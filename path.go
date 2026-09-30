@@ -91,6 +91,23 @@ func (p *Path) Bounds() Rect {
 	r := Rect{math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)}
 	for _, q := range p.Points {
 		x, y := float64(q.X), float64(q.Y)
+		r.X0 = min(r.X0, x)
+		r.Y0 = min(r.Y0, y)
+		r.X1 = max(r.X1, x)
+		r.Y1 = max(r.Y1, y)
+	}
+	if r.hasNaN() {
+		return p.boundsNaN()
+	}
+	return r
+}
+
+// boundsNaN preserves math.Min/Max's infinity precedence for paths with
+// NaN coordinates, without adding special-case checks to the point loop.
+func (p *Path) boundsNaN() Rect {
+	r := Rect{math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)}
+	for _, q := range p.Points {
+		x, y := float64(q.X), float64(q.Y)
 		r.X0 = math.Min(r.X0, x)
 		r.Y0 = math.Min(r.Y0, y)
 		r.X1 = math.Max(r.X1, x)
@@ -131,8 +148,8 @@ func (p *Path) asRect() (Rect, bool) {
 		return Rect{}, false
 	}
 	r := Rect{
-		math.Min(float64(a.X), float64(c.X)), math.Min(float64(a.Y), float64(c.Y)),
-		math.Max(float64(a.X), float64(c.X)), math.Max(float64(a.Y), float64(c.Y)),
+		min(float64(a.X), float64(c.X)), min(float64(a.Y), float64(c.Y)),
+		max(float64(a.X), float64(c.X)), max(float64(a.Y), float64(c.Y)),
 	}
 	return r, true
 }
