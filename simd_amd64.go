@@ -9,9 +9,10 @@ import (
 	"unsafe"
 )
 
-// Every kernel ends with ClearAVXUpperBits (VZEROUPPER): Go 1.26 does not
-// emit it yet, and the rasterizer's scalar float code is legacy SSE, which
-// runs 3–5× slower while the upper halves of the YMM registers are dirty.
+// Every kernel ends with ClearAVXUpperBits (VZEROUPPER): Go 1.26 and 1.27
+// do not emit it, and the rasterizer's scalar float code is legacy SSE,
+// which runs 3–5× slower while the upper halves of the YMM registers are
+// dirty.
 
 // minSIMDSpan is the span length below which the scalar kernels win: a
 // single vector block plus VZEROUPPER costs more than a few scalar pixels.
@@ -88,8 +89,8 @@ func covOpaque(d []uint32, cov []uint8, c uint32, cx uint64) {
 	k128 := archsimd.BroadcastUint16x16(128)
 	k255 := archsimd.BroadcastUint16x16(255)
 	k257 := archsimd.BroadcastUint16x16(257)
-	rep := archsimd.LoadInt8x16(&repIdx)
-	pk := archsimd.LoadInt8x32(&packIdx)
+	rep := loadInt8x16(&repIdx)
+	pk := loadInt8x32(&packIdx)
 	c16 := archsimd.BroadcastUint32x4(c).AsUint8x16().ExtendToUint16()
 	i := 0
 	for ; i+4 <= len(cov); i += 4 {
@@ -103,9 +104,9 @@ func covOpaque(d []uint32, cov []uint8, c uint32, cx uint64) {
 		}
 		a := coverage4(w, rep)
 		px := db[i*4 : i*4+16]
-		d16 := archsimd.LoadUint8x16Slice(px).ExtendToUint16()
+		d16 := loadUint8x16(px).ExtendToUint16()
 		r := div255v(d16.Mul(k255.Sub(a)).Add(c16.Mul(a)), k128, k257)
-		pack(r, pk).StoreSlice(px)
+		storeUint8x16(pack(r, pk), px)
 	}
 	archsimd.ClearAVXUpperBits()
 	covOpaqueScalar(d[i:], cov[i:], c, cx)
@@ -125,8 +126,8 @@ func covOver(d []uint32, cov []uint8, cx uint64) {
 	k128 := archsimd.BroadcastUint16x16(128)
 	k255 := archsimd.BroadcastUint16x16(255)
 	k257 := archsimd.BroadcastUint16x16(257)
-	rep := archsimd.LoadInt8x16(&repIdx)
-	pk := archsimd.LoadInt8x32(&packIdx)
+	rep := loadInt8x16(&repIdx)
+	pk := loadInt8x32(&packIdx)
 	c16 := archsimd.BroadcastUint32x4(compact(cx)).AsUint8x16().ExtendToUint16()
 	i := 0
 	for ; i+4 <= len(cov); i += 4 {
@@ -137,9 +138,9 @@ func covOver(d []uint32, cov []uint8, cx uint64) {
 		s := div255v(c16.Mul(coverage4(w, rep)), k128, k257)
 		sa := s.PermuteScalarsLoGrouped(3, 3, 3, 3).PermuteScalarsHiGrouped(3, 3, 3, 3)
 		px := db[i*4 : i*4+16]
-		d16 := archsimd.LoadUint8x16Slice(px).ExtendToUint16()
+		d16 := loadUint8x16(px).ExtendToUint16()
 		r := div255v(d16.Mul(k255.Sub(sa)), k128, k257).Add(s)
-		pack(r, pk).StoreSlice(px)
+		storeUint8x16(pack(r, pk), px)
 	}
 	archsimd.ClearAVXUpperBits()
 	covOverScalar(d[i:], cov[i:], cx)
@@ -157,14 +158,14 @@ func runOver(d []uint32, s uint32) {
 	db := bytesOf(d)
 	k128 := archsimd.BroadcastUint16x16(128)
 	k257 := archsimd.BroadcastUint16x16(257)
-	pk := archsimd.LoadInt8x32(&packIdx)
+	pk := loadInt8x32(&packIdx)
 	s16 := archsimd.BroadcastUint32x4(s).AsUint8x16().ExtendToUint16()
 	inv := archsimd.BroadcastUint16x16(uint16(255 - (s>>alphaShift)&0xff))
 	i := 0
 	for ; i+4 <= len(d); i += 4 {
 		px := db[i*4 : i*4+16]
-		d16 := archsimd.LoadUint8x16Slice(px).ExtendToUint16()
-		pack(div255v(d16.Mul(inv), k128, k257).Add(s16), pk).StoreSlice(px)
+		d16 := loadUint8x16(px).ExtendToUint16()
+		storeUint8x16(pack(div255v(d16.Mul(inv), k128, k257).Add(s16), pk), px)
 	}
 	archsimd.ClearAVXUpperBits()
 	runOverScalar(d[i:], s)
@@ -186,7 +187,7 @@ func covOpaque512(d []uint32, cov []uint8, c uint32, cx uint64) {
 	k128 := archsimd.BroadcastUint16x32(128)
 	k255 := archsimd.BroadcastUint16x32(255)
 	k257 := archsimd.BroadcastUint16x32(257)
-	rep := archsimd.LoadUint8x32(&repIdx8)
+	rep := loadUint8x32a(&repIdx8)
 	c16 := archsimd.BroadcastUint32x8(c).AsUint8x32().ExtendToUint16()
 	i := 0
 	for ; i+8 <= len(cov); i += 8 {
@@ -200,8 +201,8 @@ func covOpaque512(d []uint32, cov []uint8, c uint32, cx uint64) {
 			continue
 		}
 		a := coverage8(w, rep)
-		d16 := archsimd.LoadUint8x32Slice(px).ExtendToUint16()
-		div255w(d16.Mul(k255.Sub(a)).Add(c16.Mul(a)), k128, k257).TruncateToUint8().StoreSlice(px)
+		d16 := loadUint8x32(px).ExtendToUint16()
+		storeUint8x32(truncToUint8(div255w(d16.Mul(k255.Sub(a)).Add(c16.Mul(a)), k128, k257)), px)
 	}
 	archsimd.ClearAVXUpperBits()
 	covOpaqueScalar(d[i:], cov[i:], c, cx)
@@ -213,7 +214,7 @@ func covOver512(d []uint32, cov []uint8, cx uint64) {
 	k128 := archsimd.BroadcastUint16x32(128)
 	k255 := archsimd.BroadcastUint16x32(255)
 	k257 := archsimd.BroadcastUint16x32(257)
-	rep := archsimd.LoadUint8x32(&repIdx8)
+	rep := loadUint8x32a(&repIdx8)
 	c16 := archsimd.BroadcastUint32x8(compact(cx)).AsUint8x32().ExtendToUint16()
 	i := 0
 	for ; i+8 <= len(cov); i += 8 {
@@ -224,8 +225,8 @@ func covOver512(d []uint32, cov []uint8, cx uint64) {
 		s := div255w(c16.Mul(coverage8(w, rep)), k128, k257)
 		sa := s.PermuteScalarsLoGrouped(3, 3, 3, 3).PermuteScalarsHiGrouped(3, 3, 3, 3)
 		px := db[i*4 : i*4+32]
-		d16 := archsimd.LoadUint8x32Slice(px).ExtendToUint16()
-		div255w(d16.Mul(k255.Sub(sa)), k128, k257).Add(s).TruncateToUint8().StoreSlice(px)
+		d16 := loadUint8x32(px).ExtendToUint16()
+		storeUint8x32(truncToUint8(div255w(d16.Mul(k255.Sub(sa)), k128, k257).Add(s)), px)
 	}
 	archsimd.ClearAVXUpperBits()
 	covOverScalar(d[i:], cov[i:], cx)
@@ -240,8 +241,8 @@ func runOver512(d []uint32, s uint32) {
 	i := 0
 	for ; i+8 <= len(d); i += 8 {
 		px := db[i*4 : i*4+32]
-		d16 := archsimd.LoadUint8x32Slice(px).ExtendToUint16()
-		div255w(d16.Mul(inv), k128, k257).Add(s16).TruncateToUint8().StoreSlice(px)
+		d16 := loadUint8x32(px).ExtendToUint16()
+		storeUint8x32(truncToUint8(div255w(d16.Mul(inv), k128, k257).Add(s16)), px)
 	}
 	archsimd.ClearAVXUpperBits()
 	runOverScalar(d[i:], s)
