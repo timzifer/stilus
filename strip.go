@@ -428,11 +428,13 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	// A pixel is fully covered when its whole projection lies between the
 	// lines: k2 + h <= n·c <= k1 - h. n·c is linear in the column, so the
 	// covered columns of a row form one interval, emitted as a run.
-	lo, hi := k2+h, k1-h
 	inx := 1 / nx
-	// Only strips wide enough to have a real interior are split into edge
-	// pixels and a run; for thin strokes one coverage span is cheaper.
-	runs := (hi-lo)*math.Abs(inx) >= minInteriorRun
+	rc := rowCtx{
+		nx: nx, inx: inx, k1: k1, k2: k2, lo: k2 + h, hi: k1 - h, tr: tr,
+		// Only strips wide enough to have a real interior are split into
+		// edge pixels and a run; for thin strokes one span is cheaper.
+		runs: (k1-k2-2*h)*math.Abs(inx) >= minInteriorRun,
+	}
 	for j := y0; j < y1; j++ {
 		fy := float64(j)
 		i0 := max(ffloor(xl+(fy+dtop-yl)*sl), cx0)
@@ -441,26 +443,26 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 			continue
 		}
 		d0 := nx*(float64(i0)+0.5) + ny*(fy+0.5)
-		if j == f.by0 || j == f.by1 || (f.bx0 >= i0 && f.bx0 < i1) || (f.bx1 >= i0 && f.bx1 < i1) {
-			f.borderRow(j, i0, i1, d0, nx, k1, k2, tr)
+		if j == f.by0 || j == f.by1 {
+			f.borderRow(j, i0, i1, d0, &rc)
 			continue
 		}
-		// Interior columns [a, b) relative to i0.
-		a, b := 0, 0
-		if runs {
-			ta, tb := (lo-d0)*inx, (hi-d0)*inx
+		if (f.bx0 >= i0 && f.bx0 < i1) || (f.bx1 >= i0 && f.bx1 < i1) {
+			f.borderCols(j, i0, i1, d0, &rc)
+			continue
+		}
+		// The ordinary row, inline (this is the hot loop; emitRow is the
+		// same logic for the pieces of border rows).
+		n := i1 - i0
+		a, b := n, n // interior [a, b) relative to i0; none by default
+		if rc.runs {
+			ta, tb := (rc.lo-d0)*inx, (rc.hi-d0)*inx
 			if ta > tb {
 				ta, tb = tb, ta
 			}
-			a = max(int(math.Ceil(ta-1e-9)), 0)
-			b = min(ffloor(tb+1e-9)+1, i1-i0)
-			if a >= b {
-				a, b = 0, 0
+			if ia, ib := max(int(math.Ceil(ta-1e-9)), 0), min(ffloor(tb+1e-9)+1, n); ia < ib {
+				a, b = ia, ib
 			}
-		}
-		n := i1 - i0
-		if b == 0 {
-			a, b = n, n
 		}
 		cov := f.cov[:n]
 		d := d0
@@ -485,28 +487,97 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	}
 }
 
-// borderRow handles a row touching a partially covered clip border: pixels
-// in border rows and columns go to the accumulator, the rest is blitted.
-func (f *segFast) borderRow(j, i0, i1 int, d, nx, k1, k2 float64, tr trapezoid) {
-	row := j == f.by0 || j == f.by1
-	cov := f.cov[:i1-i0]
-	start := 0
-	for i := range cov {
-		c := tr.area(k1-d) - tr.area(k2-d)
-		d += nx
-		x := i0 + i
-		if row || x == f.bx0 || x == f.bx1 {
-			if i > start {
-				emitCoverage(f.b, j, i0+start, cov[start:i])
-			}
-			f.inject(x, j, c)
-			start = i + 1
+// rowCtx holds what the rows of one strip share.
+type rowCtx struct {
+	nx, inx, k1, k2 float64
+	lo, hi          float64 // a pixel is fully covered when lo <= n·c <= hi
+	runs            bool
+	tr              trapezoid
+}
+
+func (rc *rowCtx) cov(d float64) float64 { return rc.tr.area(rc.k1-d) - rc.tr.area(rc.k2-d) }
+
+// emitRow blits pixels [i0, i1) of row j (d0 = n·centre of pixel i0): edge
+// pixels as coverage, a fully covered interior as a run. middle inlines
+// the same logic for ordinary rows.
+func (f *segFast) emitRow(j, i0, i1 int, d0 float64, rc *rowCtx) {
+	n := i1 - i0
+	a, b := n, n // interior [a, b) relative to i0; none by default
+	if rc.runs {
+		// n·c is linear in the column, so the covered columns of a row
+		// form one interval.
+		ta, tb := (rc.lo-d0)*rc.inx, (rc.hi-d0)*rc.inx
+		if ta > tb {
+			ta, tb = tb, ta
+		}
+		if ia, ib := max(int(math.Ceil(ta-1e-9)), 0), min(ffloor(tb+1e-9)+1, n); ia < ib {
+			a, b = ia, ib
+		}
+	}
+	cov := f.cov[:n]
+	d := d0
+	for i := 0; i < a; i++ {
+		cov[i] = quant(rc.cov(d))
+		d += rc.nx
+	}
+	if a > 0 {
+		emitCoverage(f.b, j, i0, cov[:a])
+	}
+	if b > a {
+		f.b.BlitRun(j, i0+a, i0+b, 255)
+	}
+	d = d0 + float64(b)*rc.nx
+	for i := b; i < n; i++ {
+		cov[i] = quant(rc.cov(d))
+		d += rc.nx
+	}
+	if n > b {
+		emitCoverage(f.b, j, i0+b, cov[b:n])
+	}
+}
+
+// borderCols handles a row crossing a partially covered clip border
+// column: the border pixels go to the accumulator, the pieces between them
+// are emitted like any other row.
+func (f *segFast) borderCols(j, i0, i1 int, d0 float64, rc *rowCtx) {
+	x := i0
+	for _, bx := range [2]int{min(f.bx0, f.bx1), max(f.bx0, f.bx1)} {
+		if bx < x || bx >= i1 {
 			continue
 		}
-		cov[i] = quant(c)
+		if bx > x {
+			f.emitRow(j, x, bx, d0+float64(x-i0)*rc.nx, rc)
+		}
+		f.inject(bx, j, rc.cov(d0+float64(bx-i0)*rc.nx))
+		x = bx + 1
 	}
-	if len(cov) > start {
-		emitCoverage(f.b, j, i0+start, cov[start:])
+	if x < i1 {
+		f.emitRow(j, x, i1, d0+float64(x-i0)*rc.nx, rc)
+	}
+}
+
+// borderRow sends a row lying in a partially covered clip border row to
+// the accumulator: fully covered stretches as one rectangle each, edge
+// pixels one by one.
+func (f *segFast) borderRow(j, i0, i1 int, d float64, rc *rowCtx) {
+	full := -1 // start of the current fully covered stretch
+	for x := i0; x < i1; x++ {
+		c := rc.cov(d)
+		d += rc.nx
+		if c >= 1-1e-12 {
+			if full < 0 {
+				full = x
+			}
+			continue
+		}
+		if full >= 0 {
+			f.injectRect(full, x, j, 1)
+			full = -1
+		}
+		f.inject(x, j, c)
+	}
+	if full >= 0 {
+		f.injectRect(full, i1, j, 1)
 	}
 }
 
