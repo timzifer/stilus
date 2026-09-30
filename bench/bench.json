@@ -1,0 +1,17 @@
+[
+  {
+    "ref": "main",
+    "commit": "da3e37a2e6e9ee5d115b397dd7bf918432905383",
+    "date": "2026-09-30T17:12:58+02:00",
+    "results": {
+      "contours-3000": 65684359,
+      "glyphs-30000-uncached": 47715477,
+      "hatch-2000-0.35mm": 47953781,
+      "hatch-2000-hairline": 42343039,
+      "hatch-2000-maskclip": 44214863,
+      "mixed-drawing": 37486951,
+      "short-20000-0.35mm": 31603837,
+      "short-20000-hairline": 27467729
+    }
+  }
+]
