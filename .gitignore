@@ -30,3 +30,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# harness outputs
+harness/corpus/*/
+harness/report/
+/.idea
+/harness/cmd/pdfbench/corpus
+/harness/cmd/pdfbench/report

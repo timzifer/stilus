@@ -1,0 +1,200 @@
+[
+ {
+  "name": "pdfjs/tracemonkey.pdf",
+  "category": "text",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/tracemonkey.pdf",
+  "sha256": "3662ff519e485810520552bf301d8c3b2b917fd2f83303f4965d7abed367e113"
+ },
+ {
+  "name": "pdfjs/TrueType_without_cmap.pdf",
+  "category": "text",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/TrueType_without_cmap.pdf",
+  "sha256": "3e111eef52ce9c0d0b1da043290df4b49a5670c89891fcb3db6962edb12e35aa"
+ },
+ {
+  "name": "pdfjs/cid_cff.pdf",
+  "category": "text",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/cid_cff.pdf",
+  "sha256": "d894d356411217414fd9040d3d038612e1f4a1598936b2385a76458dd6d64d38"
+ },
+ {
+  "name": "pdfjs/mmtype1.pdf",
+  "category": "text",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/mmtype1.pdf",
+  "sha256": "6e08f0e3f64ed302f00572e2c4e391614df98cc9fa9d5e40538d495aa1a2063c"
+ },
+ {
+  "name": "pdfjs/simpletype3font.pdf",
+  "category": "text",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/simpletype3font.pdf",
+  "sha256": "a5697cbc51c19816944658b91e3a41f86e98ae63fbd1007798994b073385aef1"
+ },
+ {
+  "name": "pdfjs/text_clip_cff_cid.pdf",
+  "category": "text",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/text_clip_cff_cid.pdf",
+  "sha256": "81aaf48f55c659d29d7a533cd913bd9d028ffad183b46580a2122eebe5187506"
+ },
+ {
+  "name": "pdfjs/pattern_text_embedded_font.pdf",
+  "category": "text",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/pattern_text_embedded_font.pdf",
+  "sha256": "0d87537cfba850b7501db8010801bebe62b9cc19776ae387f9dafc61e00b1699"
+ },
+ {
+  "name": "pdfjs/transparency_group.pdf",
+  "category": "transparency",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/transparency_group.pdf",
+  "sha256": "029dd50635adee0711836095b76aab62226ca8731f6642a9454b25e2668226dd"
+ },
+ {
+  "name": "pdfjs/blendmode.pdf",
+  "category": "transparency",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/blendmode.pdf",
+  "sha256": "39ce34c2d32738c7c94970fd76559ecb9efd671f5ab99e515a853674e7a824ce"
+ },
+ {
+  "name": "pdfjs/knockout_blend_multiply.pdf",
+  "category": "transparency",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/knockout_blend_multiply.pdf",
+  "sha256": "ff31a84877c957101040906f087d4a73d0f29f3a3060448cb6f6929dbcee5280"
+ },
+ {
+  "name": "pdfjs/nonisolated_blend_smask.pdf",
+  "category": "transparency",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/nonisolated_blend_smask.pdf",
+  "sha256": "866d8d75177357eb29cf330a0c30676cc07e22c9e5bd759fbb29f1de79e51f33"
+ },
+ {
+  "name": "pdfjs/smaskdim.pdf",
+  "category": "transparency",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/smaskdim.pdf",
+  "sha256": "e03b8359f8b64e1a18a795aa9376bc98d98dca89a828ec20c49a4ac2f36a3d82"
+ },
+ {
+  "name": "pdfjs/smask_alpha_bc.pdf",
+  "category": "transparency",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/smask_alpha_bc.pdf",
+  "sha256": "fda2a361be849a4b4d95120c8a87208f3d68b06d92fa2293e4dcb96e052d1e34"
+ },
+ {
+  "name": "pdfjs/knockout_nested.pdf",
+  "category": "transparency",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/knockout_nested.pdf",
+  "sha256": "7a13efd7f00463b5cc0bb8c02def692cd4f8354e3c6a3cb4ab802ac0cb6f796f"
+ },
+ {
+  "name": "pdfjs/function_based_shading.pdf",
+  "category": "shading",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/function_based_shading.pdf",
+  "sha256": "21a0d4951f2d45f86d90dd9bac824805b54b2bd2fefe6efad763d227d484ed64"
+ },
+ {
+  "name": "pdfjs/function_based_shading_cmyk.pdf",
+  "category": "shading",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/function_based_shading_cmyk.pdf",
+  "sha256": "c624d33b595af80746dd96f6440d335a30b1bee3e484d9b0b2cfb0cd54c62be3"
+ },
+ {
+  "name": "pdfjs/radial_gradients.pdf",
+  "category": "shading",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/radial_gradients.pdf",
+  "sha256": "4ff43a6591900d190a5c48dace581028a47f4d9bc8a2ae151e8d5805ead7ddc0"
+ },
+ {
+  "name": "pdfjs/issue7847_radial.pdf",
+  "category": "shading",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/issue7847_radial.pdf",
+  "sha256": "816c816188e1ad8af5ba1f70a66ebb9d3c07cbc674dd6999f063eee34e58c13f"
+ },
+ {
+  "name": "pdfjs/tiling_patterns_variations.pdf",
+  "category": "shading",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/tiling_patterns_variations.pdf",
+  "sha256": "2b7b9cccccef7407c18690cf4f007a04fc8a013b868738d025a71113a4700350"
+ },
+ {
+  "name": "pdfjs/tiling-pattern-box.pdf",
+  "category": "shading",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/tiling-pattern-box.pdf",
+  "sha256": "b67ae1bd9c8064f4ddc94b10c9c80fb2aeac668694a2cb4c2cd840712ba7190b"
+ },
+ {
+  "name": "pdfjs/cmykjpeg.pdf",
+  "category": "image",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/cmykjpeg.pdf",
+  "sha256": "659d6b19912f63db988b0b26b9bde0e6d8100667ef162051a4a84ea8e5b90272"
+ },
+ {
+  "name": "pdfjs/devicen.pdf",
+  "category": "image",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/devicen.pdf",
+  "sha256": "1fbaf094e1c714513aea19258e74269b6b5365ea769e288a8e142773f6cf2b94"
+ },
+ {
+  "name": "pdfjs/jp2k-resetprob.pdf",
+  "category": "image",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/jp2k-resetprob.pdf",
+  "sha256": "582da92f1cad4fa47639e5df5c29ebba6e4ae432ba5e9283297ee6e5e88d7efa"
+ },
+ {
+  "name": "pdfjs/jpx_smaskindata.pdf",
+  "category": "image",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/jpx_smaskindata.pdf",
+  "sha256": "a82813559c74f074b0caf92c80875fc018acb737269a2af5508c7e083b2a5fd3"
+ },
+ {
+  "name": "pdfjs/ccitt_EndOfBlock_false.pdf",
+  "category": "scan",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/ccitt_EndOfBlock_false.pdf",
+  "sha256": "f2289b94e7e3f05f9e37754c399d3f525edf9444fb32c3279959cf64b575fe62"
+ },
+ {
+  "name": "pdfjs/jbig2_symbol_offset.pdf",
+  "category": "scan",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/jbig2_symbol_offset.pdf",
+  "sha256": "305b71c67829ef0bb8bddab9fa3ee763dcecd173f5fd996740d17212888fa97d"
+ },
+ {
+  "name": "pdfjs/bitmap-composite-and-xnor-text.pdf",
+  "category": "scan",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/bitmap-composite-and-xnor-text.pdf",
+  "sha256": "aba6249b83158532ad87ccf47ba69737c9ba2b787c2f815767d239e910564235"
+ },
+ {
+  "name": "pdfjs/clippath.pdf",
+  "category": "vector",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/clippath.pdf",
+  "sha256": "cbcbf53e8109ed56f9a3fbc696081455c8a5d32cc5cff4e741e85250788dcbff"
+ },
+ {
+  "name": "pdfjs/annotation-caret-ink.pdf",
+  "category": "vector",
+  "url": "https://raw.githubusercontent.com/mozilla/pdf.js/18e8a26a3813a319b38c806076f0b0ef9baf1bf4/test/pdfs/annotation-caret-ink.pdf",
+  "sha256": "afdc6fb72e8dcb8f0796a48388fc011e9db212e18d1d7b8cf95b327e88cf6ce9"
+ },
+ {
+  "name": "arxiv/1706.03762v7.pdf",
+  "category": "paper",
+  "url": "https://arxiv.org/pdf/1706.03762v7",
+  "sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697"
+ },
+ {
+  "name": "arxiv/1512.03385v1.pdf",
+  "category": "paper",
+  "url": "https://arxiv.org/pdf/1512.03385v1",
+  "sha256": "1e0651b6810ecba34a3dbc5b5b0209226f889004607c1f203540a48d64e5a93a"
+ },
+ {
+  "name": "arxiv/2010.11929v2.pdf",
+  "category": "paper",
+  "url": "https://arxiv.org/pdf/2010.11929v2",
+  "sha256": "8ce7b83971a14508ca711a27c875c9b6914c4f6767cf3150fb1ca6c07aa056d6"
+ },
+ {
+  "name": "arxiv/1406.2661v1.pdf",
+  "category": "paper",
+  "url": "https://arxiv.org/pdf/1406.2661v1",
+  "sha256": "ff5819e3a7b713c3bd3107b7de3d51fe0a347aa5d8444f0efdcf2345ef0a8b63"
+ }
+]
