@@ -83,9 +83,14 @@ func TestStrokeDash(t *testing.T) {
 	// Dots: zero-length dashes with round caps.
 	st = &StrokeStyle{Width: 4, Dash: []float64{0, 10}, Cap: RoundCap}
 	checkArea(t, "dots", inkArea(strokeMask(&p, Identity, st, clip)), 11*4*math.Pi, 0.1*11*4*math.Pi)
-	// Pathological pattern: drawn solid rather than exploding.
+	// Pathological patterns are bounded without inventing solid coverage.
 	st = &StrokeStyle{Width: 2, Dash: []float64{1e-9, 1e-9}}
-	checkArea(t, "tiny dash", inkArea(strokeMask(&p, Identity, st, clip)), 200, 0.5)
+	r := NewRasterizer(clip)
+	var s Stroker
+	s.Stroke(r, &p, Identity, st)
+	if !s.Truncated() || len(r.edges) != 0 {
+		t.Fatal("dash budget exceeded: expected a skipped subpath and Truncated")
+	}
 }
 
 func TestHairline(t *testing.T) {

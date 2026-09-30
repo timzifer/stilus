@@ -100,7 +100,7 @@ func FuzzStroke(f *testing.F) {
 		c.Stroke(p, m, &StrokeStyle{Width: w, Dash: []float64{2, 3}}, opaque)
 		c.ClipPath(p, m, NonZero)
 		c.Fill(p, m, EvenOdd, paint)
-		if err := c.Err(); err != nil && err != ErrEdgeBudget {
+		if err := c.Err(); err != nil && err != ErrEdgeBudget && err != ErrDashBudget {
 			t.Fatal(err)
 		}
 	})

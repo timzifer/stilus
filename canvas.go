@@ -18,6 +18,7 @@ type Paint struct {
 // Errors reported by Canvas.Err.
 var (
 	ErrEdgeBudget = errors.New("stilus: edge budget exceeded, path truncated")
+	ErrDashBudget = errors.New("stilus: dash budget exceeded, stroke truncated")
 	ErrClipDepth  = errors.New("stilus: clip stack too deep")
 	ErrInternal   = errors.New("stilus: internal error")
 )
@@ -89,7 +90,7 @@ func (c *Canvas) setErr(err error) {
 func (c *Canvas) guard() {
 	if v := recover(); v != nil {
 		c.setErr(fmt.Errorf("%w: %v", ErrInternal, v))
-		c.r.Reset()
+		c.r.discard()
 	}
 }
 
@@ -146,9 +147,35 @@ func (c *Canvas) Fill(p *Path, m Matrix, rule FillRule, paint *Paint) {
 	}
 	c.setClip(st.bounds)
 	c.r.Reset()
+	if c.fillRect(p, m, st, paint) {
+		return
+	}
 	c.r.AddPath(p, m)
 	c.checkBudget()
 	c.r.Rasterize(rule, c.chain(st, c.paint(paint)))
+}
+
+// fillRect bypasses edge accumulation for pixel-aligned rectangles. Keep
+// fractional geometry and small edge budgets on the rasterizer path.
+func (c *Canvas) fillRect(p *Path, m Matrix, st *clipState, paint *Paint) bool {
+	r, ok := p.asRect()
+	if !ok || !m.axisAligned() || !m.finite() || (c.r.MaxEdges != 0 && c.r.MaxEdges < 2) {
+		return false
+	}
+	r = m.transformRect(r)
+	for _, v := range [4]float64{r.X0, r.Y0, r.X1, r.Y1} {
+		if !(math.Abs(v) < 1<<30) || v != math.Trunc(v) {
+			return false
+		}
+	}
+	bounds := image.Rect(int(r.X0), int(r.Y0), int(r.X1), int(r.Y1)).Intersect(st.bounds)
+	if !bounds.Empty() {
+		b := c.chain(st, c.paint(paint))
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			b.BlitRun(y, bounds.Min.X, bounds.Max.X, 255)
+		}
+	}
+	return true
 }
 
 // Stroke strokes p with style st (in user space) under m. Strokes thinner
@@ -184,12 +211,20 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 		// rectangle clip's fractional border the pixels are summed in the
 		// accumulator instead, and under a mask the outline path is used.
 		c.seg.r, c.seg.b = &c.r, b
+		c.seg.solid = nil
+		c.seg.frac = cs.frac
+		if cs.mask == nil {
+			c.seg.solid = &c.solid
+		}
 		c.seg.setBorder(cs, overlap)
 		c.s.strokeFast(&c.r, &c.seg, p, m, st)
 	} else {
 		c.s.Stroke(&c.r, p, m, st)
 	}
 	c.checkBudget()
+	if c.s.Truncated() {
+		c.setErr(ErrDashBudget)
+	}
 	c.r.Rasterize(NonZero, b)
 }
 
@@ -215,6 +250,10 @@ func (c *Canvas) push(s clipState) {
 // axis-aligned result costs nothing per pixel; a rotated one becomes a mask.
 func (c *Canvas) ClipRect(r Rect, m Matrix) {
 	defer c.guard()
+	if r.Empty() {
+		c.push(clipState{})
+		return
+	}
 	if m.axisAligned() && m.finite() {
 		c.push(c.top().intersectRect(m.transformRect(r)))
 		return

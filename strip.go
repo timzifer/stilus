@@ -323,9 +323,11 @@ func grow32(s []int32, n int) []int32 {
 
 // segFast is the Canvas side of the analytic path.
 type segFast struct {
-	r   *Rasterizer // the stroke's rasterizer; composited after the stroke
-	b   Blitter
-	cov []uint8
+	r     *Rasterizer // the stroke's rasterizer; composited after the stroke
+	b     Blitter
+	cov   []uint8
+	solid *SolidBlitter // optional fused compositing for thin opaque strips
+	frac  [4]uint8      // fractional clip borders bypassing solid is forbidden
 	// Border columns and rows of a rectangle clip with partial coverage
 	// (-1 when none). Pixels there are not composited directly: two parts
 	// of the stroke covering the same pixel would be reduced by the clip
@@ -453,6 +455,27 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 		}
 		// The ordinary row, inline (this is the hot loop; emitRow is the
 		// same logic for the pieces of border rows).
+		if solid := f.solid; solid != nil && !rc.runs &&
+			(!SIMD() || i1-i0 < 16) &&
+			!(j == clip.Min.Y && f.frac[1] != 255) && !(j == clip.Max.Y-1 && f.frac[3] != 255) &&
+			!(i0 == clip.Min.X && f.frac[0] != 255) && !(i1 == clip.Max.X && f.frac[2] != 255) {
+			// The same coverage and SWAR blend as the scalar blitter,
+			// without a coverage buffer or a second pass over the span.
+			row := solid.t.row(j, i0, i1)
+			d := d0
+			for i, dst := range row {
+				a := quant(tr.area(k1-d) - tr.area(k2-d))
+				d += nx
+				switch a {
+				case 0:
+				case 255:
+					row[i] = solid.c
+				default:
+					row[i] = lerpx(solid.cx, dst, uint32(a))
+				}
+			}
+			continue
+		}
 		n := i1 - i0
 		a, b := n, n // interior [a, b) relative to i0; none by default
 		if rc.runs {

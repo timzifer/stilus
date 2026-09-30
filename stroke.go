@@ -51,9 +51,9 @@ func (s PathSink) AddLine(x0, y0, x1, y1 float64) {
 	p.LineTo(float32(x1), float32(y1))
 }
 
-// DefaultMaxDashes bounds the number of dashes per subpath; a pattern that
-// would exceed it is drawn solid, which is visually indistinguishable at
-// that density.
+// DefaultMaxDashes bounds dash transitions per subpath. Subpaths estimated
+// to exceed the budget are skipped; the subdivision loop also stops at the
+// budget. Stroker.Truncated reports either condition.
 const DefaultMaxDashes = 1 << 20
 
 // Stroker converts strokes into fill geometry (closed outlines to be filled
@@ -64,6 +64,8 @@ const DefaultMaxDashes = 1 << 20
 type Stroker struct {
 	// MaxDashes overrides DefaultMaxDashes when non-zero.
 	MaxDashes int
+
+	truncated bool
 
 	sink LineSink
 	dev  bool          // hairline: geometry in device space, one pixel wide
@@ -105,6 +107,10 @@ func (s *Stroker) Stroke(sink LineSink, p *Path, m Matrix, st *StrokeStyle) {
 	s.run(p, m, st)
 }
 
+// Truncated reports whether the last stroke exceeded its dash budget.
+// Canvas reports this condition as ErrDashBudget.
+func (s *Stroker) Truncated() bool { return s.truncated }
+
 // IsHairline reports whether st under m is thinner than one device pixel in
 // every direction. Such strokes are drawn one pixel wide in device space,
 // like PDFium.
@@ -135,6 +141,7 @@ func (s *Stroker) strokeFast(sink LineSink, seg segmentFiller, p *Path, m Matrix
 }
 
 func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
+	s.truncated = false
 	if !m.finite() || !(st.Width >= 0) || math.IsInf(st.Width, 0) {
 		return
 	}
@@ -169,9 +176,13 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 			}
 			sum += d
 		}
-		// Invisible period: draw solid (it would average to near-solid).
-		if !(sum*sm >= 0.1) {
+		// Invalid or empty patterns retain the solid-stroke fallback.
+		// A valid short period still needs its actual on/off coverage.
+		if !(sum > 0) || math.IsInf(sum, 0) {
 			dashed = false
+		}
+		if dashed && (math.IsNaN(st.DashPhase) || math.IsInf(st.DashPhase, 0)) {
+			return
 		}
 	}
 
@@ -306,7 +317,7 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 		max = DefaultMaxDashes
 	}
 	if total/period*float64(len(pat)) > float64(max) {
-		s.strokePoly(poly, closed, 1, 0)
+		s.truncated = true
 		return
 	}
 	// An odd pattern repeats with on and off swapped: walk it as if it were
@@ -345,6 +356,7 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 		s.dpoly = append(s.dpoly, poly[0], poly[1])
 	}
 	var dx, dy float64 = 1, 0
+	transitions := 0
 	for i := 1; i < n; i++ {
 		j := i % (len(poly) / 2)
 		x0, y0 := poly[2*i-2], poly[2*i-1]
@@ -356,6 +368,11 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 		dx, dy = (x1-x0)/segLen, (y1-y0)/segLen
 		pos := 0.0
 		for segLen-pos >= rem {
+			if transitions >= max {
+				s.truncated = true
+				return
+			}
+			transitions++
 			pos += rem
 			x, y := x0+dx*pos, y0+dy*pos
 			if on {

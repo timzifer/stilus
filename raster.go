@@ -97,7 +97,7 @@ type Rasterizer struct {
 	narrow bool  // path spans few cells: skip dirty bits, sweep row ranges
 	minY   int32 // fixed, relative to clip top
 	maxY   int32
-	acc    []int32
+	acc    []int64 // one edge contributes up to 1<<17; paths may have millions
 	dirty  []uint64
 	rmin   [bandH]int32 // per band row: first and last touched cell
 	rmax   [bandH]int32
@@ -126,7 +126,7 @@ func (r *Rasterizer) SetClip(clip image.Rectangle) {
 	r.stride = r.w + 2
 	r.nw = (r.stride>>blkShift)/64 + 1
 	if n := bandH * r.stride; cap(r.acc) < n {
-		r.acc = make([]int32, n)
+		r.acc = make([]int64, n)
 	} else {
 		r.acc = r.acc[:n]
 	}
@@ -158,6 +158,18 @@ func (r *Rasterizer) Truncated() bool { return r.truncated }
 func (r *Rasterizer) Reset() {
 	r.clearEdges()
 	r.truncated, r.done = false, false
+}
+
+// discard also clears a band interrupted by a panicking blitter. Ordinary
+// Reset needs no clearing pass because a completed sweep zeroes its cells.
+func (r *Rasterizer) discard() {
+	clear(r.acc)
+	clear(r.dirty)
+	for i := range r.rmin {
+		r.rmin[i], r.rmax[i] = math.MaxInt32, -1
+	}
+	r.unlimitRows()
+	r.Reset()
 }
 
 // clearEdges discards the edges of a rasterized path. Truncated keeps
@@ -351,7 +363,8 @@ func segCount(v float64) int {
 // border, which preserves the winding of everything inside.
 func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 	r.begin()
-	if y0 == y1 || x0 != x0 || x1 != x1 || y0 != y0 || y1 != y1 {
+	if y0 == y1 || !(math.Abs(x0) <= math.MaxFloat64 && math.Abs(x1) <= math.MaxFloat64 &&
+		math.Abs(y0) <= math.MaxFloat64 && math.Abs(y1) <= math.MaxFloat64) {
 		return
 	}
 	dir := int32(1)
@@ -541,8 +554,8 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 			dy := rowEnd - y
 			ri := int(y>>8) - bandRow
 			o := ri*stride + c
-			acc[o] += dy * wA
-			acc[o+1] += dy * wB
+			acc[o] += int64(dy * wA)
+			acc[o+1] += int64(dy * wB)
 			if !r.narrow {
 				d := ri * nw
 				dirty[d+bw] |= bb
@@ -578,9 +591,9 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 		if c0 == c1 {
 			d := (rowEnd - y) * dir
 			sx := (x & 255) + (xn & 255)
-			p := (*[2]int32)(unsafe.Add(accp, (ri*stride+int(c0))*4))
-			p[0] += d * (512 - sx)
-			p[1] += d * sx
+			p := (*[2]int64)(unsafe.Add(accp, (ri*stride+int(c0))*8))
+			p[0] += int64(d * (512 - sx))
+			p[1] += int64(d * sx)
 			if !r.narrow {
 				b0, b1 := uint(c0)>>blkShift, uint(c0+1)>>blkShift
 				w := (*uint64)(unsafe.Add(dirp, (ri*nw+int(b0>>6))*8))
@@ -612,14 +625,14 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 // cellLine accumulates a segment that lies within one pixel row, from
 // (x0, fy0) to (x1, fy1), with 0 <= fy0 < fy1 <= 256, and returns the range
 // of touched cells [lo, hi].
-func cellLine(acc []int32, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx float64) (lo, hi int32) {
+func cellLine(acc []int64, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx float64) (lo, hi int32) {
 	c0 := x0 >> 8
 	c1 := x1 >> 8
 	if c0 == c1 {
 		d := (fy1 - fy0) * dir
 		s := (x0 & 255) + (x1 & 255)
-		acc[c0] += d * (512 - s)
-		acc[c0+1] += d * s
+		acc[c0] += int64(d * (512 - s))
+		acc[c0+1] += int64(d * s)
 		markRange(dirty, int(c0), int(c0)+1)
 		return c0, c0 + 1
 	}
@@ -630,14 +643,14 @@ func cellLine(acc []int32, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx flo
 			yb := min(fy0+int32(float64(bx-x0)*dydx+0.5), fy1)
 			d := (yb - ya) * dir
 			s := (xa - c<<8) + 256
-			acc[c] += d * (512 - s)
-			acc[c+1] += d * s
+			acc[c] += int64(d * (512 - s))
+			acc[c+1] += int64(d * s)
 			xa, ya = bx, yb
 		}
 		d := (fy1 - ya) * dir
 		s := x1 - c1<<8
-		acc[c1] += d * (512 - s)
-		acc[c1+1] += d * s
+		acc[c1] += int64(d * (512 - s))
+		acc[c1+1] += int64(d * s)
 		markRange(dirty, int(c0), int(c1)+1)
 		return c0, c1 + 1
 	}
@@ -647,14 +660,14 @@ func cellLine(acc []int32, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx flo
 		yb := min(fy0+int32(float64(x0-bx)*dydx+0.5), fy1)
 		d := (yb - ya) * dir
 		s := xa - c<<8
-		acc[c] += d * (512 - s)
-		acc[c+1] += d * s
+		acc[c] += int64(d * (512 - s))
+		acc[c+1] += int64(d * s)
 		xa, ya = bx, yb
 	}
 	d := (fy1 - ya) * dir
 	s := 256 + (x1 - c1<<8)
-	acc[c1] += d * (512 - s)
-	acc[c1+1] += d * s
+	acc[c1] += int64(d * (512 - s))
+	acc[c1+1] += int64(d * s)
 	markRange(dirty, int(c1), int(c0)+1)
 	return c1, c0 + 1
 }
@@ -704,7 +717,7 @@ func (r *Rasterizer) sweep(bandRow int, mask uint64, rule FillRule, b Blitter) {
 			r.sweepRange(acc, y, ri, rule, b)
 			continue
 		}
-		var s int32
+		var s int64
 		x := 0 // first cell not yet emitted
 		wlo := int(r.rmin[ri]) >> (blkShift + 6)
 		whi := int(r.rmax[ri]) >> (blkShift + 6)
@@ -805,12 +818,12 @@ func emitCoverage(b Blitter, y, x int, cv []uint8) {
 	}
 }
 
-func nonZeroAlpha(s int32) uint8 {
-	m := s >> 31
+func nonZeroAlpha(s int64) uint8 {
+	m := s >> 63
 	return uint8(min(((s^m)-m)>>9, 255))
 }
 
-func evenOddAlpha(s int32) uint8 {
+func evenOddAlpha(s int64) uint8 {
 	if s < 0 {
 		s = -s
 	}
@@ -824,7 +837,7 @@ func evenOddAlpha(s int32) uint8 {
 	return uint8(s)
 }
 
-func aliasAlpha(s int32, rule FillRule) uint8 {
+func aliasAlpha(s int64, rule FillRule) uint8 {
 	var a uint8
 	if rule == EvenOdd {
 		a = evenOddAlpha(s)
@@ -837,7 +850,7 @@ func aliasAlpha(s int32, rule FillRule) uint8 {
 	return 0
 }
 
-func (r *Rasterizer) alpha(s int32, rule FillRule) uint8 {
+func (r *Rasterizer) alpha(s int64, rule FillRule) uint8 {
 	switch {
 	case r.aliased:
 		return aliasAlpha(s, rule)
@@ -849,13 +862,13 @@ func (r *Rasterizer) alpha(s int32, rule FillRule) uint8 {
 }
 
 // sweepRange integrates the touched cell range of one row of a narrow path.
-func (r *Rasterizer) sweepRange(acc []int32, y, ri int, rule FillRule, b Blitter) {
+func (r *Rasterizer) sweepRange(acc []int64, y, ri int, rule FillRule, b Blitter) {
 	c0 := int(r.rmin[ri])
 	c1 := min(int(r.rmax[ri])+1, r.stride)
 	r.rmin[ri], r.rmax[ri] = math.MaxInt32, -1
 	w := r.w
 	e := min(c1, w)
-	var s int32
+	var s int64
 	if c0 < e {
 		cv := r.cov[c0:e]
 		ac := acc[c0:e]

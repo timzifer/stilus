@@ -152,6 +152,10 @@ Pitfalls found on the way (Go 1.26), all avoided in `simd_amd64.go`:
 - NaN/Inf rejected, huge coordinates clipped analytically, budgets for
   edges per path, curve/arc subdivision, dash counts and clip depth. Canvas
   never panics; errors are reported through `Err()`.
+  Dash patterns beyond the subdivision budget skip or truncate the affected
+  subpath and report `ErrDashBudget`; `Stroker.Truncated()` exposes the same
+  state when using the stroker directly. Dense dashes are never replaced
+  with a fully covered solid stroke.
 - Fuzz targets: `FuzzFill`, `FuzzStroke`.
 
 ## Development
