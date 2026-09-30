@@ -63,11 +63,6 @@ func refPolys(p *Path, m Matrix) [][][2]float64 {
 	return polys
 }
 
-// refRender computes coverage by 16×16 supersampling with exact winding.
-func refRender(polys [][][2]float64, clip image.Rectangle, rule FillRule) *image.Alpha {
-	return refRenderMode(polys, clip, rule, false)
-}
-
 // refRenderMode with accum=true integrates the signed winding number over
 // each pixel and applies the fill rule to the integral afterwards. That is
 // the semantics of exact-area accumulation (FreeType, AGG, Skia, PDFium),

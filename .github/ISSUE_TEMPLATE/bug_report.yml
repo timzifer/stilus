@@ -1,0 +1,53 @@
+name: Bug report
+description: Wrong coverage, a crash, a hang or unexpected allocations
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. A minimal, self-contained reproduction (path
+        coordinates, matrix, fill rule or stroke style, clip) is the most
+        useful thing you can include.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Go code or a test case. Images (expected vs. actual) are welcome.
+      render: go
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: stilus version
+      description: Module version or commit (`go list -m github.com/timzifer/stilus`).
+      placeholder: v0.1.0 / 0c046a9
+    validations:
+      required: true
+  - type: input
+    id: go
+    attributes:
+      label: Go version and GOOS/GOARCH
+      placeholder: go1.26.2 linux/amd64
+    validations:
+      required: true
+  - type: dropdown
+    id: simd
+    attributes:
+      label: Built with GOEXPERIMENT=simd?
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
