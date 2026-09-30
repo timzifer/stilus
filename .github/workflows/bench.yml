@@ -1,0 +1,79 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: Re-measure every commit on main (first parent) instead of only the current one
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Runs append to one history file on the badges branch: never run two at once,
+# and never cancel one halfway.
+concurrency:
+  group: bench-history
+  cancel-in-progress: false
+
+jobs:
+  history:
+    name: Benchmark history
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push bench/bench.{json,svg} to the badges branch
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache-dependency-path: bench/go.sum
+      - name: Check out the badges branch
+        run: |
+          if git fetch origin badges; then
+            git worktree add out FETCH_HEAD
+          else
+            git worktree add --orphan -b badges out
+          fi
+          mkdir -p out/bench
+      - name: Run benchmarks
+        env:
+          BACKFILL: ${{ inputs.backfill }}
+        run: |
+          if [ "$BACKFILL" = true ]; then
+            rm -f out/bench/bench.json
+            commits=$(git rev-list --reverse --first-parent HEAD)
+          else
+            commits=$GITHUB_SHA
+          fi
+          bench/scripts/bench-history.sh out/bench/bench.json $commits
+      - name: Render chart
+        working-directory: bench
+        run: go run ./cmd/benchchart render -db ../out/bench/bench.json -o ../out/bench/bench.svg
+      - name: Publish
+        if: github.ref == 'refs/heads/main'
+        working-directory: out
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bench
+          if git diff --cached --quiet; then
+            echo "No change"
+            exit 0
+          fi
+          git commit -m "Update benchmark history for ${GITHUB_SHA::7}"
+          for i in 1 2 3 4; do
+            if git push origin HEAD:badges; then exit 0; fi
+            sleep $((2 ** i))
+            git pull --rebase origin badges
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-history
+          path: out/bench/
