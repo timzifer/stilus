@@ -88,19 +88,33 @@ func (p *Path) Bounds() Rect {
 	if len(p.Points) == 0 {
 		return Rect{}
 	}
-	r := Rect{math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)}
+	// Coordinates are compared as integer keys of their float32 bits, which
+	// order like the values (-0 below +0, NaNs beyond the infinities): an
+	// integer min or max is a compare and a conditional move, where the
+	// floating-point min and max, with their NaN and signed-zero rules,
+	// form a dependency chain several times as long.
+	x0, y0 := floatKey(math.Float32bits(float32(math.Inf(1)))), floatKey(math.Float32bits(float32(math.Inf(1))))
+	x1, y1 := floatKey(math.Float32bits(float32(math.Inf(-1)))), floatKey(math.Float32bits(float32(math.Inf(-1))))
 	for _, q := range p.Points {
-		x, y := float64(q.X), float64(q.Y)
-		r.X0 = min(r.X0, x)
-		r.Y0 = min(r.Y0, y)
-		r.X1 = max(r.X1, x)
-		r.Y1 = max(r.Y1, y)
+		kx, ky := floatKey(math.Float32bits(q.X)), floatKey(math.Float32bits(q.Y))
+		x0 = min(x0, kx)
+		y0 = min(y0, ky)
+		x1 = max(x1, kx)
+		y1 = max(y1, ky)
 	}
+	r := Rect{keyFloat(x0), keyFloat(y0), keyFloat(x1), keyFloat(y1)}
 	if r.hasNaN() {
+		// A NaN coordinate sorts beyond an infinity, so it is always in r.
 		return p.boundsNaN()
 	}
 	return r
 }
+
+// floatKey maps float32 bits to an int32 that orders like the value.
+func floatKey(b uint32) int32 { return int32(b ^ uint32(int32(b)>>31)>>1) }
+
+// keyFloat inverts floatKey.
+func keyFloat(k int32) float64 { return float64(math.Float32frombits(uint32(k) ^ uint32(k>>31)>>1)) }
 
 // boundsNaN preserves math.Min/Max's infinity precedence for paths with
 // NaN coordinates, without adding special-case checks to the point loop.

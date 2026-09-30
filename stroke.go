@@ -101,7 +101,6 @@ type Stroker struct {
 	hw                              float64 // half width, user space
 	tolU                            float64 // flattening tolerance, user space
 	stepA                           float64 // angular step for round joins/caps
-	det                             float64
 
 	poly   []float64
 	dpoly  []float64
@@ -180,7 +179,6 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		return
 	}
 	s.m, s.st = m, st
-	s.det = m.Det()
 	// Strokes thinner than a device pixel are drawn one pixel wide, like
 	// PDFium: their offsets are taken in device space.
 	s.dev = st.Width*sm < 1
@@ -230,11 +228,14 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 	pts := p.Points
 	pi := 0
 	closed := false
+	drawn := false     // a segment followed the subpath's MoveTo
 	var sx, sy float64 // start of the last closed subpath
 	pending := false   // a segment after Close starts at (sx, sy)
 	s.poly = s.poly[:0]
 	flush := func() {
-		if len(s.poly) > 0 {
+		// A single point is a dot only as a closed subpath or when its
+		// segments all led back to it; a lone MoveTo paints nothing.
+		if n := len(s.poly); n > 2 || (n == 2 && (closed || drawn)) {
 			if dashed {
 				s.dash(s.poly, closed)
 			} else {
@@ -242,7 +243,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 			}
 		}
 		s.poly = s.poly[:0]
-		closed = false
+		closed, drawn = false, false
 	}
 	begin := func() {
 		if len(s.poly) == 0 && pending {
@@ -271,12 +272,15 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		case LineTo:
 			begin()
 			s.addPt(float64(pts[pi].X), float64(pts[pi].Y), false)
+			drawn = true
 		case QuadTo:
 			begin()
 			s.quad(pts[pi], pts[pi+1])
+			drawn = true
 		case CubicTo:
 			begin()
 			s.cubic(pts[pi], pts[pi+1], pts[pi+2])
+			drawn = true
 		case Close:
 			if len(s.poly) > 0 {
 				closed = true
@@ -493,8 +497,13 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 			continue
 		}
 		dx, dy = (x1-x0)/segLen, (y1-y0)/segLen
+		// On the closing segment of a subpath whose first piece is held
+		// back, a transition exactly at the start point is left to the
+		// switch below: a dash ending there continues into the held piece
+		// (and keeps the join), a dot there is the held piece.
+		strict := hold && i == n-1
 		pos := 0.0
-		for segLen-pos >= rem {
+		for d := segLen - pos; d > rem || (d == rem && !strict); d = segLen - pos {
 			if transitions >= max {
 				s.truncated = true
 				return

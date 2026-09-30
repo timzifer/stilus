@@ -412,8 +412,9 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 		tr.inv2ab = 1 / (2 * a * b)
 	}
 	h := tr.h
-	// x of both lines at y: x = px + (y - py)·sl. The left line at a row
-	// is leftmost at the row's top when sl < 0, at its bottom otherwise.
+	// x of both lines at y: x = px + (y - py)·sl. The left line is
+	// leftmost at the row's bottom when sl < 0, at its top otherwise; the
+	// right line is rightmost at the other end.
 	sl := vx / vy
 	xl, yl, xr, yr := ax, ay, dx, dy
 	if ax+(dy-ay)*sl > dx {
@@ -423,7 +424,6 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	if sl < 0 {
 		dtop = 1
 	}
-	cx0, cx1 := clip.Min.X, clip.Max.X
 	if cap(f.cov) < clip.Dx() {
 		f.cov = make([]uint8, clip.Dx())
 	}
@@ -432,97 +432,167 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	// covered columns of a row form one interval, emitted as a run.
 	inx := 1 / nx
 	rc := rowCtx{
-		nx: nx, inx: inx, k1: k1, k2: k2, lo: k2 + h, hi: k1 - h, tr: tr,
+		nx: nx, ny: ny, inx: inx, k1: k1, k2: k2, lo: k2 + h, hi: k1 - h, tr: tr,
+		xl: xl + (dtop-yl)*sl, xr: xr + (1-dtop-yr)*sl, sl: sl,
 		// Only strips wide enough to have a real interior are split into
 		// edge pixels and a run; for thin strokes one span is cheaper.
 		runs: (k1-k2-2*h)*math.Abs(inx) >= minInteriorRun,
 	}
-	for j := y0; j < y1; j++ {
-		fy := float64(j)
-		i0 := max(ffloor(xl+(fy+dtop-yl)*sl), cx0)
-		i1 := min(ffloor(xr+(fy+1-dtop-yr)*sl)+1, cx1)
-		if i0 >= i1 {
-			continue
-		}
-		d0 := nx*(float64(i0)+0.5) + ny*(fy+0.5)
-		if j == f.by0 || j == f.by1 {
-			f.borderRow(j, i0, i1, d0, &rc)
-			continue
-		}
-		if (f.bx0 >= i0 && f.bx0 < i1) || (f.bx1 >= i0 && f.bx1 < i1) {
-			f.borderCols(j, i0, i1, d0, &rc)
-			continue
-		}
-		// The ordinary row, inline (this is the hot loop; emitRow is the
-		// same logic for the pieces of border rows).
-		if solid := f.solid; solid != nil && !rc.runs &&
-			(!SIMD() || i1-i0 < 16) &&
-			!(j == clip.Min.Y && f.frac[1] != 255) && !(j == clip.Max.Y-1 && f.frac[3] != 255) &&
-			!(i0 == clip.Min.X && f.frac[0] != 255) && !(i1 == clip.Max.X && f.frac[2] != 255) {
-			// The same coverage and SWAR blend as the scalar blitter,
-			// without a coverage buffer or a second pass over the span.
-			row := solid.t.row(j, i0, i1)
-			d := d0
-			for i, dst := range row {
-				a := quant(tr.area(k1-d) - tr.area(k2-d))
-				d += nx
-				switch a {
-				case 0:
-				case 255:
-					row[i] = solid.c
-				default:
-					row[i] = lerpx(solid.cx, dst, uint32(a))
-				}
-			}
-			continue
-		}
-		n := i1 - i0
-		a, b := n, n // interior [a, b) relative to i0; none by default
-		if rc.runs {
-			ta, tb := (rc.lo-d0)*inx, (rc.hi-d0)*inx
-			if ta > tb {
-				ta, tb = tb, ta
-			}
-			if ia, ib := max(int(math.Ceil(ta-1e-9)), 0), min(ffloor(tb+1e-9)+1, n); ia < ib {
-				a, b = ia, ib
-			}
-		}
-		cov := f.cov[:n]
-		d := d0
-		for i := 0; i < a; i++ {
-			cov[i] = quant(tr.area(k1-d) - tr.area(k2-d))
-			d += nx
-		}
-		if a > 0 {
-			emitCoverage(f.b, j, i0, cov[:a])
-		}
-		if b > a {
-			f.b.BlitRun(j, i0+a, i0+b, 255)
-		}
-		d = d0 + float64(b)*nx
-		for i := b; i < n; i++ {
-			cov[i] = quant(tr.area(k1-d) - tr.area(k2-d))
-			d += nx
-		}
-		if n > b {
-			emitCoverage(f.b, j, i0+b, cov[b:n])
-		}
+	if f.solid != nil && !rc.runs {
+		f.solidRows(y0, y1, &rc)
+	} else {
+		f.blitRows(y0, y1, &rc)
 	}
 }
 
 // rowCtx holds what the rows of one strip share.
 type rowCtx struct {
-	nx, inx, k1, k2 float64
-	lo, hi          float64 // a pixel is fully covered when lo <= n·c <= hi
-	runs            bool
-	tr              trapezoid
+	nx, ny, inx, k1, k2 float64
+	xl, xr, sl          float64 // x of the left and right line at row y: xl + y·sl, xr + y·sl
+	lo, hi              float64 // a pixel is fully covered when lo <= n·c <= hi
+	runs                bool
+	col0, col1          int // partially covered clip border columns (solidRows)
+	tr                  trapezoid
 }
 
 func (rc *rowCtx) cov(d float64) float64 { return rc.tr.area(rc.k1-d) - rc.tr.area(rc.k2-d) }
 
-// emitRow blits pixels [i0, i1) of row j (d0 = n·centre of pixel i0): edge
-// pixels as coverage, a fully covered interior as a run. middle inlines
-// the same logic for ordinary rows.
+// span returns the pixels [i0, i1) of row j the strip may cover, clipped
+// to [cx0, cx1), and the row as a float. (Small enough to inline: it runs
+// once per row.)
+func (rc *rowCtx) span(j, cx0, cx1 int) (i0, i1 int, fy float64) {
+	fy = float64(j)
+	return max(ffloor(rc.xl+fy*rc.sl), cx0), min(ffloor(rc.xr+fy*rc.sl)+1, cx1), fy
+}
+
+// centre returns n·c of the centre of pixel (i0, fy).
+func (rc *rowCtx) centre(i0 int, fy float64) float64 {
+	return rc.nx*(float64(i0)+0.5) + rc.ny*(fy+0.5)
+}
+
+// borders returns the clip's partially covered border columns (the first
+// and last ones, or math.MinInt when fully covered): rows touching them
+// are composited through the frac blitter or summed in the accumulator
+// instead of directly. The border rows are the clip's first and last.
+func (f *segFast) borders() (col0, col1 int) {
+	col0, col1 = math.MinInt, math.MinInt
+	if f.frac[0] != 255 {
+		col0 = f.r.clip.Min.X
+	}
+	if f.frac[2] != 255 {
+		col1 = f.r.clip.Max.X
+	}
+	return
+}
+
+// solidRows composites rows [y0, y1) of an opaque thin strip directly: the
+// same coverage and SWAR blend as the scalar blitter, without a coverage
+// buffer or a second pass over the span. Rows on a partially covered clip
+// border take the general path (row); with SIMD kernels wide rows do too.
+func (f *segFast) solidRows(y0, y1 int, rc *rowCtx) {
+	clip := f.r.clip
+	cx0, cx1 := clip.Min.X, clip.Max.X
+	// The clip's first and last row can only be the strip's first and
+	// last; they are taken out of the loop.
+	if y0 == clip.Min.Y && f.frac[1] != 255 {
+		if i0, i1, fy := rc.span(y0, cx0, cx1); i0 < i1 {
+			f.row(y0, i0, i1, rc.centre(i0, fy), rc)
+		}
+		y0++
+	}
+	last := -1
+	if y1 == clip.Max.Y && f.frac[3] != 255 && y1 > y0 {
+		y1--
+		last = y1
+	}
+	rc.col0, rc.col1 = f.borders()
+	solid := f.solid
+	nx, k1, k2, tr := rc.nx, rc.k1, rc.k2, rc.tr
+	for j := y0; j < y1; j++ {
+		i0, i1, fy := rc.span(j, cx0, cx1)
+		if i0 >= i1 {
+			continue
+		}
+		d := rc.centre(i0, fy)
+		if i0 == rc.col0 || i1 == rc.col1 || (SIMD() && i1-i0 >= 16) {
+			f.row(j, i0, i1, d, rc)
+			continue
+		}
+		row := solid.t.row(j, i0, i1)
+		for i, dst := range row {
+			a := quant(tr.area(k1-d) - tr.area(k2-d))
+			d += nx
+			switch a {
+			case 0:
+			case 255:
+				row[i] = solid.c
+			default:
+				row[i] = lerpx(solid.cx, dst, uint32(a))
+			}
+		}
+	}
+	if last >= 0 {
+		if i0, i1, fy := rc.span(last, cx0, cx1); i0 < i1 {
+			f.row(last, i0, i1, rc.centre(i0, fy), rc)
+		}
+	}
+}
+
+// blitRows emits rows [y0, y1) through the blitter chain: edge pixels as
+// coverage, a fully covered interior as a run. Rows on a partially
+// covered clip border row, or crossing a border column, of a stroke whose
+// parts may overlap go to the accumulator instead.
+func (f *segFast) blitRows(y0, y1 int, rc *rowCtx) {
+	cx0, cx1 := f.r.clip.Min.X, f.r.clip.Max.X
+	nx, k1, k2, tr := rc.nx, rc.k1, rc.k2, rc.tr
+	for j := y0; j < y1; j++ {
+		i0, i1, fy := rc.span(j, cx0, cx1)
+		if i0 >= i1 {
+			continue
+		}
+		d0 := rc.centre(i0, fy)
+		if j == f.by0 || j == f.by1 {
+			f.borderRow(j, i0, i1, d0, rc)
+			continue
+		}
+		if (f.bx0 >= i0 && f.bx0 < i1) || (f.bx1 >= i0 && f.bx1 < i1) {
+			f.borderCols(j, i0, i1, d0, rc)
+			continue
+		}
+		if rc.runs {
+			f.emitRow(j, i0, i1, d0, rc)
+			continue
+		}
+		// A thin strip's row: one coverage span (emitRow, inline).
+		cov := f.cov[:i1-i0]
+		d := d0
+		for i := range cov {
+			cov[i] = quant(tr.area(k1-d) - tr.area(k2-d))
+			d += nx
+		}
+		emitCoverage(f.b, j, i0, cov)
+	}
+}
+
+// row handles pixels [i0, i1) of row j (d0 = n·centre of pixel i0) that
+// solidRows cannot take: rows in a partially covered clip border row or
+// crossing a border column go to the accumulator, the rest through the
+// blitter chain.
+func (f *segFast) row(j, i0, i1 int, d0 float64, rc *rowCtx) {
+	if j == f.by0 || j == f.by1 {
+		f.borderRow(j, i0, i1, d0, rc)
+		return
+	}
+	if (f.bx0 >= i0 && f.bx0 < i1) || (f.bx1 >= i0 && f.bx1 < i1) {
+		f.borderCols(j, i0, i1, d0, rc)
+		return
+	}
+	f.emitRow(j, i0, i1, d0, rc)
+}
+
+// emitRow blits pixels [i0, i1) of row j (d0 = n·centre of pixel i0)
+// through the blitter chain: edge pixels as coverage, a fully covered
+// interior as a run.
 func (f *segFast) emitRow(j, i0, i1 int, d0 float64, rc *rowCtx) {
 	n := i1 - i0
 	a, b := n, n // interior [a, b) relative to i0; none by default

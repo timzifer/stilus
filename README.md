@@ -76,9 +76,15 @@ span, never per pixel) or consume `Stroker` output through a `LineSink`.
   rows fills the out-of-order window, so the misses are taken one after
   another. Before compositing, `Canvas.Stroke` loads the destination under
   the first 64 rows of each segment up to 256 rows tall: independent loads
-  whose misses overlap. Longer segments are left to the hardware
-  prefetcher. Output is unchanged; 20 000 short strokes −13…18 %, contours
-  −15 %, mixed drawing −7 %, hatching unchanged (Ryzen 7 5800H, min of 60).
+  whose misses overlap. Only the rows that fit in the reorder buffer
+  together overlap, so the loop is kept to a few instructions per row
+  (running sums for the row's x and offset, one load at each end of the
+  stretch). Longer segments are left to the hardware prefetcher. Output is
+  unchanged; 20 000 short strokes −13…18 %, contours −15 %, mixed drawing
+  −7 %, hatching unchanged (Ryzen 7 5800H, min of 60). On a cloud Xeon
+  with 4 KB pages the touch itself is 14 % of the short-stroke scene: every
+  row of the destination is another page, and the page walks are what the
+  loads wait for.
 
 ## Numbers
 
@@ -87,14 +93,14 @@ A3 landscape at 150 dpi (2481×1754 px), rectangle page clip, cloud Xeon
 
 | scene | 1 core | 4 cores (bands) | spec target (1 core) |
 |---|---:|---:|---:|
-| 2 000 long hatch lines, hairline | 83 ms | – | ≤ 60 ms ✗ |
-| 2 000 long hatch lines, 0.35 mm | 96 ms | – | – |
-| 20 000 short strokes, 0.35 mm | 50 ms | – | ≤ 40 ms ✗ |
-| 20 000 short strokes, hairline | 43 ms | – | – |
-| 30 000 glyph outlines, uncached | 64 ms | – | – |
-| mixed drawing (fills with alpha, dashes, curves) | 57 ms | – | – |
-| 3 000 polylines + 600 circles, 0.35 mm | 110 ms | – | – |
-| 2 000 hatch lines through an elliptic mask clip | 60 ms | – | – |
+| 2 000 long hatch lines, hairline | 53 ms | 15 ms | ≤ 60 ms ✓ |
+| 2 000 long hatch lines, 0.35 mm | 67 ms | 19 ms | – |
+| 20 000 short strokes, 0.35 mm | 41 ms | 12 ms | ≤ 40 ms ✗ |
+| 20 000 short strokes, hairline | 34 ms | 11 ms | – |
+| 30 000 glyph outlines, uncached | 55 ms | 18 ms | – |
+| mixed drawing (fills with alpha, dashes, curves) | 49 ms | 15 ms | – |
+| 3 000 polylines + 600 circles, 0.35 mm | 84 ms | 24 ms | – |
+| 2 000 hatch lines through an elliptic mask clip | 54 ms | 19 ms | – |
 
 Hairlines are drawn one device pixel wide with exact area coverage, like
 PDFium (an earlier approximation was faster but 14/255 off on dense
@@ -219,7 +225,20 @@ Speed levers tried and measured (Ryzen 7 5800H, A3 at 150 dpi):
   about 13 % of the time and its dirty groups are 4–8 cells, too short for
   a vector prefix sum; the rest is interior runs and edge compositing
   (`BenchmarkWideFill`). Not pursued.
+- *Piecewise-quadratic strip coverage*: the difference of the two
+  trapezoid distributions along a row is a quadratic on each of up to nine
+  pieces, so a row could walk the pieces instead of evaluating two branchy
+  half-plane areas per pixel. Bit-identical, but slower on thin strokes:
+  a piece ends at nearly every pixel of a 1–2 px strip, and the piece
+  changes cost more than the areas. Hairline hatching +13 %. Not pursued.
+- *A row kernel of its own for the analytic strip* (so that its loop runs
+  from registers): the call per row costs more than the spills it saves on
+  rows of three pixels. What helped instead was keeping fewer values live
+  across the pixel loop (the clip's border columns and the paint are read
+  through pointers, the border rows are taken out of the loop) and
+  keeping the per-row helpers small enough to inline: hatching −7…8 %.
 
 What remains in stroke scenes is arithmetic: the analytic strip's
 per-pixel half-plane areas (`trapezoid.area`, branchy) and the stroker's
-outline and band setup.
+outline and band setup; on scattered short strokes, the memory latency of
+the destination rows.

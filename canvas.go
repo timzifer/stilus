@@ -96,6 +96,19 @@ func (c *Canvas) guard() {
 	}
 }
 
+// clipGuard is guard for the clip operations: when the panic struck before
+// the clip was pushed, an empty one is pushed instead, so that the
+// caller's PopClip stays balanced.
+func (c *Canvas) clipGuard(depth int) {
+	if v := recover(); v != nil {
+		c.setErr(fmt.Errorf("%w: %v", ErrInternal, v))
+		c.r.discard()
+		if c.ClipDepth() == depth {
+			c.push(clipState{})
+		}
+	}
+}
+
 func (c *Canvas) top() *clipState {
 	if c.overflow > 0 {
 		return &c.empty
@@ -258,8 +271,8 @@ const (
 // fills the out-of-order window. These loads are independent, so their
 // misses overlap, and compositing then finds the rows in cache. Further
 // down a segment, and along long ones, the hardware prefetcher has picked
-// up the row stride. Curves are followed along their control polygon, which is close
-// enough for a prefetch.
+// up the row stride. Curves are followed along their control polygon,
+// which is close enough for a prefetch.
 func (c *Canvas) touchStroke(p *Path, m Matrix, w float64) {
 	cb := c.top().bounds
 	t := &c.solid.t
@@ -287,24 +300,76 @@ func touchSegment(t *target, cb image.Rectangle, x0, y0, x1, y1, w float64) uint
 	if !(fy0 > -1<<30 && fy1 < fy0+touchMaxRows) {
 		return 0 // long (the prefetcher follows it), or NaN
 	}
-	iy0, iy1 := max(int(fy0), cb.Min.Y), min(int(fy1)+1, cb.Max.Y, max(int(fy0), cb.Min.Y)+touchRows)
+	iy0 := max(int(fy0), cb.Min.Y)
+	iy1 := min(int(fy1)+1, cb.Max.Y, iy0+touchRows)
+	if iy0 >= iy1 {
+		return 0
+	}
 	var dxdy float64
 	if y1 != y0 {
 		dxdy = (x1 - x0) / (y1 - y0)
 	}
+	// The loads of a row can only overlap with those of the rows that fit
+	// in the reorder buffer with it, so the loop is kept to few
+	// instructions: the segment's x per row by a running sum, clamped to
+	// its ends, the row's offset by a running sum, and one load at each
+	// end of the touched stretch (rows within a few pixels of it share a
+	// cache line with their neighbours). Wider strokes load every 16th
+	// pixel of the stretch. No index is used before it is clamped to cb.
 	lo, hi := min(x0, x1), max(x0, x1)
+	xc := x0 + (float64(iy0)+0.5-y0)*dxdy
+	pix, stride := t.pix, t.stride
+	o := (iy0-t.oy)*stride - t.ox
+	xmin, xmax := cb.Min.X, cb.Max.X-1
+	iw := int(w) + 1
 	var s uint32
+	if iw <= 8 {
+		for y := iy0; y < iy1; y++ {
+			c := xc
+			if c < lo {
+				c = lo
+			} else if c > hi {
+				c = hi
+			}
+			ic := int(c)
+			a, b := ic-iw, ic+iw
+			if a < xmin {
+				a = xmin
+			}
+			if b > xmax {
+				b = xmax
+			}
+			if a <= b {
+				s += pix[o+a] + pix[o+b]
+			}
+			xc += dxdy
+			o += stride
+		}
+		return s
+	}
 	for y := iy0; y < iy1; y++ {
-		xc := min(max(x0+(float64(y)+0.5-y0)*dxdy, lo), hi)
-		ix0, ix1 := max(int(xc-w), cb.Min.X), min(int(xc+w)+1, cb.Max.X)
-		if ix0 >= ix1 {
-			continue
+		c := xc
+		if c < lo {
+			c = lo
+		} else if c > hi {
+			c = hi
 		}
-		row := t.row(y, ix0, ix1)
-		for k := 0; k < len(row); k += 16 {
-			s += row[k]
+		ic := int(c)
+		a, b := ic-iw, ic+iw
+		if a < xmin {
+			a = xmin
 		}
-		s += row[len(row)-1]
+		if b > xmax {
+			b = xmax
+		}
+		for k := a; k <= b; k += 16 {
+			s += pix[o+k]
+		}
+		if a <= b {
+			s += pix[o+b]
+		}
+		xc += dxdy
+		o += stride
 	}
 	return s
 }
@@ -330,7 +395,7 @@ func (c *Canvas) push(s clipState) {
 // ClipRect intersects the clip with rectangle r in user space. An
 // axis-aligned result costs nothing per pixel; a rotated one becomes a mask.
 func (c *Canvas) ClipRect(r Rect, m Matrix) {
-	defer c.guard()
+	defer c.clipGuard(c.ClipDepth())
 	if r.Empty() {
 		c.push(clipState{})
 		return
@@ -348,7 +413,7 @@ func (c *Canvas) ClipRect(r Rect, m Matrix) {
 // the rectangle fast path; other shapes are rasterized once into a mask
 // over their bounds.
 func (c *Canvas) ClipPath(p *Path, m Matrix, rule FillRule) {
-	defer c.guard()
+	defer c.clipGuard(c.ClipDepth())
 	if r, ok := p.asRect(); ok && m.axisAligned() && m.finite() {
 		c.push(c.top().intersectRect(m.transformRect(r)))
 		return
@@ -363,11 +428,13 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule) {
 		return
 	}
 	bb := m.transformRect(p.Bounds())
-	if !(bb.X0 <= bb.X1 && bb.Y0 <= bb.Y1) {
+	const lim = 1 << 30
+	// NaN boxes, and boxes entirely beyond the coordinate limit (infinite
+	// ones included), clip everything away.
+	if !(bb.X0 <= bb.X1 && bb.Y0 <= bb.Y1 && bb.X1 >= -lim && bb.X0 <= lim && bb.Y1 >= -lim && bb.Y0 <= lim) {
 		c.push(clipState{})
 		return
 	}
-	const lim = 1 << 30
 	ib := image.Rect(
 		int(math.Floor(max(bb.X0, -lim))), int(math.Floor(max(bb.Y0, -lim))),
 		int(math.Ceil(min(bb.X1, lim))), int(math.Ceil(min(bb.Y1, lim))),
