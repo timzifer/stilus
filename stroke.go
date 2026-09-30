@@ -119,6 +119,10 @@ type segmentFiller interface {
 	// middle fills rows [y0, y1) of the strip between the line through
 	// (ax, ay)-(bx, by) and the parallel line through (dx, dy).
 	middle(ax, ay, bx, by, dx, dy float64, y0, y1 int)
+	// setOrientation tells the filler that the outline winds negatively in
+	// device space (a mirroring transform), so pixels it adds to the
+	// stroke's accumulator must wind the same way.
+	setOrientation(neg bool)
 	limitRows(y0, y1 int)
 	unlimitRows()
 }
@@ -139,11 +143,11 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		return
 	}
 	s.m, s.st = m, st
-	s.dashFast = s.seg != nil && dashFastOK(m, st, s.dev)
 	s.det = m.Det()
 	// Strokes thinner than a device pixel are drawn one pixel wide, like
 	// PDFium: their offsets are taken in device space.
 	s.dev = st.Width*sm < 1
+	s.dashFast = s.seg != nil && dashFastOK(m, st, s.dev)
 	s.hw = st.Width / 2
 	r := s.hw * sm
 	if s.dev {

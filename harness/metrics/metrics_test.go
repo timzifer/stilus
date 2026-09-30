@@ -33,3 +33,17 @@ func TestCompare(t *testing.T) {
 		t.Fatalf("diff colour %v", d.RGBAAt(10, 5))
 	}
 }
+
+// A correct upper quarter of an otherwise missing page must not pass.
+func TestCompareSizeMismatch(t *testing.T) {
+	full := image.NewGray(image.Rect(0, 0, 64, 64))
+	for i := range full.Pix {
+		full.Pix[i] = 255
+	}
+	quarter := image.NewGray(image.Rect(0, 0, 64, 16))
+	copy(quarter.Pix, full.Pix)
+	r := Compare(full, quarter)
+	if r.Pass() || !r.SizeMismatch() {
+		t.Fatalf("cropped rendering passes: %+v", r)
+	}
+}

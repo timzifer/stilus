@@ -26,8 +26,15 @@ type Result struct {
 	SSIM         float64     // structural similarity, 1 = identical
 }
 
-// Pass reports whether r meets the spec's accuracy target.
-func (r Result) Pass() bool { return r.Mean < MaxMean && r.Over32 < MaxOver32 }
+// SizeMismatch reports whether the two renderings differ in size. Only the
+// common area enters the statistics, so a mismatch is a failure of its own:
+// a truncated page would otherwise pass on its correct part.
+func (r Result) SizeMismatch() bool { return r.SizeA != r.SizeB }
+
+// Pass reports whether r meets the spec's accuracy target, at equal size.
+func (r Result) Pass() bool {
+	return !r.SizeMismatch() && r.Mean < MaxMean && r.Over32 < MaxOver32
+}
 
 // Gray converts img to grey levels composited over white.
 func Gray(img image.Image) *image.Gray {

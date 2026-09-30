@@ -270,6 +270,9 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 		start = end
 	}
 	fill.unlimitRows()
+	// The outline winds +1 in device space unless m mirrors (in hairline
+	// mode m is the identity: the outline was built in device space).
+	fill.setOrientation(m.Det() < 0)
 
 	// Analytic rows between the clusters of each segment's ends.
 	for k := 0; k < nseg; k++ {
@@ -328,6 +331,7 @@ type segFast struct {
 	// of the stroke covering the same pixel would be reduced by the clip
 	// twice. They are summed in the stroke's accumulator instead (inject).
 	bx0, bx1, by0, by1 int
+	neg                bool // outline winds negatively in device space
 }
 
 // setBorder takes the partially covered border columns and rows of cs, if
@@ -357,11 +361,24 @@ func (f *segFast) inject(x, y int, c float64) {
 	if c <= 0 {
 		return
 	}
-	c = min(c, 1)
-	fx, fy := float64(x), float64(y)
-	f.r.AddLine(fx, fy, fx, fy+c)
-	f.r.AddLine(fx+1, fy+c, fx+1, fy)
+	f.injectRect(x, x+1, y, min(c, 1))
 }
+
+// injectRect adds coverage c to the pixels [x0, x1) of row y: two vertical
+// edges, wound like the stroke's outline (negatively under a mirroring
+// transform) so they add to the outline's winding instead of cancelling it.
+func (f *segFast) injectRect(x0, x1, y int, c float64) {
+	fx0, fx1, fy := float64(x0), float64(x1), float64(y)
+	if f.neg {
+		f.r.AddLine(fx0, fy+c, fx0, fy)
+		f.r.AddLine(fx1, fy, fx1, fy+c)
+		return
+	}
+	f.r.AddLine(fx0, fy, fx0, fy+c)
+	f.r.AddLine(fx1, fy+c, fx1, fy)
+}
+
+func (f *segFast) setOrientation(neg bool) { f.neg = neg }
 
 func (f *segFast) limitRows(y0, y1 int) { f.r.limitRows(y0, y1) }
 func (f *segFast) unlimitRows()         { f.r.unlimitRows() }

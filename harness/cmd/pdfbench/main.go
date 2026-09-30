@@ -433,7 +433,7 @@ func report(c config, rows []row, splitTotal map[string]float64, splitPerFile ma
 		fmt.Fprintf(&b, "| %s | %d | %d | %d | %.1f | %.1f | %.0f | %s | %s |\n", e, pages, unsup, errs, median(ms), pct(ms, 0.9), total, alS, byS)
 	}
 
-	b.WriteString("\n## Accuracy against " + c.ref + "\n\nTarget: mean < 1/255 and < 0.5 % of pixels deviating by more than 32/255.\n\n| engine | category | pages | pass | mean dev. (median) | >32/255 (median) | SSIM (median) |\n|---|---|---:|---:|---:|---:|---:|\n")
+	b.WriteString("\n## Accuracy against " + c.ref + "\n\nTarget: same size, mean < 1/255 and < 0.5 % of pixels deviating by more than 32/255.\n\n| engine | category | pages | pass | size mismatch | mean dev. (median) | >32/255 (median) | SSIM (median) |\n|---|---|---:|---:|---:|---:|---:|---:|\n")
 	for _, e := range c.engines {
 		if e == c.ref {
 			continue
@@ -448,8 +448,11 @@ func report(c config, rows []row, splitTotal map[string]float64, splitPerFile ma
 		for _, cat := range slices.Sorted(mapsKeys(bycat)) {
 			ms := bycat[cat]
 			var mean, over, ss []float64
-			pass := 0
+			pass, sizes := 0, 0
 			for _, m := range ms {
+				if m.SizeMismatch() {
+					sizes++
+				}
 				mean = append(mean, m.Mean)
 				over = append(over, m.Over32*100)
 				ss = append(ss, m.SSIM)
@@ -457,7 +460,7 @@ func report(c config, rows []row, splitTotal map[string]float64, splitPerFile ma
 					pass++
 				}
 			}
-			fmt.Fprintf(&b, "| %s | %s | %d | %d | %.2f | %.2f %% | %.4f |\n", e, cat, len(ms), pass, median(mean), median(over), median(ss))
+			fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %.2f | %.2f %% | %.4f |\n", e, cat, len(ms), pass, sizes, median(mean), median(over), median(ss))
 		}
 	}
 

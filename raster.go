@@ -88,6 +88,7 @@ type Rasterizer struct {
 	// dropped and Truncated reports true. Zero means DefaultMaxEdges.
 	MaxEdges  int
 	truncated bool
+	done      bool // a path was rasterized; the next edge starts a new one
 	aliased   bool
 
 	edges  []edge
@@ -153,14 +154,27 @@ func (r *Rasterizer) SetAntialias(aa bool) { r.aliased = !aa }
 // Truncated reports whether the last path exceeded the edge budget.
 func (r *Rasterizer) Truncated() bool { return r.truncated }
 
-// Reset discards all accumulated edges.
+// Reset discards all accumulated edges and the Truncated state.
 func (r *Rasterizer) Reset() {
+	r.clearEdges()
+	r.truncated, r.done = false, false
+}
+
+// clearEdges discards the edges of a rasterized path. Truncated keeps
+// describing that path until the next one starts (Reset, AddPath, AddLine).
+func (r *Rasterizer) clearEdges() {
 	r.edges = r.edges[:0]
 	r.minY = math.MaxInt32
 	r.minX = math.MaxInt32
 	r.maxX = math.MinInt32
 	r.maxY = math.MinInt32
-	r.truncated = false
+}
+
+// begin starts a new path after a Rasterize.
+func (r *Rasterizer) begin() {
+	if r.done {
+		r.truncated, r.done = false, false
+	}
 }
 
 // Fill rasterizes p transformed by m with the given fill rule. It is
@@ -186,6 +200,7 @@ func (r *Rasterizer) culled(p *Path, m Matrix) bool {
 // implicitly. Curves are flattened in device space with a tolerance of a
 // quarter pixel. Paths containing NaN or infinite values are ignored.
 func (r *Rasterizer) AddPath(p *Path, m Matrix) {
+	r.begin()
 	if !m.finite() || r.w <= 0 || r.h <= 0 || r.culled(p, m) {
 		return
 	}
@@ -335,6 +350,7 @@ func segCount(v float64) int {
 // are dropped, and parts left of it become vertical edges on the clip's left
 // border, which preserves the winding of everything inside.
 func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
+	r.begin()
 	if y0 == y1 || x0 != x0 || x1 != x1 || y0 != y0 || y1 != y1 {
 		return
 	}
@@ -421,7 +437,7 @@ func (r *Rasterizer) emit(x0, y0, x1, y1 float64, dir int32) {
 
 // Rasterize converts all added edges into spans and resets the rasterizer.
 func (r *Rasterizer) Rasterize(rule FillRule, b Blitter) {
-	defer r.Reset()
+	defer func() { r.clearEdges(); r.done = true }()
 	if len(r.edges) == 0 {
 		return
 	}
