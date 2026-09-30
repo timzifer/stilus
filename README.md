@@ -70,6 +70,14 @@ span, never per pixel) or consume `Stroker` output through a `LineSink`.
   whole and keeps fully opaque runs as runs.
 - **Compositing** on premultiplied RGBA8 with SWAR arithmetic (four
   channels per 64-bit multiply, no divisions), memmove-speed opaque fills.
+- **Destination pre-touch**: scattered short strokes are bound by memory
+  latency – every row is a cold cache line, and the arithmetic between two
+  rows fills the out-of-order window, so the misses are taken one after
+  another. Before compositing, `Canvas.Stroke` loads the destination under
+  the first 64 rows of each segment up to 256 rows tall: independent loads
+  whose misses overlap. Longer segments are left to the hardware
+  prefetcher. Output is unchanged; 20 000 short strokes −13…18 %, contours
+  −15 %, mixed drawing −7 %, hatching unchanged (Ryzen 7 5800H, min of 60).
 
 ## Numbers
 
@@ -183,6 +191,24 @@ Blend modes, transparency groups and soft masks (M6), shadings and images
 (M5/M7), glyph cache (M4), display list and PDF interpretation (M3). The
 `Blitter`/`Shader` interfaces are where these plug in.
 
-Next speed levers: most remaining stroke time is compositing latency on
-the destination (cache misses per row); a band-sorted display list (M3)
-is where that can be attacked. Vectorizing the sweep helps wide fills.
+Speed levers tried and measured (Ryzen 7 5800H, A3 at 150 dpi):
+
+- *Band-sorted display list* (record once, play band by band so the band
+  stays in cache): slower on every stroke scene, 1 and 4–8 threads, at
+  band heights 16–256. Operations crossing a band border are stroked once
+  per band, which costs more than the cache misses saved; only uncached
+  glyphs gained (−25 % with 8 workers). Still the right structure for M3,
+  but not a speed lever on its own.
+- *Deferred span compositing* (spans appended to per-band streams,
+  composited band by band): bit-identical, −10…17 % on scattered strokes,
+  but +70 % on long hatch lines (recording every row), and deciding per
+  operation which to defer needed fragile heuristics. Pre-touching the
+  destination (above) gets the same gain without either.
+- *Vectorizing the sweep*: on a page-sized fill the integration loop is
+  about 13 % of the time and its dirty groups are 4–8 cells, too short for
+  a vector prefix sum; the rest is interior runs and edge compositing
+  (`BenchmarkWideFill`). Not pursued.
+
+What remains in stroke scenes is arithmetic: the analytic strip's
+per-pixel half-plane areas (`trapezoid.area`, branchy) and the stroker's
+outline and band setup.
