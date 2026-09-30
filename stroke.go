@@ -56,6 +56,19 @@ func (s PathSink) AddLine(x0, y0, x1, y1 float64) {
 // budget. Stroker.Truncated reports either condition.
 const DefaultMaxDashes = 1 << 20
 
+const (
+	// densePeriod is the device-space dash period at or below which a
+	// pattern is drawn as a solid stroke with its mean coverage. A pixel
+	// then holds four periods or more, and a pixel's coverage differs from
+	// the mean by at most period·on·off fraction: 1/16.
+	densePeriod = 0.25
+	// denseSteps bounds the pattern entries per device pixel that are
+	// walked one by one. Longer patterns of tiny entries collapse to their
+	// mean coverage too, so walking a stroke costs at most this many
+	// transitions per pixel of its length along the widest stretch of m.
+	denseSteps = 32
+)
+
 // Stroker converts strokes into fill geometry (closed outlines to be filled
 // with NonZero). Offsets are computed in user space and transformed
 // afterwards, which is exact for anisotropic transforms.
@@ -66,6 +79,7 @@ type Stroker struct {
 	MaxDashes int
 
 	truncated bool
+	coverage  float64
 
 	sink LineSink
 	dev  bool          // hairline: geometry in device space, one pixel wide
@@ -102,6 +116,10 @@ func sigmaMax(m Matrix) float64 {
 }
 
 // Stroke emits the outline of p stroked with st under m into sink.
+//
+// A dash pattern too dense to resolve in device space is emitted as a solid
+// stroke; Coverage then reports the fraction the caller must scale the
+// resulting coverage by.
 func (s *Stroker) Stroke(sink LineSink, p *Path, m Matrix, st *StrokeStyle) {
 	s.sink, s.seg = sink, nil
 	s.run(p, m, st)
@@ -110,6 +128,11 @@ func (s *Stroker) Stroke(sink LineSink, p *Path, m Matrix, st *StrokeStyle) {
 // Truncated reports whether the last stroke exceeded its dash budget.
 // Canvas reports this condition as ErrDashBudget.
 func (s *Stroker) Truncated() bool { return s.truncated }
+
+// Coverage reports the factor to apply to the coverage of the last stroke's
+// outline: the mean on-fraction of a dash pattern emitted as a solid stroke,
+// else 1.
+func (s *Stroker) Coverage() float64 { return s.coverage }
 
 // IsHairline reports whether st under m is thinner than one device pixel in
 // every direction. Such strokes are drawn one pixel wide in device space,
@@ -142,6 +165,7 @@ func (s *Stroker) strokeFast(sink LineSink, seg segmentFiller, p *Path, m Matrix
 
 func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 	s.truncated = false
+	s.coverage = 1
 	if !m.finite() || !(st.Width >= 0) || math.IsInf(st.Width, 0) {
 		return
 	}
@@ -183,6 +207,13 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		}
 		if dashed && (math.IsNaN(st.DashPhase) || math.IsInf(st.DashPhase, 0)) {
 			return
+		}
+		if f, ok := denseDash(m, st); dashed && ok {
+			if f <= 0 {
+				s.coverage = 0
+				return
+			}
+			dashed, s.coverage = false, f
 		}
 	}
 
@@ -307,16 +338,22 @@ func (s *Stroker) dash(poly []float64, closed bool) {
 	if closed && n > 1 {
 		n++ // closing segment
 	}
-	total := 0.0
+	total, dev := 0.0, 0.0
 	for i := 1; i < n; i++ {
 		j := i % (len(poly) / 2)
-		total += math.Hypot(poly[2*j]-poly[2*i-2], poly[2*j+1]-poly[2*i-1])
+		dx, dy := poly[2*j]-poly[2*i-2], poly[2*j+1]-poly[2*i-1]
+		total += math.Hypot(dx, dy)
+		dev += math.Hypot(s.m.ApplyVec(dx, dy))
 	}
 	max := s.MaxDashes
 	if max == 0 {
 		max = DefaultMaxDashes
 	}
-	if total/period*float64(len(pat)) > float64(max) {
+	// denseDash bounds the transitions per device pixel along the widest
+	// stretch of m; a strongly anisotropic m can still squeeze a pattern
+	// along a narrow direction, so the bound is checked per subpath too.
+	est := total / period * float64(len(pat))
+	if est > float64(max) || est > denseSteps*(dev+2*float64(len(pat))) {
 		s.truncated = true
 		return
 	}
@@ -674,4 +711,77 @@ func dashFastOK(m Matrix, st *StrokeStyle, dev bool) bool {
 		}
 	}
 	return gap*smin-ext >= 2
+}
+
+// denseDash reports whether st's dash pattern is too dense under m to be
+// walked dash by dash, and if so the fraction of the stroke it covers. The
+// fraction counts the caps' extension into the gaps; it is taken in user
+// space, where areas scale uniformly under m, except for hairlines, whose
+// width and caps are one device pixel.
+func denseDash(m Matrix, st *StrokeStyle) (float64, bool) {
+	pat := st.Dash
+	np := len(pat)
+	if np == 0 {
+		return 1, false
+	}
+	period := 0.0
+	for _, d := range pat {
+		if !(d >= 0) || math.IsInf(d, 0) {
+			return 1, false
+		}
+		period += d
+	}
+	steps := np
+	if np%2 == 1 {
+		steps, period = 2*np, 2*period
+	}
+	sm := sigmaMax(m)
+	pd := period * sm // device period along the widest stretch
+	if !(period > 0) || math.IsInf(period, 0) || !(sm > 0) ||
+		pd > densePeriod && float64(steps) <= denseSteps*pd {
+		return 1, false
+	}
+	scale, w := 1.0, st.Width
+	if st.Width*sm < 1 {
+		scale, w = sm, 1
+	}
+	return meanCoverage(pat, scale, w, st.Cap), true
+}
+
+// meanCoverage returns the fraction of a stroke of width w that pat covers,
+// with pattern lengths multiplied by scale.
+func meanCoverage(pat []float64, scale, w float64, c Cap) float64 {
+	np := len(pat)
+	steps := np
+	if np%2 == 1 {
+		steps = 2 * np
+	}
+	period, off := 0.0, 0.0
+	for i := 0; i < steps; i++ {
+		d := pat[i%np] * scale
+		period += d
+		if i%2 == 1 {
+			off += uncovered(d, w, c)
+		}
+	}
+	return min(max(1-off/(period*w), 0), 1)
+}
+
+// uncovered returns the area a gap of length g leaves uncovered between two
+// dashes of width w with the given caps.
+func uncovered(g, w float64, c Cap) float64 {
+	switch c {
+	case SquareCap:
+		return max(g-w, 0) * w
+	case RoundCap:
+		// The half discs of the neighbouring dashes cover the gap except
+		// where 2·sqrt(r²-y²) < g, i.e. |y| > y0.
+		r := w / 2
+		y0 := math.Sqrt(max(r*r-g*g/4, 0))
+		disc := func(y float64) float64 { // ∫ sqrt(r²-y²) dy
+			return (y*math.Sqrt(max(r*r-y*y, 0)) + r*r*math.Asin(min(y/r, 1))) / 2
+		}
+		return 2 * (g*(r-y0) - 2*(disc(r)-disc(y0)))
+	}
+	return g * w
 }

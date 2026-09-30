@@ -47,6 +47,7 @@ type Canvas struct {
 	shader ShaderBlitter
 	mread  maskBlitter
 	frac   fracBlitter
+	scale  scaleBlitter
 	writer maskWriter
 	stack  []clipState
 	masks  []*clipMask
@@ -199,11 +200,21 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 		bb.Y1+pad < float64(cb.Min.Y) || bb.Y0-pad > float64(cb.Max.Y) {
 		return
 	}
-	b := c.chain(cs, c.paint(paint))
+	b := c.paint(paint)
+	f, dense := denseDash(m, st)
+	if dense {
+		// Drawn as a solid stroke at the pattern's mean coverage.
+		c.scale.f, c.scale.next = uint32(math.Round(f*255)), b
+		if c.scale.f == 0 {
+			return
+		}
+		b = &c.scale
+	}
+	b = c.chain(cs, b)
 	c.setClip(cs.bounds)
 	c.r.Reset()
 	overlap := mayOverlap(p, st)
-	if paint.Shader == nil && paint.Color.A == 255 && (cs.mask == nil || !overlap) {
+	if !dense && paint.Shader == nil && paint.Color.A == 255 && (cs.mask == nil || !overlap) {
 		// Opaque: the analytic middle rows may be composited separately
 		// from the rest of the stroke, because layers of one opaque color
 		// at full coverage are idempotent. Where parts of the stroke may

@@ -154,8 +154,12 @@ Pitfalls found on the way (Go 1.26), all avoided in `simd_amd64.go`:
   never panics; errors are reported through `Err()`.
   Dash patterns beyond the subdivision budget skip or truncate the affected
   subpath and report `ErrDashBudget`; `Stroker.Truncated()` exposes the same
-  state when using the stroker directly. Dense dashes are never replaced
-  with a fully covered solid stroke.
+  state when using the stroker directly. Patterns too dense to resolve (a
+  device period of at most 1/4 px, or more than 32 entries per pixel) are
+  drawn as a solid stroke at the pattern's mean coverage, caps included, so
+  their cost is that of a solid stroke; `Stroker.Coverage()` reports the
+  factor. Walking a pattern dash by dash is bounded by 32 transitions per
+  device pixel of the subpath.
 - Fuzz targets: `FuzzFill`, `FuzzStroke`.
 
 ## Development

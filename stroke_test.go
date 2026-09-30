@@ -11,7 +11,7 @@ func strokeMask(p *Path, m Matrix, st *StrokeStyle, clip image.Rectangle) *image
 	r := NewRasterizer(clip)
 	var s Stroker
 	s.Stroke(r, p, m, st)
-	r.Rasterize(NonZero, &MaskBlitter{img})
+	r.Rasterize(NonZero, &scaleBlitter{f: uint32(math.Round(s.Coverage() * 255)), next: &MaskBlitter{img}})
 	return img
 }
 
@@ -83,11 +83,19 @@ func TestStrokeDash(t *testing.T) {
 	// Dots: zero-length dashes with round caps.
 	st = &StrokeStyle{Width: 4, Dash: []float64{0, 10}, Cap: RoundCap}
 	checkArea(t, "dots", inkArea(strokeMask(&p, Identity, st, clip)), 11*4*math.Pi, 0.1*11*4*math.Pi)
-	// Pathological patterns are bounded without inventing solid coverage.
+	// Patterns too dense to resolve are drawn solid at their mean coverage.
 	st = &StrokeStyle{Width: 2, Dash: []float64{1e-9, 1e-9}}
 	r := NewRasterizer(clip)
 	var s Stroker
 	s.Stroke(r, &p, Identity, st)
+	if s.Truncated() || s.Coverage() != 0.5 || len(r.edges) == 0 {
+		t.Fatalf("dense pattern: Truncated %v, Coverage %v", s.Truncated(), s.Coverage())
+	}
+	checkArea(t, "dense", inkArea(strokeMask(&p, Identity, st, clip)), 100, 0.5)
+	// Resolvable patterns beyond the budget are skipped, not drawn solid.
+	r.Reset()
+	s.MaxDashes = 4
+	s.Stroke(r, &p, Identity, &StrokeStyle{Width: 2, Dash: []float64{1, 1}})
 	if !s.Truncated() || len(r.edges) != 0 {
 		t.Fatal("dash budget exceeded: expected a skipped subpath and Truncated")
 	}
