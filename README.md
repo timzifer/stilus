@@ -109,6 +109,17 @@ deviation 0.3–1.5/255, SSIM ≥ 0.998 (see `harness/`).
 
 Allocations per rendered scene after warm-up: **0**.
 
+### History
+
+`BenchmarkScenes` at 150 dpi on one core, for every release tag and for
+`main`, rendered with [figure](https://github.com/timzifer/figure) by the
+[Benchmarks workflow](.github/workflows/bench.yml). Timings from different
+machines do not compare, so each run measures all of them anew on one GitHub
+runner, round-robin, and replaces the chart: its level can move from one run
+to the next, the relations within it are what it shows.
+
+![BenchmarkScenes at 150 dpi per release](https://raw.githubusercontent.com/timzifer/stilus/badges/bench/bench.svg)
+
 Same machine, same scenes, other pure-Go rasterizers (`bench/`, separate
 module):
 
@@ -199,6 +210,8 @@ go test -run XXX -bench BenchmarkScenes .      # scene benchmarks at 72/150/300 
 go run ./cmd/stilus-scenes -dpi 150 -out /tmp/scenes   # timings + PNGs
 go run ./cmd/stilus-scenes -threads 4          # band-parallel rendering
 (cd bench && go test -bench .)                 # comparison with x/image/vector and gg
+bench/scripts/bench-refs.sh h.json v0.2.0 main   # measure refs side by side, then:
+(cd bench && go run ./cmd/benchchart render -db ../h.json -o ../h.svg)
 go test -fuzz FuzzStroke                       # fuzzing
 ```
 

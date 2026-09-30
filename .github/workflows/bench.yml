@@ -1,0 +1,70 @@
+name: Benchmarks
+
+# Timings from different runners do not compare, so every run measures all
+# release tags and main anew, on one runner, and replaces the published chart.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Each run is a complete snapshot: the newest one wins.
+concurrency:
+  group: bench-history
+  cancel-in-progress: true
+
+jobs:
+  history:
+    name: Benchmark history
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push bench/bench.{json,svg} to the badges branch
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache-dependency-path: bench/go.sum
+      - name: Check out the badges branch
+        run: |
+          if git fetch origin badges; then
+            git worktree add out FETCH_HEAD
+          else
+            git worktree add --orphan -b badges out
+          fi
+          mkdir -p out/bench
+      - name: Run benchmarks
+        run: |
+          refs=$(git tag --list 'v*' --sort=v:refname)
+          last=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          # main is its own point only when it is ahead of the newest tag.
+          if [ -z "$last" ] || [ "$(git rev-parse origin/main)" != "$(git rev-parse "$last^{commit}")" ]; then
+            refs="$refs main=origin/main"
+          fi
+          bench/scripts/bench-refs.sh out/bench/bench.json $refs
+      - name: Render chart
+        working-directory: bench
+        run: go run ./cmd/benchchart render -db ../out/bench/bench.json -o ../out/bench/bench.svg
+      - name: Publish
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        working-directory: out
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bench
+          git commit -m "Update benchmark chart for ${GITHUB_REF_NAME} (${GITHUB_SHA::7})"
+          for i in 1 2 3 4; do
+            if git push origin HEAD:badges; then exit 0; fi
+            sleep $((2 ** i))
+            git pull --rebase origin badges
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-history
+          path: out/bench/
