@@ -13,7 +13,8 @@
 //
 //   - Rasterizer turns device-space paths (Fill, or AddLine/AddPath and
 //     Rasterize) into coverage spans delivered to a Blitter: BlitRun for
-//     constant interior runs, BlitCoverage for antialiased edge pixels.
+//     the constant interior runs of wide shapes, BlitCoverage for
+//     antialiased edge pixels and for narrow shapes as a whole.
 //     Implement Blitter to composite into any pixel format.
 //   - Stroker turns a stroke (width, caps, joins, miter limit, dashes; all
 //     in user space, exact under anisotropic transforms) into fill geometry

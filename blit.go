@@ -183,11 +183,13 @@ func (b *SolidBlitter) BlitCoverage(y, x int, cov []uint8) {
 // Scalar span kernels. simd_*.go dispatches to vector versions where the
 // CPU and toolchain allow it.
 
-// runOverScalar composites the premultiplied constant s over every pixel.
+// runOverScalar composites the premultiplied constant s over every pixel:
+// one multiplication per pixel in the 64-bit lane layout.
 func runOverScalar(d []uint32, s uint32) {
-	inv := 255 - (s>>alphaShift)&0xff
+	inv := uint64(255 - (s>>alphaShift)&0xff)
+	sx := expand(s)
 	for i, v := range d {
-		d[i] = s + mul255(v, inv)
+		d[i] = compact(sx + div255x(expand(v)*inv))
 	}
 }
 

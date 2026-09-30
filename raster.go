@@ -23,10 +23,12 @@ const (
 //
 // Implementations must not retain cov after the call returns.
 type Blitter interface {
-	// BlitRun paints the constant coverage alpha over [x0, x1) on row y.
-	// Interior pixels of a shape arrive here, never through BlitCoverage.
+	// BlitRun paints the constant coverage alpha over [x0, x1) on row y:
+	// the constant stretches between the edges of wide shapes.
 	BlitRun(y, x0, x1 int, alpha uint8)
 	// BlitCoverage paints per-pixel coverage for [x, x+len(cov)) on row y.
+	// Narrow shapes (strokes, glyphs) arrive here as a whole, fully
+	// covered pixels included.
 	BlitCoverage(y, x int, cov []uint8)
 }
 
@@ -54,7 +56,7 @@ type edge struct {
 	x0, y0, x1, y1 int32
 	dir            int32   // +1 downward in the original path, -1 upward
 	dxdy           float64 // (x1-x0)/(y1-y0)
-	dydx           float64 // |(y1-y0)/(x1-x0)|, 0 for vertical edges
+	dydx           float64 // |(y1-y0)/(x1-x0)|; 0 until first needed (vertical edges never need it)
 }
 
 // xAt returns the edge's x at fixed-point y (y0 <= y <= y1). The same formula
@@ -469,13 +471,11 @@ func (r *Rasterizer) emit(x0, y0, x1, y1 float64, dir int32) {
 	}
 	fx0 := fixed(x0, r.cx0, r.w)
 	fx1 := fixed(x1, r.cx0, r.w)
-	var dydx float64
-	if fx1 != fx0 {
-		dydx = math.Abs(float64(fy1-fy0) / float64(fx1-fx0))
-	}
+	// dydx is computed when a row of the edge first crosses a cell border
+	// (rasterEdge); most edges of small shapes never do.
 	r.edges = append(r.edges, edge{
 		x0: fx0, y0: fy0, x1: fx1, y1: fy1, dir: dir,
-		dxdy: float64(fx1-fx0) / float64(fy1-fy0), dydx: dydx,
+		dxdy: float64(fx1-fx0) / float64(fy1-fy0),
 	})
 	r.minX = min(r.minX, fx0, fx1)
 	r.maxX = max(r.maxX, fx0, fx1)
@@ -662,6 +662,9 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 			var dr []uint64
 			if !r.narrow {
 				dr = dirty[ri*nw : (ri+1)*nw]
+			}
+			if e.dydx == 0 {
+				e.dydx = math.Abs(float64(e.y1-e.y0) / float64(e.x1-e.x0))
 			}
 			lo, hi = cellLine(acc[ri*stride:(ri+1)*stride], dr, x, y-base, xn, rowEnd-base, dir, e.dydx)
 		}

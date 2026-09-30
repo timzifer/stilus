@@ -279,3 +279,54 @@ func BenchmarkRectangleFill(b *testing.B) {
 		c.Fill(&p, Identity, NonZero, black)
 	}
 }
+
+// A clip operation that panics (here: a nil path) still pushes a clip, so
+// the caller's PopClip stays balanced and later drawing is not clipped by
+// the grandparent instead of the parent.
+func TestClipPanicKeepsStackBalanced(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	c := NewCanvas(img)
+	c.ClipRect(Rect{X0: 0, Y0: 0, X1: 8, Y1: 16}, Identity)
+	c.ClipPath(nil, Identity, NonZero)
+	if !errors.Is(c.Err(), ErrInternal) || c.ClipDepth() != 2 {
+		t.Fatalf("after a panicking clip: err %v, depth %d", c.Err(), c.ClipDepth())
+	}
+	var p Path
+	p.Rect(0, 0, 16, 16)
+	c.Fill(&p, Identity, NonZero, white)
+	if inkArea(alphaOfRGBA(img)) != 0 {
+		t.Fatal("a failed clip must clip everything away")
+	}
+	c.PopClip()
+	c.Fill(&p, Identity, NonZero, white)
+	if c.ClipDepth() != 1 || img.RGBAAt(4, 4).A != 255 || img.RGBAAt(12, 4).A != 0 {
+		t.Fatalf("after PopClip: depth %d, alpha inside %d outside %d", c.ClipDepth(), img.RGBAAt(4, 4).A, img.RGBAAt(12, 4).A)
+	}
+}
+
+// A clip path whose box lies entirely beyond the coordinate limit (or at
+// infinity) clips everything away without a mask.
+func TestClipPathBeyondLimit(t *testing.T) {
+	inf := float32(math.Inf(1))
+	for _, pts := range [][2]float32{{inf, 5}, {-inf, -inf}, {2e9, 2e9}, {-3e9, 5}} {
+		img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+		c := NewCanvas(img)
+		var e Path
+		e.MoveTo(pts[0], pts[1])
+		e.LineTo(pts[0]+1, pts[1])
+		e.LineTo(pts[0], pts[1]+1)
+		e.Close()
+		c.ClipPath(&e, Identity, NonZero)
+		var p Path
+		p.Rect(0, 0, 16, 16)
+		c.Fill(&p, Identity, NonZero, white)
+		if c.Err() != nil || c.ClipDepth() != 1 || inkArea(alphaOfRGBA(img)) != 0 {
+			t.Errorf("clip at %v: err %v, depth %d, ink %v", pts, c.Err(), c.ClipDepth(), inkArea(alphaOfRGBA(img)))
+		}
+		c.PopClip()
+		c.Fill(&p, Identity, NonZero, white)
+		if img.RGBAAt(8, 8).A != 255 {
+			t.Errorf("clip at %v: drawing after PopClip clipped", pts)
+		}
+	}
+}
