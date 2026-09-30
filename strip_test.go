@@ -131,3 +131,75 @@ func TestPolylineFastPath(t *testing.T) {
 }
 
 var dbgCase = 492
+
+// TestLineFastPathIdentical checks that single segments, which skip
+// fastPoly's cluster bookkeeping, render exactly as they do through it:
+// near-horizontal and near-vertical lines, all caps, dashes, hairlines,
+// mirroring transforms, fractional clip borders and clip masks.
+func TestLineFastPathIdentical(t *testing.T) {
+	rng := rand.New(rand.NewSource(23))
+	bounds := image.Rect(-7, 5, 150, 140)
+	render := func(noLine bool, seed int64) (*image.RGBA, int) {
+		rng := rand.New(rand.NewSource(seed))
+		img := image.NewRGBA(bounds)
+		for i := range img.Pix {
+			img.Pix[i] = uint8(i * 13)
+		}
+		c := NewCanvas(img)
+		c.s.noLine = noLine
+		c.ClipRect(Rect{-3.3 + rng.Float64(), 7.6 + rng.Float64(), 140.4 + rng.Float64(), 131.2 + rng.Float64()}, Identity)
+		if rng.Intn(4) == 0 {
+			var mask Path
+			mask.Ellipse(70, 70, 60, 50)
+			c.ClipPath(&mask, Identity, NonZero)
+		}
+		for k := 0; k < 40; k++ {
+			x0, y0 := rng.Float64()*170-15, rng.Float64()*150-5
+			x1, y1 := rng.Float64()*170-15, rng.Float64()*150-5
+			switch rng.Intn(4) {
+			case 0: // near horizontal
+				y1 = y0 + (rng.Float64()-0.5)*rng.Float64()*4
+			case 1: // near vertical
+				x1 = x0 + (rng.Float64()-0.5)*rng.Float64()*4
+			}
+			var p Path
+			p.MoveTo(float32(x0), float32(y0))
+			p.LineTo(float32(x1), float32(y1))
+			m := Identity
+			switch rng.Intn(4) {
+			case 1:
+				m = Scale(0.5+rng.Float64()*2, 0.5+rng.Float64()*2)
+			case 2:
+				m = Translate(-70, -70).Mul(Rotate(rng.Float64() * 7)).Mul(Scale(1, 0.4+rng.Float64())).Mul(Translate(70, 70))
+			case 3:
+				m = Translate(-70, -70).Mul(Scale(-1, 1)).Mul(Translate(70, 70)) // mirroring
+			}
+			w := rng.Float64() * 9
+			if rng.Intn(5) == 0 {
+				w = 0 // hairline
+			}
+			st := &StrokeStyle{Width: w, Cap: Cap(rng.Intn(3))}
+			if rng.Intn(3) == 0 {
+				st.Dash = []float64{2 + rng.Float64()*12, 3 + rng.Float64()*8}
+			}
+			c.Stroke(&p, m, st, &Paint{Color: color.RGBA{uint8(rng.Intn(256)), 0, 90, 255}})
+		}
+		return img, c.s.fastHits
+	}
+	hits := 0
+	for seed := int64(0); seed < 300; seed++ {
+		s := rng.Int63()
+		want, _ := render(true, s)
+		got, h := render(false, s)
+		hits += h
+		for i := range want.Pix {
+			if got.Pix[i] != want.Pix[i] {
+				t.Fatalf("seed %d: byte %d differs: %d, want %d", s, i, got.Pix[i], want.Pix[i])
+			}
+		}
+	}
+	if hits == 0 {
+		t.Fatal("the analytic path was never taken")
+	}
+	t.Logf("analytic path taken %d times", hits)
+}

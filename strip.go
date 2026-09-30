@@ -129,6 +129,9 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 		f.loops[1] = len(pts) / 2
 	}
 	f.pts, f.own = pts, own
+	if nv == 2 && !s.noLine {
+		return s.fastLine(v, seg)
+	}
 
 	// Device space and per-vertex bands. From here on every way out uses
 	// the outline just built: either split into bands and analytic rows, or
@@ -717,4 +720,74 @@ func ffloor(v float64) int {
 		i--
 	}
 	return i
+}
+
+// fastLine is fastPoly's tail for a single segment (nv == 2, open): with
+// only its two ends there is nothing to merge but the ends' bands, so the
+// cluster bookkeeping reduces to comparing them. It emits exactly what
+// fastPoly's general path emits.
+func (s *Stroker) fastLine(v, seg []float64) bool {
+	f := &s.fast
+	m := s.m
+	pts, own := f.pts, f.own
+	lo := [2]int32{math.MaxInt32, math.MaxInt32}
+	hi := [2]int32{math.MinInt32, math.MinInt32}
+	huge := false
+	for k := 0; k < len(pts); k += 2 {
+		x, y := m.Apply(pts[k], pts[k+1])
+		if !(math.Abs(x) < 1<<30 && math.Abs(y) < 1<<30) {
+			huge = true
+			x, y = clampCoord(x), clampCoord(y)
+		}
+		pts[k], pts[k+1] = x, y
+		o := own[k/2] & 1
+		lo[o] = min(lo[o], int32(math.Floor(y)))
+		hi[o] = max(hi[o], int32(math.Ceil(y)))
+	}
+	if s.jag || huge {
+		return s.emitOutline()
+	}
+	// The ends form separate clusters only if the segment is not
+	// horizontal and leaves enough analytic rows between their bands.
+	ddx, ddy := m.ApplyVec(seg[0], seg[1])
+	if !(math.Abs(ddy) > 1e-6*math.Hypot(ddx, ddy)) ||
+		!(hi[0]+minMiddleRows <= lo[1] || hi[1]+minMiddleRows <= lo[0]) {
+		return s.emitOutline()
+	}
+
+	// Band rows: the outline edges incident to each end, limited to its
+	// band (one loop: the second of f.loops is empty for an open path).
+	sink, fill := s.sink, s.seg
+	n := f.loops[0]
+	for k := 0; k < n; k++ {
+		k1 := k + 1
+		if k1 == n {
+			k1 = 0
+		}
+		a, b := own[k]&1, own[k1]&1
+		x0, y0, x1, y1 := pts[2*k], pts[2*k+1], pts[2*k1], pts[2*k1+1]
+		fill.limitRows(int(lo[a]), int(hi[a]))
+		sink.AddLine(x0, y0, x1, y1)
+		if b != a {
+			fill.limitRows(int(lo[b]), int(hi[b]))
+			sink.AddLine(x0, y0, x1, y1)
+		}
+	}
+	fill.unlimitRows()
+	fill.setOrientation(m.Det() < 0)
+
+	// Analytic rows between the two bands.
+	y0, y1 := hi[0], lo[1]
+	if hi[1] <= lo[0] {
+		y0, y1 = hi[1], lo[0]
+	}
+	hw := s.hw
+	ux, uy := seg[0], seg[1]
+	nx, ny := -uy*hw, ux*hw
+	ax, ay := m.Apply(v[0]+nx, v[1]+ny)
+	bx, by := m.Apply(v[2]+nx, v[3]+ny)
+	dx, dy := m.Apply(v[0]-nx, v[1]-ny)
+	fill.middle(ax, ay, bx, by, dx, dy, int(y0), int(y1))
+	s.fastHits++
+	return true
 }
