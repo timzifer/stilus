@@ -1,5 +1,9 @@
 # stilus
 
+[![CI](https://github.com/timzifer/stilus/actions/workflows/ci.yml/badge.svg)](https://github.com/timzifer/stilus/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/timzifer/stilus.svg)](https://pkg.go.dev/github.com/timzifer/stilus)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A sparse CPU rasterizer for 2D vector graphics in pure Go: no cgo, no
 dependencies, all GOOS/GOARCH including `js/wasm`, MIT licensed.
 

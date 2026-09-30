@@ -11,12 +11,6 @@ import (
 	"github.com/timzifer/stilus/internal/scenes"
 )
 
-func clear32(img *image.RGBA) {
-	for i := range img.Pix {
-		img.Pix[i] = 0xff
-	}
-}
-
 // BenchmarkScenes renders each scene on one core. The spec's acceptance
 // targets at 150 dpi: hatch-2000 ≤ 60 ms, short-20000 ≤ 40 ms, 0 allocs.
 func BenchmarkScenes(b *testing.B) {
