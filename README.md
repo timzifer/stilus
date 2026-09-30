@@ -113,7 +113,7 @@ module):
 ¹ stilus stroker outlines, filled with one `vector.Rasterizer` sized to each
 outline's bounding box. ² No clip; gg's rectangle clip is slower still.
 
-## SIMD (experimental, Go 1.26 `simd/archsimd`)
+## SIMD (experimental, Go 1.26+ `simd/archsimd`)
 
 Built with `GOEXPERIMENT=simd` on amd64, the compositing kernels
 (`covOpaque`, `covOver`, `runOver`) use AVX2 (4 px per iteration) or
@@ -122,8 +122,8 @@ chosen at runtime. Results are bit-identical to the scalar path
 (`TestSpanKernels`). Any other build uses the scalar kernels unchanged.
 
 ```sh
-GOTOOLCHAIN=go1.26.8 GOEXPERIMENT=simd go test ./...
-GOTOOLCHAIN=go1.26.8 GOEXPERIMENT=simd go test -run XXX -bench SpanKernels .
+GOEXPERIMENT=simd go test ./...                # Go 1.26 or 1.27
+GOEXPERIMENT=simd go test -run XXX -bench SpanKernels .
 STILUS_SIMD=0 | 256   # at run time: scalar only | AVX2 only
 ```
 
@@ -140,9 +140,19 @@ Kernel throughput, ns per span (same Xeon):
 Spans shorter than 16 px stay scalar: one vector block plus `VZEROUPPER`
 costs more than a few scalar pixels. On the scenes this means: fills with
 transparency (mixed drawing) −15…20 %, stroke-dominated scenes unchanged,
-because their spans are 2–6 px wide.
+because their spans are 2–6 px wide. Same picture on a Ryzen 7 5800H
+(AVX2 only) with Go 1.27.1: mixed drawing −21 %, contours −8 %, the rest
+unchanged.
 
-Pitfalls found on the way (Go 1.26), all avoided in `simd_amd64.go`:
+The experiment's API changed in Go 1.27 (loads and stores take slices:
+`LoadUint8x16(s)`, `Store(s)`, `TruncToUint8`). The kernels call small
+wrappers in `simd_api_go126.go` / `simd_api_go127.go`, selected by the
+toolchain's own `go1.27` release tag, so no extra flag is needed; the
+wrappers inline and the generated loops are the same on both. Without
+`GOEXPERIMENT=simd` any Go ≥ 1.24 builds the scalar path.
+
+Pitfalls found on the way (Go 1.26, the first still true in 1.27), all
+avoided in `simd_amd64.go`:
 
 - The compiler emits no `VZEROUPPER`; without `archsimd.ClearAVXUpperBits()`
   at the end of each kernel, the rasterizer's legacy-SSE float code ran 3–5×
