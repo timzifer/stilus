@@ -1,9 +1,11 @@
 package stilus
 
 import (
+	"cmp"
 	"image"
 	"math"
 	"math/bits"
+	"slices"
 	"unsafe"
 )
 
@@ -221,10 +223,17 @@ func (r *Rasterizer) AddPath(p *Path, m Matrix) {
 	var sx, sy, cx, cy float64 // subpath start, current point
 	open := false
 	pi := 0
+	// Edges added before a non-finite point are taken back.
+	ne, minX, maxX, minY, maxY, trunc := len(r.edges), r.minX, r.maxX, r.minY, r.maxY, r.truncated
+	bad := false
 	tr := func(q Point) (float64, float64) {
 		x, y := float64(q.X), float64(q.Y)
 		if !ident {
 			x, y = m.Apply(x, y)
+		}
+		// Checked before clamping, which would turn infinities finite.
+		if !(math.Abs(x) <= math.MaxFloat64 && math.Abs(y) <= math.MaxFloat64) {
+			bad = true
 		}
 		return clampCoord(x), clampCoord(y)
 	}
@@ -263,6 +272,11 @@ func (r *Rasterizer) AddPath(p *Path, m Matrix) {
 				r.AddLine(cx, cy, sx, sy)
 			}
 			cx, cy = sx, sy
+		}
+		if bad {
+			r.edges = r.edges[:ne]
+			r.minX, r.maxX, r.minY, r.maxY, r.truncated = minX, maxX, minY, maxY, trunc
+			return
 		}
 		pi += numPoints[v]
 	}
@@ -377,11 +391,11 @@ func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 		return
 	}
 	if y0 < cy0 {
-		x0 += (cy0 - y0) * (x1 - x0) / (y1 - y0)
+		x0 = lineAt(cy0, y0, y1, x0, x1)
 		y0 = cy0
 	}
 	if y1 > cy1 {
-		x1 = x0 + (cy1-y0)*(x1-x0)/(y1-y0)
+		x1 = lineAt(cy1, y0, y1, x0, x1)
 		y1 = cy1
 	}
 	cx0, cx1 := r.cx0, r.cx1
@@ -393,7 +407,7 @@ func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 		return
 	}
 	if x0 < cx0 || x1 < cx0 {
-		yc := y0 + (cx0-x0)*(y1-y0)/(x1-x0)
+		yc := lineAt(cx0, x0, x1, y0, y1)
 		if x0 < cx0 {
 			r.emit(cx0, y0, cx0, yc, dir)
 			x0, y0 = cx0, yc
@@ -403,7 +417,7 @@ func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 		}
 	}
 	if x0 > cx1 || x1 > cx1 {
-		yc := y0 + (cx1-x0)*(y1-y0)/(x1-x0)
+		yc := lineAt(cx1, x0, x1, y0, y1)
 		if x0 > cx1 {
 			x0, y0 = cx1, yc
 		} else {
@@ -413,10 +427,35 @@ func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 	r.emit(x0, y0, x1, y1, dir)
 }
 
+// lineAt returns the value at v of the line through (a, fa) and (b, fb),
+// with a != b and v between a and b. Near the float64 range the differences
+// overflow; the value is then interpolated at half scale.
+func lineAt(v, a, b, fa, fb float64) float64 {
+	if f := fa + (v-a)*(fb-fa)/(b-a); math.Abs(f) <= math.MaxFloat64 && !math.IsInf(b-a, 0) {
+		return f
+	}
+	t := (v*0.5 - a*0.5) / (b*0.5 - a*0.5)
+	return fa*(1-t) + fb*t
+}
+
+// fixed converts a device coordinate at offset o into 24.8 fixed point,
+// clamped to [0, n·256]. Clipping keeps coordinates in range up to rounding;
+// the clamp guards the unchecked indexing in rasterEdge.
+func fixed(v, o float64, n int) int32 {
+	f := (v-o)*256 + 0.5
+	if !(f >= 0) { // also NaN
+		return 0
+	}
+	if hi := float64(n << 8); f > hi {
+		return int32(n << 8)
+	}
+	return int32(f)
+}
+
 // emit stores a clipped segment (y0 <= y1) as a fixed-point edge.
 func (r *Rasterizer) emit(x0, y0, x1, y1 float64, dir int32) {
-	fy0 := int32((y0-r.cy0)*256 + 0.5)
-	fy1 := int32((y1-r.cy0)*256 + 0.5)
+	fy0 := fixed(y0, r.cy0, r.h)
+	fy1 := fixed(y1, r.cy0, r.h)
 	if fy0 >= fy1 {
 		return
 	}
@@ -428,8 +467,8 @@ func (r *Rasterizer) emit(x0, y0, x1, y1 float64, dir int32) {
 		r.truncated = true
 		return
 	}
-	fx0 := int32((x0-r.cx0)*256 + 0.5)
-	fx1 := int32((x1-r.cx0)*256 + 0.5)
+	fx0 := fixed(x0, r.cx0, r.w)
+	fx1 := fixed(x1, r.cx0, r.w)
 	var dydx float64
 	if fx1 != fx0 {
 		dydx = math.Abs(float64(fy1-fy0) / float64(fx1-fx0))
@@ -469,32 +508,48 @@ func (r *Rasterizer) Rasterize(rule FillRule, b Blitter) {
 		r.sweep(row0, mask, rule, b)
 		return
 	}
-	// Counting sort of edges by their first band.
-	if cap(r.bucket) < nb+1 {
-		r.bucket = make([]int32, nb+1)
-	}
-	bucket := r.bucket[:nb+1]
-	clear(bucket)
-	for i := range r.edges {
-		bucket[(int(r.edges[i].y0>>8)-row0)>>bandShift+1]++
-	}
-	for i := 1; i <= nb; i++ {
-		bucket[i] += bucket[i-1]
-	}
+	// Sort edges by their first band: a counting sort when bands are few
+	// relative to edges, else a comparison sort, so that the empty bands of
+	// a tall sparse path cost nothing.
+	band := func(ei int32) int { return (int(r.edges[ei].y0>>8) - row0) >> bandShift }
 	if cap(r.order) < len(r.edges) {
 		r.order = make([]int32, len(r.edges))
 	}
 	order := r.order[:len(r.edges)]
-	for i := range r.edges {
-		bi := (int(r.edges[i].y0>>8) - row0) >> bandShift
-		order[bucket[bi]] = int32(i)
-		bucket[bi]++
+	if nb <= 4*len(r.edges) {
+		if cap(r.bucket) < nb+1 {
+			r.bucket = make([]int32, nb+1)
+		}
+		bucket := r.bucket[:nb+1]
+		clear(bucket)
+		for i := range r.edges {
+			bucket[band(int32(i))+1]++
+		}
+		for i := 1; i <= nb; i++ {
+			bucket[i] += bucket[i-1]
+		}
+		for i := range r.edges {
+			bi := band(int32(i))
+			order[bucket[bi]] = int32(i)
+			bucket[bi]++
+		}
+	} else {
+		for i := range order {
+			order[i] = int32(i)
+		}
+		slices.SortFunc(order, func(a, b int32) int { return cmp.Compare(r.edges[a].y0, r.edges[b].y0) })
 	}
-	// bucket[bi] is now the end of band bi's range; its start is bucket[bi-1].
 	active := r.active[:0]
 	next := 0
 	for bi := 0; bi < nb; bi++ {
-		for ; next < int(bucket[bi]); next++ {
+		if len(active) == 0 {
+			// Nothing reaches this band: skip to the next edge's.
+			if next == len(order) {
+				break
+			}
+			bi = max(bi, band(order[next]))
+		}
+		for ; next < len(order) && band(order[next]) <= bi; next++ {
 			active = append(active, order[next])
 		}
 		bandRow := row0 + bi<<bandShift

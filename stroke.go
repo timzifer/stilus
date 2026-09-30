@@ -64,8 +64,9 @@ const (
 	densePeriod = 0.25
 	// denseSteps bounds the pattern entries per device pixel that are
 	// walked one by one. Longer patterns of tiny entries collapse to their
-	// mean coverage too, so walking a stroke costs at most this many
-	// transitions per pixel of its length along the widest stretch of m.
+	// mean coverage too when every pixel-long stretch of the pattern covers
+	// that mean within 1/16; others are walked within dash's per-subpath
+	// budget.
 	denseSteps = 32
 )
 
@@ -85,6 +86,11 @@ type Stroker struct {
 	dev  bool          // hairline: geometry in device space, one pixel wide
 	seg  segmentFiller // optional analytic path for straight segments
 	jag  bool          // an inner corner was routed through its vertex
+	// With cull set, subpaths whose outline lies outside cb (the sink's
+	// clip padded by the widest outline extent) are skipped before
+	// flattening; with cullCurves set too, such curves take their chord.
+	cull, cullCurves bool
+	cb               Rect
 	// Dash pieces take the analytic path only on straight subpaths with
 	// gaps wide enough that neighbouring pieces never share a pixel.
 	dashFast, dashing, dashStraight bool
@@ -185,6 +191,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		s.hw, r = 0.5, 0.5
 	}
 	s.tolU = flattenTol / sm
+	s.setCull(r)
 	if r > flattenTol {
 		s.stepA = 2 * math.Acos(1-flattenTol/r)
 	} else {
@@ -217,6 +224,9 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		}
 	}
 
+	// A chord changes the outline only outside the clip, but it shortens
+	// the path a dash pattern walks.
+	s.cullCurves = s.cull && !dashed
 	pts := p.Points
 	pi := 0
 	closed := false
@@ -240,7 +250,9 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		}
 		pending = false
 	}
-	for _, v := range p.Verbs {
+	verbs := p.Verbs
+	for vi := 0; vi < len(verbs); vi++ {
+		v := verbs[vi]
 		if int(v) >= len(numPoints) || pi+numPoints[v] > len(pts) {
 			break
 		}
@@ -248,6 +260,13 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		case MoveTo:
 			flush()
 			pending = false
+			// Subpaths are stroked independently, dash phase included.
+			if s.cull {
+				if vj, pj, miss := s.subpathMisses(verbs, pts, vi, pi); miss {
+					vi, pi = vj-1, pj
+					continue
+				}
+			}
 			s.addPt(float64(pts[pi].X), float64(pts[pi].Y), true)
 		case LineTo:
 			begin()
@@ -269,6 +288,69 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		pi += numPoints[v]
 	}
 	flush()
+}
+
+// setCull enables culling when the sink is a Rasterizer, which drops all
+// geometry outside its clip; r is the stroke's half width in device space.
+func (s *Stroker) setCull(r float64) {
+	s.cull = false
+	rz, ok := s.sink.(*Rasterizer)
+	if !ok || rz.w <= 0 || rz.h <= 0 {
+		return
+	}
+	// Outline points lie within r of the path's control hull, except for
+	// square caps' corners and miter tips.
+	k := 1.0
+	if s.st.Cap == SquareCap {
+		k = math.Sqrt2
+	}
+	if s.st.Join == MiterJoin && s.st.MiterLimit > k {
+		k = s.st.MiterLimit
+	}
+	pad := r*k + 1
+	if !(pad < 1<<30) {
+		return
+	}
+	s.cull = true
+	s.cb = Rect{rz.cx0 - pad, rz.cy0 - pad, rz.cx1 + pad, rz.cy1 + pad}
+}
+
+// misses reports whether the user-space box b lies outside s.cb in device
+// space. A NaN box never misses.
+func (s *Stroker) misses(b Rect) bool {
+	d := s.m.transformRect(b)
+	return d.X1 < s.cb.X0 || d.X0 > s.cb.X1 || d.Y1 < s.cb.Y0 || d.Y0 > s.cb.Y1
+}
+
+// subpathMisses reports whether the outline of the subpaths from the MoveTo
+// at verbs[vi] up to the next MoveTo misses the clip, and where that MoveTo
+// and its point are.
+func (s *Stroker) subpathMisses(verbs []Verb, pts []Point, vi, pi int) (int, int, bool) {
+	x, y := float64(pts[pi].X), float64(pts[pi].Y)
+	b := Rect{x, y, x, y}
+	pi++
+	for vi++; vi < len(verbs); vi++ {
+		v := verbs[vi]
+		if v == MoveTo || int(v) >= len(numPoints) || pi+numPoints[v] > len(pts) {
+			break
+		}
+		for _, q := range pts[pi : pi+numPoints[v]] {
+			x, y := float64(q.X), float64(q.Y)
+			b = Rect{min(b.X0, x), min(b.Y0, y), max(b.X1, x), max(b.Y1, y)}
+		}
+		pi += numPoints[v]
+	}
+	return vi, pi, s.misses(b)
+}
+
+// curveMisses reports whether the outline of a curve with the given
+// user-space control points (x, y pairs) misses the clip.
+func (s *Stroker) curveMisses(q ...float64) bool {
+	b := Rect{q[0], q[1], q[0], q[1]}
+	for i := 2; i < len(q); i += 2 {
+		b = Rect{min(b.X0, q[i]), min(b.Y0, q[i+1]), max(b.X1, q[i]), max(b.Y1, q[i+1])}
+	}
+	return s.misses(b)
 }
 
 // addPt appends a user-space point, dropping exact duplicates. A subpath
@@ -296,6 +378,10 @@ func (s *Stroker) quad(c, e Point) {
 	x0, y0 := s.last()
 	x1, y1 := float64(c.X), float64(c.Y)
 	x2, y2 := float64(e.X), float64(e.Y)
+	if s.cullCurves && s.curveMisses(x0, y0, x1, y1, x2, y2) {
+		s.addPt(x2, y2, false)
+		return
+	}
 	ddx, ddy := x0-2*x1+x2, y0-2*y1+y2
 	n := segCount(math.Sqrt(ddx*ddx+ddy*ddy) * (0.25 / s.tolU))
 	for i := 1; i < n; i++ {
@@ -311,6 +397,10 @@ func (s *Stroker) cubic(c1, c2, e Point) {
 	x1, y1 := float64(c1.X), float64(c1.Y)
 	x2, y2 := float64(c2.X), float64(c2.Y)
 	x3, y3 := float64(e.X), float64(e.Y)
+	if s.cullCurves && s.curveMisses(x0, y0, x1, y1, x2, y2, x3, y3) {
+		s.addPt(x3, y3, false)
+		return
+	}
 	d1x, d1y := x0-2*x1+x2, y0-2*y1+y2
 	d2x, d2y := x1-2*x2+x3, y1-2*y2+y3
 	l := math.Sqrt(math.Max(d1x*d1x+d1y*d1y, d2x*d2x+d2y*d2y))
@@ -738,7 +828,7 @@ func denseDash(m Matrix, st *StrokeStyle) (float64, bool) {
 	sm := sigmaMax(m)
 	pd := period * sm // device period along the widest stretch
 	if !(period > 0) || math.IsInf(period, 0) || !(sm > 0) ||
-		pd > densePeriod && float64(steps) <= denseSteps*pd {
+		pd > densePeriod && (float64(steps) <= denseSteps*pd || !uniformDash(pat, steps, 1/sm)) {
 		return 1, false
 	}
 	scale, w := 1.0, st.Width
@@ -746,6 +836,55 @@ func denseDash(m Matrix, st *StrokeStyle) (float64, bool) {
 		scale, w = sm, 1
 	}
 	return meanCoverage(pat, scale, w, st.Cap), true
+}
+
+// uniformDash reports whether every stretch of length l along pat, walked
+// for steps entries starting with a dash, covers the pattern's mean
+// on-fraction within 1/16. Only then does drawing a long pattern of tiny
+// entries at its mean coverage keep every pixel close to its own coverage.
+func uniformDash(pat []float64, steps int, l float64) bool {
+	np := len(pat)
+	period, on := 0.0, 0.0
+	for i := 0; i < steps; i++ {
+		period += pat[i%np]
+		if i%2 == 0 {
+			on += pat[i%np]
+		}
+	}
+	lit := func(i int) float64 { return float64(1 - i%2) }
+	// g is the dash length within the window [x, x+l). The window starts
+	// in entry a, ra before its end, and ends in entry b, rb before its end.
+	k := math.Floor(l / period)
+	g := k * on
+	b, pos := 0, l-k*period
+	for n := 0; n < steps && pos >= pat[b%np]; n++ {
+		g += lit(b) * pat[b%np]
+		pos -= pat[b%np]
+		b = (b + 1) % steps
+	}
+	g += lit(b) * pos
+	rb := max(pat[b%np]-pos, 0)
+	a, ra := 0, pat[0]
+	mean, tol := on/period*l, l/16
+	for a < steps {
+		if math.Abs(g-mean) > tol {
+			return false
+		}
+		// Slide the window to the next entry boundary at either end.
+		d := min(ra, rb)
+		g += d * (lit(b) - lit(a))
+		ra -= d
+		rb -= d
+		if ra <= 0 {
+			a++
+			ra = pat[a%np]
+		}
+		if rb <= 0 {
+			b = (b + 1) % steps
+			rb = pat[b%np]
+		}
+	}
+	return true
 }
 
 // meanCoverage returns the fraction of a stroke of width w that pat covers,
