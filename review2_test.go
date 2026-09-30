@@ -108,3 +108,60 @@ func TestTruncatedAfterFill(t *testing.T) {
 		t.Fatal("next path via AddPath: Truncated() = true")
 	}
 }
+
+// Analytic pixels injected at fractional clip borders must work at negative
+// x (targets with a negative origin, tiles). Each case is compared with the
+// same scene shifted by +dx into positive coordinates.
+func TestBorderInjectNegativeX(t *testing.T) {
+	render := func(dx float32, target image.Rectangle, clip Rect, x float32) *image.Alpha {
+		img := image.NewRGBA(target.Add(image.Pt(int(dx), 0)))
+		c := NewCanvas(img)
+		clip.X0 += float64(dx)
+		clip.X1 += float64(dx)
+		c.ClipRect(clip, Identity)
+		var p Path
+		for k := 0; k < 2; k++ { // two identical subpaths: parts may overlap
+			p.MoveTo(x+dx, 5)
+			p.LineTo(x+dx, 95)
+		}
+		c.Stroke(&p, Identity, &StrokeStyle{Width: 4}, black)
+		return alphaOfRGBA(img)
+	}
+	for name, tc := range map[string]struct {
+		target image.Rectangle
+		clip   Rect
+		x      float32
+		px     image.Point // pixel expected at 128
+	}{
+		// Fractional top border row (review example).
+		"border row": {image.Rect(-20, 0, 0, 100), Rect{X0: -20, Y0: 10.5, X1: 0, Y1: 100}, -10, image.Pt(-10, 10)},
+		// Fractional left border column.
+		"border column": {image.Rect(-40, 0, 0, 100), Rect{X0: -9.5, Y0: 0, X1: 0, Y1: 100}, -9, image.Pt(-10, 50)},
+	} {
+		got := render(0, tc.target, tc.clip, tc.x)
+		want := render(40, tc.target, tc.clip, tc.x)
+		if a := got.AlphaAt(tc.px.X, tc.px.Y).A; a < 127 || a > 128 {
+			t.Errorf("%s: pixel %v = %d, want 128", name, tc.px, a)
+		}
+		max := 0
+		for y := tc.target.Min.Y; y < tc.target.Max.Y; y++ {
+			for x := tc.target.Min.X; x < tc.target.Max.X; x++ {
+				d := int(got.AlphaAt(x, y).A) - int(want.AlphaAt(x+40, y).A)
+				max = maxInt(max, d, -d)
+			}
+		}
+		if max > 1 {
+			t.Errorf("%s: differs from the shifted scene by %d", name, max)
+		}
+	}
+}
+
+func maxInt(v ...int) int {
+	m := v[0]
+	for _, x := range v[1:] {
+		if x > m {
+			m = x
+		}
+	}
+	return m
+}

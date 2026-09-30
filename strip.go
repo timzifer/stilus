@@ -560,24 +560,26 @@ func (f *segFast) borderCols(j, i0, i1 int, d0 float64, rc *rowCtx) {
 // the accumulator: fully covered stretches as one rectangle each, edge
 // pixels one by one.
 func (f *segFast) borderRow(j, i0, i1 int, d float64, rc *rowCtx) {
-	full := -1 // start of the current fully covered stretch
+	// The current fully covered stretch starts at runStart while inRun;
+	// x can be negative, so no coordinate doubles as the marker.
+	inRun, runStart := false, 0
 	for x := i0; x < i1; x++ {
 		c := rc.cov(d)
 		d += rc.nx
 		if c >= 1-1e-12 {
-			if full < 0 {
-				full = x
+			if !inRun {
+				inRun, runStart = true, x
 			}
 			continue
 		}
-		if full >= 0 {
-			f.injectRect(full, x, j, 1)
-			full = -1
+		if inRun {
+			f.injectRect(runStart, x, j, 1)
+			inRun = false
 		}
 		f.inject(x, j, c)
 	}
-	if full >= 0 {
-		f.injectRect(full, i1, j, 1)
+	if inRun {
+		f.injectRect(runStart, i1, j, 1)
 	}
 }
 
