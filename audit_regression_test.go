@@ -279,3 +279,18 @@ func BenchmarkRectangleFill(b *testing.B) {
 		c.Fill(&p, Identity, NonZero, black)
 	}
 }
+
+func TestAddLineEmptyRowWindow(t *testing.T) {
+	r := NewRasterizer(image.Rect(-3, 2, 37, 29))
+	r.limitRows(1e8, 1e8+10) // corner band below the clip
+	r.AddLine(-19, 0, -19, 2e8)
+	r.AddLine(19, 2e8, 19, 0)
+	if len(r.edges) != 0 {
+		t.Fatalf("edges outside an empty row window: %+v", r.edges)
+	}
+	r.unlimitRows()
+	r.AddLine(-19, 0, -19, 2e8)
+	if len(r.edges) != 1 || r.edges[0].y0 != 0 || r.edges[0].y1 != 27*256 {
+		t.Fatalf("unlimited line: %+v", r.edges)
+	}
+}

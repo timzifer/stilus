@@ -372,8 +372,10 @@ func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 		x0, y0, x1, y1 = x1, y1, x0, y0
 		dir = -1
 	}
+	// limitRows may leave an empty window (a corner band outside the clip);
+	// clipping to it would invert y0 and y1.
 	cy0, cy1 := r.ry0, r.ry1
-	if y1 <= cy0 || y0 >= cy1 {
+	if y1 <= cy0 || y0 >= cy1 || !(cy0 < cy1) {
 		return
 	}
 	if y0 < cy0 {
