@@ -356,3 +356,28 @@ func toCov(f float64) uint8 {
 	}
 	return uint8(f*255 + 0.5)
 }
+
+// scaleBlitter multiplies all coverage by f/255: the mean coverage of a dash
+// pattern drawn as a solid stroke.
+type scaleBlitter struct {
+	f       uint32
+	next    Blitter
+	scratch []uint8
+}
+
+func (b *scaleBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
+	if a := div255(uint32(alpha) * b.f); a != 0 {
+		b.next.BlitRun(y, x0, x1, uint8(a))
+	}
+}
+
+func (b *scaleBlitter) BlitCoverage(y, x int, cov []uint8) {
+	if cap(b.scratch) < len(cov) {
+		b.scratch = make([]uint8, len(cov))
+	}
+	c := b.scratch[:len(cov)]
+	for i, a := range cov {
+		c[i] = uint8(div255(uint32(a) * b.f))
+	}
+	b.next.BlitCoverage(y, x, c)
+}
