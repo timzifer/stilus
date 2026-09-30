@@ -94,7 +94,8 @@ type Stroker struct {
 	// Dash pieces take the analytic path only on straight subpaths with
 	// gaps wide enough that neighbouring pieces never share a pixel.
 	dashFast, dashing, dashStraight bool
-	fastHits, fastTries             int // statistics for tests
+	fastHits, fastTries             int  // statistics for tests
+	noLine                          bool // tests: single segments take fastPoly's general path
 	fast                            fastState
 	m                               Matrix
 	st                              *StrokeStyle
