@@ -57,6 +57,26 @@ jobs:
         run: go test ./...
         if: runner.os == 'Windows'
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the badge to the badges branch (main only)
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: go test -cover
+        # Only the library package: cmd/ and internal/scenes are tooling.
+        run: go test -coverprofile=cover.out -covermode=atomic .
+      - name: Coverage badge
+        uses: vladopajic/go-test-coverage@v2
+        with:
+          profile: cover.out
+          git-token: ${{ github.event_name == 'push' && github.ref_name == 'main' && secrets.GITHUB_TOKEN || '' }}
+          git-branch: badges
+
   cross:
     name: Cross-build
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 # stilus
 
 [![CI](https://github.com/timzifer/stilus/actions/workflows/ci.yml/badge.svg)](https://github.com/timzifer/stilus/actions/workflows/ci.yml)
+[![Coverage](https://raw.githubusercontent.com/timzifer/stilus/badges/.badges/main/coverage.svg)](https://github.com/timzifer/stilus/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/timzifer/stilus.svg)](https://pkg.go.dev/github.com/timzifer/stilus)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
