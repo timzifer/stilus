@@ -3,11 +3,13 @@
 // one line per scene.
 //
 //	go test -run '^$' -bench '^BenchmarkScenes$/./^150dpi$' -count 5 . |
-//	    benchchart record -db bench.json -commit $(git rev-parse HEAD) -subject ... -date ...
+//	    benchchart record -db bench.json -ref v0.3.0 -commit $(git rev-parse HEAD) -date ...
 //	benchchart render -db bench.json -o bench.svg
 //
-// CI runs it from .github/workflows/bench.yml and publishes the chart on the
-// badges branch.
+// Results from different machines do not compare, so the history is not
+// accumulated: bench/scripts/bench-refs.sh measures every release tag and main
+// in one run, and CI (.github/workflows/bench.yml) publishes that snapshot on
+// the badges branch.
 package main
 
 import (
@@ -29,10 +31,10 @@ import (
 	"github.com/timzifer/figure/scale"
 )
 
-// Entry is one commit's results: scene name to median ns/op.
+// Entry is one ref's results: scene name to median ns/op.
 type Entry struct {
+	Ref     string             `json:"ref"`
 	Commit  string             `json:"commit"`
-	Subject string             `json:"subject"`
 	Date    time.Time          `json:"date"`
 	Results map[string]float64 `json:"results"`
 }
@@ -65,7 +67,7 @@ func record(args []string, in io.Reader) error {
 	fs := flag.NewFlagSet("record", flag.ExitOnError)
 	db := fs.String("db", "bench.json", "history file")
 	commit := fs.String("commit", "", "commit hash")
-	subject := fs.String("subject", "", "commit subject")
+	ref := fs.String("ref", "", "axis label, such as a tag (default: short commit hash)")
 	date := fs.String("date", "", "commit date, RFC 3339")
 	fs.Parse(args)
 	if *commit == "" {
@@ -86,7 +88,10 @@ func record(args []string, in io.Reader) error {
 	if err != nil {
 		return err
 	}
-	hist = upsert(hist, Entry{Commit: *commit, Subject: *subject, Date: when, Results: results})
+	if *ref == "" {
+		*ref = short(*commit)
+	}
+	hist = upsert(hist, Entry{Ref: *ref, Commit: *commit, Date: when, Results: results})
 	return save(*db, hist)
 }
 
@@ -127,18 +132,16 @@ func median(vs []float64) float64 {
 	return (vs[n/2-1] + vs[n/2]) / 2
 }
 
-// upsert replaces the entry for e.Commit, or adds it, and keeps the history in
-// commit-date order.
+// upsert replaces the entry for e.Ref in place, or appends it: the order of
+// the history is the order the refs were recorded in, which is axis order.
 func upsert(hist []Entry, e Entry) []Entry {
 	for i := range hist {
-		if hist[i].Commit == e.Commit {
+		if hist[i].Ref == e.Ref {
 			hist[i] = e
 			return hist
 		}
 	}
-	hist = append(hist, e)
-	sort.SliceStable(hist, func(i, j int) bool { return hist[i].Date.Before(hist[j].Date) })
-	return hist
+	return append(hist, e)
 }
 
 func load(path string) ([]Entry, error) {
@@ -176,16 +179,16 @@ func render(args []string) error {
 	if len(hist) == 0 {
 		return fmt.Errorf("render: %s has no entries", *db)
 	}
-	return chart(hist).Render(figure.SVG(*out))
+	return chart(hist, time.Now().UTC()).Render(figure.SVG(*out))
 }
 
-// chart draws one line per scene over the commits in hist, which is in commit
-// order. A scene a commit did not have is simply absent from that commit.
-func chart(hist []Entry) *figure.Plot {
-	commits := make([]string, len(hist))
+// chart draws one line per scene over the refs in hist, in hist's order. A
+// scene a ref did not have is simply absent from that ref.
+func chart(hist []Entry, measured time.Time) *figure.Plot {
+	refs := make([]string, len(hist))
 	sceneSet := map[string]bool{}
 	for i, e := range hist {
-		commits[i] = short(e.Commit)
+		refs[i] = e.Ref
 		for s := range e.Results {
 			sceneSet[s] = true
 		}
@@ -199,23 +202,23 @@ func chart(hist []Entry) *figure.Plot {
 	p := figure.New(
 		figure.Size(900, 480),
 		figure.Title("BenchmarkScenes at 150 dpi, one core"),
-		figure.XTitle("commit (main)"),
+		figure.XTitle("release (all measured in one run, "+measured.Format("2006-01-02")+")"),
 		figure.YTitle("ms/op"),
 	)
-	p.X(scale.Ordinal(scale.Categories(commits...)))
+	p.X(scale.Ordinal(scale.Categories(refs...)))
 	p.Y(scale.Linear(scale.Nice(), scale.Zero()))
 	for i, s := range scenes {
 		var xs []string
 		var ys []float64
 		for _, e := range hist {
 			if ns, ok := e.Results[s]; ok {
-				xs = append(xs, short(e.Commit))
+				xs = append(xs, e.Ref)
 				ys = append(ys, ns/1e6)
 			}
 		}
-		src := figure.NewTable().String("commit", xs).Float64("ms", ys)
+		src := figure.NewTable().String("ref", xs).Float64("ms", ys)
 		opts := []geom.Option{
-			geom.X("commit"), geom.Y("ms"),
+			geom.X("ref"), geom.Y("ms"),
 			geom.Color(palette.OkabeIto.At(i)),
 			geom.Label(s),
 		}
@@ -224,7 +227,7 @@ func chart(hist []Entry) *figure.Plot {
 			opts = append(opts, geom.Dash(6, 4))
 		}
 		p.Add(geom.Line(src, opts...))
-		p.Add(geom.Scatter(src, geom.X("commit"), geom.Y("ms"),
+		p.Add(geom.Scatter(src, geom.X("ref"), geom.Y("ms"),
 			geom.Color(palette.OkabeIto.At(i)), geom.Size(3), geom.Label(s)))
 	}
 	return p

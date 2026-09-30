@@ -42,10 +42,11 @@ func TestParse(t *testing.T) {
 func TestUpsertAndRender(t *testing.T) {
 	day := func(d int) time.Time { return time.Date(2026, 9, d, 0, 0, 0, 0, time.UTC) }
 	var hist []Entry
-	hist = upsert(hist, Entry{Commit: "bbbbbbbbbb", Date: day(2), Results: map[string]float64{"a": 2e7, "b": 3e7}})
-	hist = upsert(hist, Entry{Commit: "aaaaaaaaaa", Date: day(1), Results: map[string]float64{"a": 4e7}})
-	hist = upsert(hist, Entry{Commit: "bbbbbbbbbb", Date: day(2), Results: map[string]float64{"a": 1e7, "b": 3e7}})
-	if len(hist) != 2 || hist[0].Commit != "aaaaaaaaaa" || hist[1].Results["a"] != 1e7 {
+	hist = upsert(hist, Entry{Ref: "v0.2.0", Commit: "bbbbbbbbbb", Date: day(2), Results: map[string]float64{"a": 2e7, "b": 3e7}})
+	hist = upsert(hist, Entry{Ref: "main", Commit: "aaaaaaaaaa", Date: day(1), Results: map[string]float64{"a": 4e7}})
+	hist = upsert(hist, Entry{Ref: "v0.2.0", Commit: "bbbbbbbbbb", Date: day(2), Results: map[string]float64{"a": 1e7, "b": 3e7}})
+	// Recording order is axis order, whatever the commit dates say.
+	if len(hist) != 2 || hist[0].Ref != "v0.2.0" || hist[1].Ref != "main" || hist[0].Results["a"] != 1e7 {
 		t.Fatalf("unexpected history %+v", hist)
 	}
 	dir := t.TempDir()
@@ -57,7 +58,7 @@ func TestUpsertAndRender(t *testing.T) {
 	if err != nil || len(loaded) != 2 {
 		t.Fatalf("load: %v, %d entries", err, len(loaded))
 	}
-	if err := chart(loaded).Render(figure.SVG(filepath.Join(dir, "bench.svg"))); err != nil {
+	if err := chart(loaded, day(3)).Render(figure.SVG(filepath.Join(dir, "bench.svg"))); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -1,23 +1,20 @@
 name: Benchmarks
 
+# Timings from different runners do not compare, so every run measures all
+# release tags and main anew, on one runner, and replaces the published chart.
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      backfill:
-        description: Re-measure every commit on main (first parent) instead of only the current one
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
-# Runs append to one history file on the badges branch: never run two at once,
-# and never cancel one halfway.
+# Each run is a complete snapshot: the newest one wins.
 concurrency:
   group: bench-history
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   history:
@@ -42,31 +39,25 @@ jobs:
           fi
           mkdir -p out/bench
       - name: Run benchmarks
-        env:
-          BACKFILL: ${{ inputs.backfill }}
         run: |
-          if [ "$BACKFILL" = true ]; then
-            rm -f out/bench/bench.json
-            commits=$(git rev-list --reverse --first-parent HEAD)
-          else
-            commits=$GITHUB_SHA
+          refs=$(git tag --list 'v*' --sort=v:refname)
+          last=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          # main is its own point only when it is ahead of the newest tag.
+          if [ -z "$last" ] || [ "$(git rev-parse origin/main)" != "$(git rev-parse "$last^{commit}")" ]; then
+            refs="$refs main=origin/main"
           fi
-          bench/scripts/bench-history.sh out/bench/bench.json $commits
+          bench/scripts/bench-refs.sh out/bench/bench.json $refs
       - name: Render chart
         working-directory: bench
         run: go run ./cmd/benchchart render -db ../out/bench/bench.json -o ../out/bench/bench.svg
       - name: Publish
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         working-directory: out
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add bench
-          if git diff --cached --quiet; then
-            echo "No change"
-            exit 0
-          fi
-          git commit -m "Update benchmark history for ${GITHUB_SHA::7}"
+          git commit -m "Update benchmark chart for ${GITHUB_REF_NAME} (${GITHUB_SHA::7})"
           for i in 1 2 3 4; do
             if git push origin HEAD:badges; then exit 0; fi
             sleep $((2 ** i))
