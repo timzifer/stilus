@@ -57,6 +57,7 @@ type Canvas struct {
 	empty    clipState
 	tmp      Path
 	err      error
+	sink     uint32 // keeps touchStroke's loads
 }
 
 // NewCanvas returns a canvas drawing onto dst.
@@ -200,6 +201,7 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 		bb.Y1+pad < float64(cb.Min.Y) || bb.Y0-pad > float64(cb.Max.Y) {
 		return
 	}
+	c.touchStroke(p, m, max(st.Width*sm, 1)/2)
 	b := c.paint(paint)
 	f, dense := denseDash(m, st)
 	if dense {
@@ -237,6 +239,74 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 		c.setErr(ErrDashBudget)
 	}
 	c.r.Rasterize(NonZero, b)
+}
+
+// touchStroke loads the first touchRows rows of segments up to
+// touchMaxRows rows tall.
+const (
+	touchRows    = 64
+	touchMaxRows = 256
+)
+
+// touchStroke reads, before a stroke is composited, the destination words
+// under the first rows of each of its short segments (w is the device
+// half-width).
+//
+// Scattered short strokes are bound by memory latency: each row of the
+// stroke is a cold cache line and often a cold page, and compositing
+// fetches them one after another, because the arithmetic between two rows
+// fills the out-of-order window. These loads are independent, so their
+// misses overlap, and compositing then finds the rows in cache. Further
+// down a segment, and along long ones, the hardware prefetcher has picked
+// up the row stride. Curves are followed along their control polygon, which is close
+// enough for a prefetch.
+func (c *Canvas) touchStroke(p *Path, m Matrix, w float64) {
+	cb := c.top().bounds
+	t := &c.solid.t
+	var s uint32
+	var px, py float64
+	pi := 0
+	for _, v := range p.Verbs {
+		if int(v) >= len(numPoints) || pi+numPoints[v] > len(p.Points) {
+			break
+		}
+		for _, q := range p.Points[pi : pi+numPoints[v]] {
+			x, y := m.Apply(float64(q.X), float64(q.Y))
+			if v != MoveTo {
+				s += touchSegment(t, cb, px, py, x, y, w)
+			}
+			px, py = x, y
+		}
+		pi += numPoints[v]
+	}
+	c.sink += s
+}
+
+func touchSegment(t *target, cb image.Rectangle, x0, y0, x1, y1, w float64) uint32 {
+	fy0, fy1 := min(y0, y1)-w, max(y0, y1)+w
+	if !(fy0 > -1<<30 && fy1 < fy0+touchMaxRows) {
+		return 0 // long (the prefetcher follows it), or NaN
+	}
+	iy0, iy1 := max(int(fy0), cb.Min.Y), min(int(fy1)+1, cb.Max.Y, max(int(fy0), cb.Min.Y)+touchRows)
+	var dxdy float64
+	if y1 != y0 {
+		dxdy = (x1 - x0) / (y1 - y0)
+	}
+	lo, hi := min(x0, x1), max(x0, x1)
+	var s uint32
+	for y := iy0; y < iy1; y++ {
+		xc := min(max(x0+(float64(y)+0.5-y0)*dxdy, lo), hi)
+		ix0, ix1 := max(int(xc-w), cb.Min.X), min(int(xc+w)+1, cb.Max.X)
+		if ix0 >= ix1 {
+			continue
+		}
+		row := t.row(y, ix0, ix1)
+		for k := 0; k < len(row); k += 16 {
+			s += row[k]
+		}
+		s += row[len(row)-1]
+	}
+	return s
 }
 
 // full reports whether the clip stack is at MaxClipDepth.
