@@ -406,7 +406,7 @@ func (c *Canvas) ClipRect(r Rect, m Matrix) {
 	}
 	c.tmp.Reset()
 	c.tmp.Rect(float32(r.X0), float32(r.Y0), float32(r.X1-r.X0), float32(r.Y1-r.Y0))
-	c.clipMask(&c.tmp, m, NonZero)
+	c.clipMask(&c.tmp, m, NonZero, nil)
 }
 
 // ClipPath intersects the clip with p under m. Rectangles ("re W n") take
@@ -418,16 +418,38 @@ func (c *Canvas) ClipPath(p *Path, m Matrix, rule FillRule) {
 		c.push(c.top().intersectRect(m.transformRect(r)))
 		return
 	}
-	c.clipMask(p, m, rule)
+	c.clipMask(p, m, rule, nil)
 }
 
-func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule) {
+// ClipStroke intersects the clip with the area a stroke of p with style st
+// (in user space) under m paints, with the stroke's coverage: text in a
+// stroking clip mode, or a stroke painted with a shader that only reaches
+// the stroke as a clip. The area is rasterized once into a mask.
+func (c *Canvas) ClipStroke(p *Path, m Matrix, st *StrokeStyle) {
+	defer c.clipGuard(c.ClipDepth())
+	if len(p.Points) == 0 {
+		c.push(clipState{})
+		return
+	}
+	c.clipMask(p, m, NonZero, st)
+}
+
+// clipMask pushes the clip of p filled with rule, or stroked with st if st
+// is not nil.
+func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule, st *StrokeStyle) {
 	cur := *c.top()
 	if c.full() || cur.bounds.Empty() || !m.finite() {
 		c.push(clipState{})
 		return
 	}
 	bb := m.transformRect(p.Bounds())
+	if st != nil {
+		pad := max(st.Width*sigmaMax(m), 1)/2*max(st.MiterLimit, 1.5) + 2
+		if !(pad < 1<<30) {
+			pad = 1 << 30
+		}
+		bb = Rect{bb.X0 - pad, bb.Y0 - pad, bb.X1 + pad, bb.Y1 + pad}
+	}
 	const lim = 1 << 30
 	// NaN boxes, and boxes entirely beyond the coordinate limit (infinite
 	// ones included), clip everything away.
@@ -452,11 +474,23 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule) {
 	c.writer.m = mk
 	c.setClip(ib)
 	c.r.Reset()
-	c.r.AddPath(p, m)
-	c.checkBudget()
 	// The mask holds the path's coverage times the enclosing masks; the
 	// rectangle clips stay exact in rect and are applied when drawing.
 	var b Blitter = &c.writer
+	if st != nil {
+		if f, dense := denseDash(m, st); dense {
+			c.scale.f, c.scale.next = uint32(math.Round(f*255)), b
+			b = &c.scale
+		}
+		c.s.Stroke(&c.r, p, m, st)
+		if c.s.Truncated() {
+			c.setErr(ErrDashBudget)
+		}
+		rule = NonZero
+	} else {
+		c.r.AddPath(p, m)
+	}
+	c.checkBudget()
 	if cur.mask != nil {
 		c.mread.m, c.mread.next = cur.mask, b
 		b = &c.mread
