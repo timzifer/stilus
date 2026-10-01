@@ -6,7 +6,7 @@ replace github.com/timzifer/stilus => ../
 
 require (
 	github.com/gogpu/gg v0.52.5
-	github.com/timzifer/figure v0.9.0
+	github.com/timzifer/figure v0.14.0
 	github.com/timzifer/stilus v0.0.0-00010101000000-000000000000
 	golang.org/x/image v0.46.0
 )
