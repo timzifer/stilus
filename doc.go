@@ -21,7 +21,13 @@
 //     for a LineSink, such as a Rasterizer or a PathSink.
 //   - Canvas combines both with a clip stack and compositing
 //     onto a caller-owned *image.RGBA. Its methods map one to one onto a
-//     display-list device: Fill, Stroke, ClipPath, ClipRect, PopClip.
+//     display-list device: Fill, Stroke, ClipPath, ClipRect, ClipStroke,
+//     PopClip.
+//   - Shaders paint what a solid colour cannot, per span: ImageShader
+//     (Texture with mip levels), LinearGradient and RadialGradient (a
+//     Ramp of colours), LayerShader (a layer with opacity, mask and
+//     BlendMode), MaskShader and GlyphCache (glyph coverage masks).
+//     FillMesh draws Gouraud-shaded triangles into a layer.
 //
 // # Performance model
 //
