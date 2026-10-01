@@ -10,9 +10,11 @@ import (
 // composited: the text of a page repeats a few dozen glyphs thousands of
 // times. Masks are keyed by font, glyph, the linear part of the glyph's
 // device matrix (to 1/64 pixel per em) and the position of its origin to a
-// quarter pixel in x and y. Composition goes through the canvas as a
-// pixel-aligned rectangle with a MaskShader, so it honours the clip stack
-// like every other fill.
+// quarter pixel in x and y. Under a clip that is a whole-pixel rectangle a
+// mask is composited straight onto the destination; under any other clip
+// it goes through the canvas as a pixel-aligned rectangle with a
+// MaskShader, so it honours the clip stack like every other fill. Both
+// give the same bytes.
 //
 // A cache is not safe for concurrent use; give each worker its own: no
 // locks while drawing, and a mask costs about as much to make as one
@@ -114,12 +116,54 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 	if !r.Overlaps(clip) {
 		return
 	}
+	// The direct blit gives the bytes of the rectangle fill below where
+	// that takes fillRect's path: an unmasked whole-pixel clip, an edge
+	// budget of at least two, and corners exact in float32.
+	const lim = 1 << 23
+	if st := c.top(); st.mask == nil && st.frac == noFrac && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
+		r.Min.X >= -lim && r.Min.Y >= -lim && r.Max.X <= lim && r.Max.Y <= lim {
+		c.blitMask(mask, origin, PackRGBA(paint.Color), r.Intersect(clip))
+		return
+	}
 	gc.shader = MaskShader{Mask: mask, X: origin.X, Y: origin.Y, Color: PackRGBA(paint.Color)}
 	gc.paint.Shader = &gc.shader
 	gc.rect.Reset()
 	gc.rect.Rect(float32(r.Min.X), float32(r.Min.Y), float32(r.Dx()), float32(r.Dy()))
 	c.Fill(&gc.rect, Identity, NonZero, &gc.paint)
 	gc.shader.Mask = nil
+}
+
+// blitMask composites the premultiplied colour col through mask, moved by
+// origin, over the pixels of r, which must lie within the clip bounds and
+// the moved mask. It rounds as the MaskShader path does (the colour scaled
+// by coverage, then composited over), so an opaque colour does not go
+// through covOpaque, whose single blend can round differently: only full
+// coverage, where both agree, stores the colour.
+func (c *Canvas) blitMask(mask *image.Alpha, origin image.Point, col uint32, r image.Rectangle) {
+	defer c.guard()
+	if col == 0 {
+		return
+	}
+	cx := expand(col)
+	opaque := col>>alphaShift&0xff == 255
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		o := mask.PixOffset(r.Min.X-origin.X, y-origin.Y)
+		cov := mask.Pix[o : o+r.Dx()]
+		d := c.solid.t.row(y, r.Min.X, r.Max.X)
+		if !opaque {
+			covOver(d, cov, cx)
+			continue
+		}
+		for i, a := range cov {
+			switch a {
+			case 0:
+			case 255:
+				d[i] = col
+			default:
+				d[i] = overx(cx, d[i], uint32(a))
+			}
+		}
+	}
 }
 
 // pixelBox returns the device pixels p can touch under m, grown by one
