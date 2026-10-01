@@ -130,7 +130,10 @@ type RadialGradient struct {
 	inv            Matrix // device to gradient space
 	x0, y0, r0     float64
 	dx, dy, dr, qa float64
-	ok             bool
+	// concentric marks circles with one centre and a start radius of 0,
+	// whose parameter is the distance from the centre over r1.
+	concentric bool
+	ok         bool
 }
 
 // Set places the gradient between the circles (x0, y0, r0) and (x1, y1, r1)
@@ -150,6 +153,7 @@ func (g *RadialGradient) Set(x0, y0, r0, x1, y1, r1 float64, m Matrix) bool {
 	g.x0, g.y0, g.r0 = x0, y0, r0
 	g.dx, g.dy, g.dr = x1-x0, y1-y0, r1-r0
 	g.qa = g.dx*g.dx + g.dy*g.dy - g.dr*g.dr
+	g.concentric = g.dx == 0 && g.dy == 0 && r0 == 0 && g.qa < 0 && !math.IsInf(g.qa, 0)
 	return true
 }
 
@@ -163,11 +167,29 @@ func (g *RadialGradient) ShadeSpan(y, x int, dst []uint32) {
 	fx, fy := float64(x)+0.5, float64(y)+0.5
 	u0 := m[0]*fx + m[2]*fy + m[4] - g.x0
 	v0 := m[1]*fx + m[3]*fy + m[5] - g.y0
+	if g.concentric {
+		for i := range dst {
+			u, v := u0+m[0]*float64(i), v0+m[1]*float64(i)
+			dst[i] = g.color(g.concentricParam(u, v))
+		}
+		g.scale(dst)
+		return
+	}
 	for i := range dst {
 		u, v := u0+m[0]*float64(i), v0+m[1]*float64(i)
 		dst[i] = g.color(g.param(u, v))
 	}
 	g.scale(dst)
+}
+
+// concentricParam is param for concentric circles starting at radius 0.
+// There b = 0, so the larger root is √(−qa·c)/−qa ≥ 0 and the smaller one
+// has a negative radius; where param would return NaN for t > 1, color
+// paints Outside all the same. The operations are param's, so t is equal
+// to the bit (up to the sign of zero).
+func (g *RadialGradient) concentricParam(u, v float64) float64 {
+	nq := -g.qa
+	return math.Sqrt(nq*(u*u+v*v)) / nq
 }
 
 // param returns the parameter of the point (u, v) relative to the first
