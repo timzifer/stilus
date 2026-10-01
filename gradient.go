@@ -188,11 +188,12 @@ func (g *RadialGradient) ShadeSpan(y, x int, dst []uint32) {
 // concentricParam is param for concentric circles starting at radius 0.
 // There b = 0, so the larger root is √(−qa·c)/−qa ≥ 0 and the smaller one
 // has a negative radius; where param would return NaN for t > 1, color
-// paints Outside all the same. The operations are param's, so t is equal
-// to the bit (up to the sign of zero).
+// paints Outside all the same. The operations are param's, rounded as
+// there, so t is equal to the bit (up to the sign of zero).
 func (g *RadialGradient) concentricParam(u, v float64) float64 {
 	nq := -g.qa
-	return math.Sqrt(nq*(u*u+v*v)) / nq
+	c := float64(u*u) + float64(v*v)
+	return math.Sqrt(float64(nq*c)) / nq
 }
 
 func finite(u, v float64) bool {
@@ -202,9 +203,11 @@ func finite(u, v float64) bool {
 // param returns the parameter of the point (u, v) relative to the first
 // centre, or NaN where no circle passes through it.
 func (g *RadialGradient) param(u, v float64) float64 {
-	// |p − c(t)|² = r(t)²: qa·t² − 2·b·t + c = 0.
-	b := u*g.dx + v*g.dy + g.r0*g.dr
-	c := u*u + v*v - g.r0*g.r0
+	// |p − c(t)|² = r(t)²: qa·t² − 2·b·t + c = 0. The conversions round
+	// every product, so that no architecture fuses them into FMAs: t is
+	// the same everywhere, and concentricParam can match it.
+	b := float64(u*g.dx) + float64(v*g.dy) + float64(g.r0*g.dr)
+	c := float64(u*u) + float64(v*v) - float64(g.r0*g.r0)
 	var t1, t2 float64
 	if math.Abs(g.qa) < 1e-12*(g.dx*g.dx+g.dy*g.dy+g.dr*g.dr) || g.qa == 0 {
 		if b == 0 {
@@ -213,7 +216,7 @@ func (g *RadialGradient) param(u, v float64) float64 {
 		t1 = c / (2 * b)
 		t2 = t1
 	} else {
-		d := b*b - g.qa*c
+		d := float64(b*b) - float64(g.qa*c)
 		if d < 0 {
 			return math.NaN()
 		}
