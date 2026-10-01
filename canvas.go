@@ -230,17 +230,21 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	c.setClip(cs.bounds)
 	c.r.Reset()
 	overlap := mayOverlap(p, st)
-	if !dense && paint.Shader == nil && paint.Color.A == 255 && (cs.mask == nil || !overlap) {
+	opaque := paint.Shader == nil && paint.Color.A == 255
+	if !dense && (opaque && (cs.mask == nil || !overlap) || singleSegment(p, st)) {
 		// Opaque: the analytic middle rows may be composited separately
 		// from the rest of the stroke, because layers of one opaque color
 		// at full coverage are idempotent. Where parts of the stroke may
 		// overlap and a clip reduces coverage, that no longer holds: at a
 		// rectangle clip's fractional border the pixels are summed in the
 		// accumulator instead, and under a mask the outline path is used.
+		// A single undashed segment needs no opaque paint: its end bands
+		// and its analytic rows are disjoint rows, so every pixel is
+		// composited once, with the coverage of one of them.
 		c.seg.r, c.seg.b = &c.r, b
 		c.seg.solid = nil
 		c.seg.frac = cs.frac
-		if cs.mask == nil {
+		if cs.mask == nil && opaque {
 			c.seg.solid = &c.solid
 		}
 		c.seg.setBorder(cs, overlap)
@@ -519,6 +523,11 @@ func (c *Canvas) PopClip() {
 
 // ClipDepth returns the number of clips pushed since Reset.
 func (c *Canvas) ClipDepth() int { return len(c.stack) - 1 + c.overflow }
+
+// singleSegment reports whether p is one undashed straight segment.
+func singleSegment(p *Path, st *StrokeStyle) bool {
+	return len(st.Dash) == 0 && len(p.Verbs) == 2 && p.Verbs[0] == MoveTo && p.Verbs[1] == LineTo
+}
 
 // mayOverlap reports whether separate parts of a stroke of p can cover the
 // same pixel outside the bands around its corners: several subpaths,

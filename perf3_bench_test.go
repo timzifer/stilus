@@ -313,3 +313,79 @@ func TestDirectRowsOverlap(t *testing.T) {
 		t.Fatal("overlapping layer rows were composited in place")
 	}
 }
+
+// TestTranslucentSegmentOnce checks that a translucent single segment on
+// the analytic path composites every pixel exactly once, with the coverage
+// the same stroke gets when opaque: white on black gives that coverage.
+func TestTranslucentSegmentOnce(t *testing.T) {
+	rng := rand.New(rand.NewPCG(11, 12))
+	r := image.Rect(0, 0, 120, 110)
+	var ring Path
+	ring.Ellipse(60, 55, 50, 45)
+	ring.Ellipse(60, 55, 20, 15)
+	col := rgba(30, 60, 90, 140)
+	hits := 0
+	for k := range 400 {
+		var p Path
+		p.MoveTo(float32(rng.Float64()*140-10), float32(rng.Float64()*130-10))
+		p.LineTo(float32(rng.Float64()*140-10), float32(rng.Float64()*130-10))
+		m := Identity
+		if k%3 == 1 {
+			m = Translate(-60, -55).Mul(Rotate(rng.Float64() * 3)).Mul(Scale(1, 0.4+rng.Float64())).Mul(Translate(60, 55))
+		}
+		st := &StrokeStyle{Width: rng.Float64() * 9, Cap: Cap(rng.IntN(3))}
+		clip := k % 4
+		draw := func(dst *image.RGBA, paint *Paint) {
+			c := NewCanvas(dst)
+			switch clip {
+			case 1:
+				c.ClipRect(Rect{X0: 7.5, Y0: 5.25, X1: 101.5, Y1: 99.75}, Identity)
+			case 2:
+				c.ClipPath(&ring, Identity, EvenOdd)
+			}
+			c.Stroke(&p, m, st, paint)
+			if paint.Color.A != 255 {
+				hits += c.s.fastHits
+			}
+		}
+		cov := image.NewRGBA(r)
+		for i := 3; i < len(cov.Pix); i += 4 {
+			cov.Pix[i] = 255
+		}
+		draw(cov, &Paint{Color: rgba(255, 255, 255, 255)})
+		backdrop := randomRGBA(rng, r)
+		var paints []*Paint
+		paints = append(paints, &Paint{Color: col})
+		if k%2 == 0 {
+			// A shader composites through the same rows.
+			paints = append(paints, &Paint{Shader: &LayerShader{Src: backdrop, Dst: backdrop, Alpha: 140}})
+		}
+		for _, paint := range paints {
+			got := image.NewRGBA(r)
+			copy(got.Pix, backdrop.Pix)
+			draw(got, paint)
+			for y := r.Min.Y; y < r.Max.Y; y++ {
+				for x := r.Min.X; x < r.Max.X; x++ {
+					o := got.PixOffset(x, y)
+					a := uint32(cov.Pix[o])
+					d := pack(backdrop.Pix[o], backdrop.Pix[o+1], backdrop.Pix[o+2], backdrop.Pix[o+3])
+					s := PackRGBA(col)
+					if paint.Shader != nil {
+						s = mul255(d, 140)
+					}
+					want := d
+					if a != 0 {
+						want = over(mul255(s, a), d)
+					}
+					if g := pack(got.Pix[o], got.Pix[o+1], got.Pix[o+2], got.Pix[o+3]); g != want {
+						t.Fatalf("case %d (w %.2f cap %d clip %d shader %v) pixel (%d, %d): %x, want %x (coverage %d)",
+							k, st.Width, st.Cap, clip, paint.Shader != nil, x, y, g, want, a)
+					}
+				}
+			}
+		}
+	}
+	if hits < 100 {
+		t.Fatalf("only %d translucent strokes took the analytic path", hits)
+	}
+}
