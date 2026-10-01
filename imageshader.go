@@ -14,6 +14,9 @@ type Sampler struct {
 	// pixel (i, j) covering [i, i+1) × [j, j+1)).
 	m        Matrix
 	bilinear bool
+	// unit says that m is a translation by whole pixels, so that nearest
+	// sampling copies texels.
+	unit bool
 }
 
 // Setup chooses the mip level of t for drawing it with toDevice, which
@@ -39,6 +42,8 @@ func (s *Sampler) Setup(t *Texture, toDevice Matrix, smooth bool) bool {
 	}
 	s.m = inv
 	s.bilinear = smooth || r > 1+1e-6
+	s.unit = !s.bilinear && inv[0] == 1 && inv[1] == 0 && inv[2] == 0 && inv[3] == 1 &&
+		inv[4] == math.Trunc(inv[4]) && math.Abs(inv[4]) < 1<<30
 	return true
 }
 
@@ -63,6 +68,10 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 			switch p.Kind {
 			case PlaneRGBA:
 				row := p.Pix32[j*p.Stride:][:p.W]
+				if s.unit {
+					sampleUnit(dst, row, x+int(m[4]))
+					return
+				}
 				for i := range dst {
 					dst[i] = row[clampIndex(u0+du*float64(x+i), p.W)]
 				}
@@ -136,6 +145,22 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 		a := lerp(p.At(x0, y0), p.At(x1, y0), tx)
 		b := lerp(p.At(x0, y1), p.At(x1, y1), tx)
 		dst[i] = lerp(a, b, ty)
+	}
+}
+
+// sampleUnit sets dst[i] to row[off+i], repeating the edge pixels
+// outside the row: the nearest texels of a translation by whole pixels,
+// for which u = off+i+0.5.
+func sampleUnit(dst, row []uint32, off int) {
+	i := 0
+	for ; i < len(dst) && off+i < 0; i++ {
+		dst[i] = row[0]
+	}
+	if i < len(dst) && off+i < len(row) {
+		i += copy(dst[i:], row[off+i:])
+	}
+	for ; i < len(dst); i++ {
+		dst[i] = row[len(row)-1]
 	}
 }
 
