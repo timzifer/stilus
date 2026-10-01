@@ -128,6 +128,24 @@ func TestBlendIntegerExhaustive(t *testing.T) {
 	}
 }
 
+// TestBlendIntegerOpaqueTable checks that opaque pixels, which
+// shadeSeparable computes with the integer formulas, get the bytes of
+// blendTable that blendPixel looks them up in.
+func TestBlendIntegerOpaqueTable(t *testing.T) {
+	for s := range 256 {
+		for d := range 256 {
+			m := multiplyInt(uint8(s), uint8(d), 255)
+			if w := blendTable(BlendMultiply)[d<<8|s]; m != w {
+				t.Fatalf("Multiply s %d d %d: %d, want %d", s, d, m, w)
+			}
+			sc := screenInt(uint8(s), 255, uint8(d))
+			if w := blendTable(BlendScreen)[d<<8|s]; sc != w {
+				t.Fatalf("Screen s %d d %d: %d, want %d", s, d, sc, w)
+			}
+		}
+	}
+}
+
 func TestMipIndexMatchesRGBA(t *testing.T) {
 	rng := rand.New(rand.NewPCG(3, 4))
 	var gray, alpha Palette

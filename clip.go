@@ -132,7 +132,13 @@ func (b *maskBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
 
 func (b *maskBlitter) masked(r, y, x0, x1 int, alpha uint8) {
 	m := b.m
-	row := m.pix[r*m.stride+x0-m.bounds.Min.X:]
+	row := m.pix[r*m.stride+x0-m.bounds.Min.X:][:x1-x0]
+	if alpha == 255 {
+		// The product is the mask itself; the blitters do not write to
+		// the coverage they are given.
+		emitCoverage(b.next, y, x0, row)
+		return
+	}
 	a := uint32(alpha)
 	c := b.buf(x1 - x0)
 	for i := range c {

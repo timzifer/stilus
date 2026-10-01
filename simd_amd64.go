@@ -247,3 +247,138 @@ func runOver512(d []uint32, s uint32) {
 	archsimd.ClearAVXUpperBits()
 	runOverScalar(d[i:], s)
 }
+
+// spanOver and spanOverCov composite varying source pixels: a shader's
+// span, or a layer's or an image's own row.
+
+func spanOver(d, s []uint32, k, a uint32) {
+	if !useSIMD || len(s) < minSIMDSpan {
+		spanOverScalar(d, s, k, a)
+		return
+	}
+	if use512 {
+		spanOver512(d, s, k, a)
+		return
+	}
+	d = d[:len(s)]
+	db, sb := bytesOf(d), bytesOf(s)
+	k128 := archsimd.BroadcastUint16x16(128)
+	k255 := archsimd.BroadcastUint16x16(255)
+	k257 := archsimd.BroadcastUint16x16(257)
+	kk := archsimd.BroadcastUint16x16(uint16(k))
+	aa := archsimd.BroadcastUint16x16(uint16(a))
+	pk := loadInt8x32(&packIdx)
+	i := 0
+	for ; i+4 <= len(s); i += 4 {
+		s16 := loadUint8x16(sb[i*4 : i*4+16]).ExtendToUint16()
+		if k != 255 {
+			s16 = div255v(s16.Mul(kk), k128, k257)
+		}
+		if a != 255 {
+			s16 = div255v(s16.Mul(aa), k128, k257)
+		}
+		sa := s16.PermuteScalarsLoGrouped(3, 3, 3, 3).PermuteScalarsHiGrouped(3, 3, 3, 3)
+		px := db[i*4 : i*4+16]
+		d16 := loadUint8x16(px).ExtendToUint16()
+		r := div255v(d16.Mul(k255.Sub(sa)), k128, k257).Add(s16)
+		storeUint8x16(packLanes(r, pk), px)
+	}
+	archsimd.ClearAVXUpperBits()
+	spanOverScalar(d[i:], s[i:], k, a)
+}
+
+func spanOverCov(d, s []uint32, k uint32, cov []uint8) {
+	if !useSIMD || len(cov) < minSIMDSpan {
+		spanOverCovScalar(d, s, k, cov)
+		return
+	}
+	if use512 {
+		spanOverCov512(d, s, k, cov)
+		return
+	}
+	d, s = d[:len(cov)], s[:len(cov)]
+	db, sb := bytesOf(d), bytesOf(s)
+	k128 := archsimd.BroadcastUint16x16(128)
+	k255 := archsimd.BroadcastUint16x16(255)
+	k257 := archsimd.BroadcastUint16x16(257)
+	kk := archsimd.BroadcastUint16x16(uint16(k))
+	rep := loadInt8x16(&repIdx)
+	pk := loadInt8x32(&packIdx)
+	i := 0
+	for ; i+4 <= len(cov); i += 4 {
+		w := *(*uint32)(unsafe.Pointer(&cov[i]))
+		if w == 0 {
+			continue
+		}
+		s16 := loadUint8x16(sb[i*4 : i*4+16]).ExtendToUint16()
+		if k != 255 {
+			s16 = div255v(s16.Mul(kk), k128, k257)
+		}
+		if w != 0xffffffff {
+			s16 = div255v(s16.Mul(coverage4(w, rep)), k128, k257)
+		}
+		sa := s16.PermuteScalarsLoGrouped(3, 3, 3, 3).PermuteScalarsHiGrouped(3, 3, 3, 3)
+		px := db[i*4 : i*4+16]
+		d16 := loadUint8x16(px).ExtendToUint16()
+		r := div255v(d16.Mul(k255.Sub(sa)), k128, k257).Add(s16)
+		storeUint8x16(packLanes(r, pk), px)
+	}
+	archsimd.ClearAVXUpperBits()
+	spanOverCovScalar(d[i:], s[i:], k, cov[i:])
+}
+
+func spanOver512(d, s []uint32, k, a uint32) {
+	d = d[:len(s)]
+	db, sb := bytesOf(d), bytesOf(s)
+	k128 := archsimd.BroadcastUint16x32(128)
+	k255 := archsimd.BroadcastUint16x32(255)
+	k257 := archsimd.BroadcastUint16x32(257)
+	kk := archsimd.BroadcastUint16x32(uint16(k))
+	aa := archsimd.BroadcastUint16x32(uint16(a))
+	i := 0
+	for ; i+8 <= len(s); i += 8 {
+		s16 := loadUint8x32(sb[i*4 : i*4+32]).ExtendToUint16()
+		if k != 255 {
+			s16 = div255w(s16.Mul(kk), k128, k257)
+		}
+		if a != 255 {
+			s16 = div255w(s16.Mul(aa), k128, k257)
+		}
+		sa := s16.PermuteScalarsLoGrouped(3, 3, 3, 3).PermuteScalarsHiGrouped(3, 3, 3, 3)
+		px := db[i*4 : i*4+32]
+		d16 := loadUint8x32(px).ExtendToUint16()
+		storeUint8x32(truncToUint8(div255w(d16.Mul(k255.Sub(sa)), k128, k257).Add(s16)), px)
+	}
+	archsimd.ClearAVXUpperBits()
+	spanOverScalar(d[i:], s[i:], k, a)
+}
+
+func spanOverCov512(d, s []uint32, k uint32, cov []uint8) {
+	d, s = d[:len(cov)], s[:len(cov)]
+	db, sb := bytesOf(d), bytesOf(s)
+	k128 := archsimd.BroadcastUint16x32(128)
+	k255 := archsimd.BroadcastUint16x32(255)
+	k257 := archsimd.BroadcastUint16x32(257)
+	kk := archsimd.BroadcastUint16x32(uint16(k))
+	rep := loadUint8x32a(&repIdx8)
+	i := 0
+	for ; i+8 <= len(cov); i += 8 {
+		w := *(*uint64)(unsafe.Pointer(&cov[i]))
+		if w == 0 {
+			continue
+		}
+		s16 := loadUint8x32(sb[i*4 : i*4+32]).ExtendToUint16()
+		if k != 255 {
+			s16 = div255w(s16.Mul(kk), k128, k257)
+		}
+		if w != ^uint64(0) {
+			s16 = div255w(s16.Mul(coverage8(w, rep)), k128, k257)
+		}
+		sa := s16.PermuteScalarsLoGrouped(3, 3, 3, 3).PermuteScalarsHiGrouped(3, 3, 3, 3)
+		px := db[i*4 : i*4+32]
+		d16 := loadUint8x32(px).ExtendToUint16()
+		storeUint8x32(truncToUint8(div255w(d16.Mul(k255.Sub(sa)), k128, k257).Add(s16)), px)
+	}
+	archsimd.ClearAVXUpperBits()
+	spanOverCovScalar(d[i:], s[i:], k, cov[i:])
+}

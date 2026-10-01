@@ -217,10 +217,65 @@ func covOverScalar(d []uint32, cov []uint8, cx uint64) {
 	}
 }
 
+// spanOverScalar composites the premultiplied pixels s, scaled by k/255
+// and then by a/255, over d: the bytes of over(mul255(mul255(s, k), a), d).
+func spanOverScalar(d, s []uint32, k, a uint32) {
+	d = d[:len(s)]
+	if k == 255 && a == 255 {
+		for i, v := range s {
+			if v>>alphaShift&0xff == 255 {
+				d[i] = v
+			} else {
+				d[i] = over(v, d[i])
+			}
+		}
+		return
+	}
+	for i, v := range s {
+		if k != 255 {
+			v = mul255(v, k)
+		}
+		if a != 255 {
+			v = mul255(v, a)
+		}
+		d[i] = over(v, d[i])
+	}
+}
+
+// spanOverCovScalar composites the premultiplied pixels s, scaled by k/255
+// and then by the coverage, over d.
+func spanOverCovScalar(d, s []uint32, k uint32, cov []uint8) {
+	d, s = d[:len(cov)], s[:len(cov)]
+	for i, a := range cov {
+		if a == 0 {
+			continue
+		}
+		v := s[i]
+		if k != 255 {
+			v = mul255(v, k)
+		}
+		if a != 255 {
+			v = mul255(v, uint32(a))
+		}
+		d[i] = over(v, d[i])
+	}
+}
+
+// rowSource is implemented by shaders whose span can be a row of pixels
+// they hold, scaled by a constant alpha: ShaderBlitter composites such
+// rows straight from that memory instead of from a shaded copy.
+type rowSource interface {
+	// srcRow returns pixels s and k such that ShadeSpan(y, x, out) with
+	// len(out) == n would set out[i] to mul255(s[i], k) (s[i] when k is
+	// 255), or ok false.
+	srcRow(y, x, n int) (s []uint32, k uint32, ok bool)
+}
+
 // ShaderBlitter composites the output of a Shader onto an image.RGBA.
 type ShaderBlitter struct {
 	t       target
 	s       Shader
+	rs      rowSource // s, if it is one
 	scratch []uint32
 }
 
@@ -234,7 +289,30 @@ func NewShaderBlitter(dst *image.RGBA, s Shader) *ShaderBlitter {
 // Reset retargets the blitter without allocating.
 func (b *ShaderBlitter) Reset(dst *image.RGBA, s Shader) {
 	b.t.set(dst)
+	b.setShader(s)
+}
+
+func (b *ShaderBlitter) setShader(s Shader) {
 	b.s = s
+	b.rs, _ = s.(rowSource)
+}
+
+// direct returns the shader's own row for the n pixels at (x, y), if it
+// has one that does not overlap d (in place, s == d, is fine: each pixel
+// is read before it is written).
+func (b *ShaderBlitter) direct(y, x, n int, d []uint32) ([]uint32, uint32, bool) {
+	if b.rs == nil {
+		return nil, 0, false
+	}
+	s, k, ok := b.rs.srcRow(y, x, n)
+	if !ok || len(s) != n {
+		return nil, 0, false
+	}
+	ps, pd := uintptr(unsafe.Pointer(&s[0])), uintptr(unsafe.Pointer(&d[0]))
+	if ps != pd && ps < pd+uintptr(4*n) && pd < ps+uintptr(4*n) {
+		return nil, 0, false
+	}
+	return s, k, true
 }
 
 func (b *ShaderBlitter) span(y, x, n int) []uint32 {
@@ -247,36 +325,21 @@ func (b *ShaderBlitter) span(y, x, n int) []uint32 {
 }
 
 func (b *ShaderBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
-	sc := b.span(y, x0, x1-x0)
 	d := b.t.row(y, x0, x1)
-	if alpha == 255 {
-		for i, s := range sc {
-			if s>>alphaShift&0xff == 255 {
-				d[i] = s
-			} else {
-				d[i] = over(s, d[i])
-			}
-		}
+	if s, k, ok := b.direct(y, x0, x1-x0, d); ok {
+		spanOver(d, s, k, uint32(alpha))
 		return
 	}
-	a := uint32(alpha)
-	for i, s := range sc {
-		d[i] = over(mul255(s, a), d[i])
-	}
+	spanOver(d, b.span(y, x0, x1-x0), 255, uint32(alpha))
 }
 
 func (b *ShaderBlitter) BlitCoverage(y, x int, cov []uint8) {
-	sc := b.span(y, x, len(cov))
 	d := b.t.row(y, x, x+len(cov))
-	for i, a := range cov {
-		switch a {
-		case 0:
-		case 255:
-			d[i] = over(sc[i], d[i])
-		default:
-			d[i] = over(mul255(sc[i], uint32(a)), d[i])
-		}
+	if s, k, ok := b.direct(y, x, len(cov), d); ok {
+		spanOverCov(d, s, k, cov)
+		return
 	}
+	spanOverCov(d, b.span(y, x, len(cov)), 255, cov)
 }
 
 // MaskBlitter accumulates coverage into an 8-bit alpha image (for clip

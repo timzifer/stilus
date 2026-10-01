@@ -134,7 +134,7 @@ func (c *Canvas) chain(st *clipState, b Blitter) Blitter {
 
 func (c *Canvas) paint(p *Paint) Blitter {
 	if p.Shader != nil {
-		c.shader.s = p.Shader
+		c.shader.setShader(p.Shader)
 		return &c.shader
 	}
 	c.solid.SetColor(p.Color)
@@ -201,7 +201,8 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	if cs.bounds.Empty() || (paint.Shader == nil && paint.Color.A == 0) || len(p.Points) == 0 {
 		return
 	}
-	sm := sigmaMax(m)
+	pr := prepStroke(m, st)
+	sm := pr.sm
 	// Cull against the clip with the widest possible outline extent.
 	pad := max(st.Width*sm, 1) / 2 * max(max(st.MiterLimit, 1.5), 1)
 	if !(pad < 1<<30) {
@@ -216,7 +217,7 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	}
 	c.touchStroke(p, m, max(st.Width*sm, 1)/2)
 	b := c.paint(paint)
-	f, dense := denseDash(m, st)
+	f, dense := pr.f, pr.dense
 	if dense {
 		// Drawn as a solid stroke at the pattern's mean coverage.
 		c.scale.f, c.scale.next = uint32(math.Round(f*255)), b
@@ -229,23 +230,27 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	c.setClip(cs.bounds)
 	c.r.Reset()
 	overlap := mayOverlap(p, st)
-	if !dense && paint.Shader == nil && paint.Color.A == 255 && (cs.mask == nil || !overlap) {
+	opaque := paint.Shader == nil && paint.Color.A == 255
+	if !dense && (opaque && (cs.mask == nil || !overlap) || singleSegment(p, st)) {
 		// Opaque: the analytic middle rows may be composited separately
 		// from the rest of the stroke, because layers of one opaque color
 		// at full coverage are idempotent. Where parts of the stroke may
 		// overlap and a clip reduces coverage, that no longer holds: at a
 		// rectangle clip's fractional border the pixels are summed in the
 		// accumulator instead, and under a mask the outline path is used.
+		// A single undashed segment needs no opaque paint: its end bands
+		// and its analytic rows are disjoint rows, so every pixel is
+		// composited once, with the coverage of one of them.
 		c.seg.r, c.seg.b = &c.r, b
 		c.seg.solid = nil
 		c.seg.frac = cs.frac
-		if cs.mask == nil {
+		if cs.mask == nil && opaque {
 			c.seg.solid = &c.solid
 		}
 		c.seg.setBorder(cs, overlap)
-		c.s.strokeFast(&c.r, &c.seg, p, m, st)
+		c.s.strokeFast(&c.r, &c.seg, p, m, st, pr)
 	} else {
-		c.s.Stroke(&c.r, p, m, st)
+		c.s.stroke(&c.r, p, m, st, pr)
 	}
 	c.checkBudget()
 	if c.s.Truncated() {
@@ -443,8 +448,10 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule, st *StrokeStyle) {
 		return
 	}
 	bb := m.transformRect(p.Bounds())
+	var pr strokePrep
 	if st != nil {
-		pad := max(st.Width*sigmaMax(m), 1)/2*max(st.MiterLimit, 1.5) + 2
+		pr = prepStroke(m, st)
+		pad := max(st.Width*pr.sm, 1)/2*max(st.MiterLimit, 1.5) + 2
 		if !(pad < 1<<30) {
 			pad = 1 << 30
 		}
@@ -478,11 +485,11 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule, st *StrokeStyle) {
 	// rectangle clips stay exact in rect and are applied when drawing.
 	var b Blitter = &c.writer
 	if st != nil {
-		if f, dense := denseDash(m, st); dense {
-			c.scale.f, c.scale.next = uint32(math.Round(f*255)), b
+		if pr.dense {
+			c.scale.f, c.scale.next = uint32(math.Round(pr.f*255)), b
 			b = &c.scale
 		}
-		c.s.Stroke(&c.r, p, m, st)
+		c.s.stroke(&c.r, p, m, st, pr)
 		if c.s.Truncated() {
 			c.setErr(ErrDashBudget)
 		}
@@ -516,6 +523,11 @@ func (c *Canvas) PopClip() {
 
 // ClipDepth returns the number of clips pushed since Reset.
 func (c *Canvas) ClipDepth() int { return len(c.stack) - 1 + c.overflow }
+
+// singleSegment reports whether p is one undashed straight segment.
+func singleSegment(p *Path, st *StrokeStyle) bool {
+	return len(st.Dash) == 0 && len(p.Verbs) == 2 && p.Verbs[0] == MoveTo && p.Verbs[1] == LineTo
+}
 
 // mayOverlap reports whether separate parts of a stroke of p can cover the
 // same pixel outside the bands around its corners: several subpaths,
