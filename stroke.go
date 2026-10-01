@@ -101,7 +101,8 @@ type Stroker struct {
 	st                              *StrokeStyle
 	hw                              float64 // half width, user space
 	tolU                            float64 // flattening tolerance, user space
-	stepA                           float64 // angular step for round joins/caps
+	stepA                           float64 // angular step for round joins/caps; 0 until an arc needs it
+	rdev                            float64 // half width in device space, for stepA
 
 	poly   []float64
 	dpoly  []float64
@@ -121,14 +122,33 @@ func sigmaMax(m Matrix) float64 {
 	return math.Sqrt((s + math.Sqrt(e*e+4*f*f)) / 2)
 }
 
+// strokePrep holds what both Canvas.Stroke and the stroker derive from m
+// and st once per stroke.
+type strokePrep struct {
+	sm    float64 // sigmaMax(m)
+	dense bool    // denseDash: the pattern is drawn solid ...
+	f     float64 // ... at this mean coverage
+}
+
+func prepStroke(m Matrix, st *StrokeStyle) strokePrep {
+	sm := sigmaMax(m)
+	f, dense := denseDashSM(st, sm)
+	return strokePrep{sm: sm, dense: dense, f: f}
+}
+
 // Stroke emits the outline of p stroked with st under m into sink.
 //
 // A dash pattern too dense to resolve in device space is emitted as a solid
 // stroke; Coverage then reports the fraction the caller must scale the
 // resulting coverage by.
 func (s *Stroker) Stroke(sink LineSink, p *Path, m Matrix, st *StrokeStyle) {
+	s.stroke(sink, p, m, st, prepStroke(m, st))
+}
+
+// stroke is Stroke with the stroke's preparation already made.
+func (s *Stroker) stroke(sink LineSink, p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 	s.sink, s.seg = sink, nil
-	s.run(p, m, st)
+	s.run(p, m, st, pr)
 }
 
 // Truncated reports whether the last stroke exceeded its dash budget.
@@ -163,19 +183,19 @@ type segmentFiller interface {
 }
 
 // strokeFast is Stroke with a segment fast path.
-func (s *Stroker) strokeFast(sink LineSink, seg segmentFiller, p *Path, m Matrix, st *StrokeStyle) {
+func (s *Stroker) strokeFast(sink LineSink, seg segmentFiller, p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 	s.sink, s.seg = sink, seg
-	s.run(p, m, st)
+	s.run(p, m, st, pr)
 	s.seg = nil
 }
 
-func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
+func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 	s.truncated = false
 	s.coverage = 1
 	if !m.finite() || !(st.Width >= 0) || math.IsInf(st.Width, 0) {
 		return
 	}
-	sm := sigmaMax(m)
+	sm := pr.sm
 	if sm == 0 {
 		return
 	}
@@ -183,7 +203,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 	// Strokes thinner than a device pixel are drawn one pixel wide, like
 	// PDFium: their offsets are taken in device space.
 	s.dev = st.Width*sm < 1
-	s.dashFast = s.seg != nil && dashFastOK(m, st, s.dev)
+	s.dashFast = s.seg != nil && dashFastOK(m, st, s.dev, sm)
 	s.hw = st.Width / 2
 	r := s.hw * sm
 	if s.dev {
@@ -191,11 +211,9 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 	}
 	s.tolU = flattenTol / sm
 	s.setCull(r)
-	if r > flattenTol {
-		s.stepA = 2 * math.Acos(1-flattenTol/r)
-	} else {
-		s.stepA = math.Pi
-	}
+	// Only round joins and caps (and dots) need the arc step: arc makes
+	// it on first use.
+	s.stepA, s.rdev = 0, r
 	dashed := len(st.Dash) > 0
 	if dashed {
 		sum := 0.0
@@ -214,7 +232,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle) {
 		if dashed && (math.IsNaN(st.DashPhase) || math.IsInf(st.DashPhase, 0)) {
 			return
 		}
-		if f, ok := denseDash(m, st); dashed && ok {
+		if f := pr.f; dashed && pr.dense {
 			if f <= 0 {
 				s.coverage = 0
 				return
@@ -753,6 +771,12 @@ func (s *Stroker) dot(x, y, dx, dy float64) {
 // arc appends points on the circle around (cx, cy), rotating the vector
 // (ax, ay) by ang radians; the start point is excluded, the end included.
 func (s *Stroker) arc(pc []float64, cx, cy, ax, ay, ang float64) []float64 {
+	if s.stepA == 0 {
+		s.stepA = math.Pi
+		if r := s.rdev; r > flattenTol {
+			s.stepA = 2 * math.Acos(1-flattenTol/r)
+		}
+	}
 	n := 1
 	if v := math.Abs(ang) / s.stepA; v > 1 {
 		n = int(math.Ceil(min(v, maxSegs)))
@@ -787,11 +811,10 @@ func (s *Stroker) emitLoop(pc []float64) {
 
 // dashFastOK reports whether every dash gap stays at least two device
 // pixels wide after the caps' extension.
-func dashFastOK(m Matrix, st *StrokeStyle, dev bool) bool {
+func dashFastOK(m Matrix, st *StrokeStyle, dev bool, sm float64) bool {
 	if len(st.Dash) == 0 {
 		return true
 	}
-	sm := sigmaMax(m)
 	if sm == 0 {
 		return false
 	}
@@ -819,6 +842,14 @@ func dashFastOK(m Matrix, st *StrokeStyle, dev bool) bool {
 // space, where areas scale uniformly under m, except for hairlines, whose
 // width and caps are one device pixel.
 func denseDash(m Matrix, st *StrokeStyle) (float64, bool) {
+	if len(st.Dash) == 0 {
+		return 1, false
+	}
+	return denseDashSM(st, sigmaMax(m))
+}
+
+// denseDashSM is denseDash with sm = sigmaMax(m).
+func denseDashSM(st *StrokeStyle, sm float64) (float64, bool) {
 	pat := st.Dash
 	np := len(pat)
 	if np == 0 {
@@ -835,7 +866,6 @@ func denseDash(m Matrix, st *StrokeStyle) (float64, bool) {
 	if np%2 == 1 {
 		steps, period = 2*np, 2*period
 	}
-	sm := sigmaMax(m)
 	pd := period * sm // device period along the widest stretch
 	if !(period > 0) || math.IsInf(period, 0) || !(sm > 0) ||
 		pd > densePeriod && (float64(steps) <= denseSteps*pd || !uniformDash(pat, steps, 1/sm)) {

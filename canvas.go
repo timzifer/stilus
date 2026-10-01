@@ -201,7 +201,8 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	if cs.bounds.Empty() || (paint.Shader == nil && paint.Color.A == 0) || len(p.Points) == 0 {
 		return
 	}
-	sm := sigmaMax(m)
+	pr := prepStroke(m, st)
+	sm := pr.sm
 	// Cull against the clip with the widest possible outline extent.
 	pad := max(st.Width*sm, 1) / 2 * max(max(st.MiterLimit, 1.5), 1)
 	if !(pad < 1<<30) {
@@ -216,7 +217,7 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	}
 	c.touchStroke(p, m, max(st.Width*sm, 1)/2)
 	b := c.paint(paint)
-	f, dense := denseDash(m, st)
+	f, dense := pr.f, pr.dense
 	if dense {
 		// Drawn as a solid stroke at the pattern's mean coverage.
 		c.scale.f, c.scale.next = uint32(math.Round(f*255)), b
@@ -243,9 +244,9 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 			c.seg.solid = &c.solid
 		}
 		c.seg.setBorder(cs, overlap)
-		c.s.strokeFast(&c.r, &c.seg, p, m, st)
+		c.s.strokeFast(&c.r, &c.seg, p, m, st, pr)
 	} else {
-		c.s.Stroke(&c.r, p, m, st)
+		c.s.stroke(&c.r, p, m, st, pr)
 	}
 	c.checkBudget()
 	if c.s.Truncated() {
@@ -443,8 +444,10 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule, st *StrokeStyle) {
 		return
 	}
 	bb := m.transformRect(p.Bounds())
+	var pr strokePrep
 	if st != nil {
-		pad := max(st.Width*sigmaMax(m), 1)/2*max(st.MiterLimit, 1.5) + 2
+		pr = prepStroke(m, st)
+		pad := max(st.Width*pr.sm, 1)/2*max(st.MiterLimit, 1.5) + 2
 		if !(pad < 1<<30) {
 			pad = 1 << 30
 		}
@@ -478,11 +481,11 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule, st *StrokeStyle) {
 	// rectangle clips stay exact in rect and are applied when drawing.
 	var b Blitter = &c.writer
 	if st != nil {
-		if f, dense := denseDash(m, st); dense {
-			c.scale.f, c.scale.next = uint32(math.Round(f*255)), b
+		if pr.dense {
+			c.scale.f, c.scale.next = uint32(math.Round(pr.f*255)), b
 			b = &c.scale
 		}
-		c.s.Stroke(&c.r, p, m, st)
+		c.s.stroke(&c.r, p, m, st, pr)
 		if c.s.Truncated() {
 			c.setErr(ErrDashBudget)
 		}
