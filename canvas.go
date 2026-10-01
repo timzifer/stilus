@@ -134,7 +134,7 @@ func (c *Canvas) chain(st *clipState, b Blitter) Blitter {
 
 func (c *Canvas) paint(p *Paint) Blitter {
 	if p.Shader != nil {
-		c.shader.s = p.Shader
+		c.shader.setShader(p.Shader)
 		return &c.shader
 	}
 	c.solid.SetColor(p.Color)

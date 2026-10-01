@@ -59,5 +59,35 @@ func TestSpanKernels(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Fatalf("runOver mismatch\n got %x\nwant %x", got, want)
 		}
+		src := make([]uint32, l)
+		for i := range src {
+			a := uint8(rng.Intn(256))
+			if rng.Intn(3) == 0 {
+				a = 255
+			}
+			src[i] = PackRGBA(rgba(uint8(rng.Intn(int(a)+1)), uint8(rng.Intn(int(a)+1)), uint8(rng.Intn(int(a)+1)), a))
+		}
+		for _, ka := range [][2]uint32{{255, 255}, {255, uint32(a)}, {uint32(a), 255}, {uint32(a), uint32(255 - a)}} {
+			got, want = slices.Clone(dst), slices.Clone(dst)
+			spanOver(got, src, ka[0], ka[1])
+			spanOverScalar(want, src, ka[0], ka[1])
+			if !slices.Equal(got, want) {
+				t.Fatalf("spanOver k %d a %d mismatch\n got %x\nwant %x", ka[0], ka[1], got, want)
+			}
+			// The reference: the shaded span composited pixel by pixel.
+			for i, v := range src {
+				v = mul255(mul255(v, ka[0]), ka[1])
+				want[i] = over(v, dst[i])
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("spanOver k %d a %d differs from over\n got %x\nwant %x", ka[0], ka[1], got, want)
+			}
+			got, want = slices.Clone(dst), slices.Clone(dst)
+			spanOverCov(got, src, ka[0], cov)
+			spanOverCovScalar(want, src, ka[0], cov)
+			if !slices.Equal(got, want) {
+				t.Fatalf("spanOverCov k %d mismatch\n got %x\nwant %x", ka[0], got, want)
+			}
+		}
 	}
 }

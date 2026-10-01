@@ -144,6 +144,16 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 	}
 }
 
+// srcRow implements rowSource: a Normal layer without a mask is its own
+// pixels times Alpha.
+func (c *LayerShader) srcRow(y, x, n int) ([]uint32, uint32, bool) {
+	if c.Blend != BlendNormal || c.Mask != nil || n == 0 {
+		return nil, 0, false
+	}
+	sp := c.Src.Pix[c.Src.PixOffset(x, y):][: 4*n : 4*n]
+	return unsafe.Slice((*uint32)(unsafe.Pointer(&sp[0])), n), uint32(c.Alpha), true
+}
+
 // shadeSeparable is ShadeSpan for Multiply and Screen, which are exact in
 // integers on premultiplied colours: αs·αb·Cb·Cs is the product s·d of
 // the premultiplied colours, so the result s·(1−αb) + αs·αb·B (see

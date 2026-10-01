@@ -4,6 +4,7 @@ import (
 	"image"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"testing"
 )
 
@@ -224,5 +225,91 @@ func BenchmarkGlyphCacheChurn(b *testing.B) {
 				page(&gc)
 			}
 		})
+	}
+}
+
+// TestDirectRowsMatchShadedSpans checks that layers and images composited
+// straight from their rows give the bytes of their shaded spans.
+func TestDirectRowsMatchShadedSpans(t *testing.T) {
+	rng := rand.New(rand.NewPCG(5, 6))
+	r := image.Rect(0, 0, 96, 64)
+	src := randomRGBA(rng, image.Rect(-8, -8, 104, 72))
+	for i := 3; i < len(src.Pix); i += 64 {
+		src.Pix[i] = 255 // some opaque pixels
+	}
+	tex := NewTexture(Plane{Kind: PlaneRGBA, W: 112, H: 80, Stride: src.Stride / 4, Pix32: pixels(src)})
+	var ring Path
+	ring.Ellipse(48, 32, 40, 28)
+	ring.Ellipse(48, 32, 15, 10)
+	var shapes [3]Path
+	shapes[0].Rect(0, 0, 96, 64)
+	shapes[1].Rect(3.5, 2.25, 80.5, 50)
+	shapes[2].Ellipse(40, 30, 33.3, 21.7)
+	for _, alpha := range []uint8{255, 77} {
+		for si := range shapes {
+			for _, masked := range []bool{false, true} {
+				for _, kind := range []string{"layer", "image", "image-edge"} {
+					backdrop := randomRGBA(rng, r)
+					draw := func(direct bool) *image.RGBA {
+						dst := image.NewRGBA(r)
+						copy(dst.Pix, backdrop.Pix)
+						var sh Shader
+						switch kind {
+						case "layer":
+							sh = &LayerShader{Src: src, Dst: dst, Alpha: alpha}
+						case "image":
+							var is ImageShader
+							is.SetImage(tex, Translate(-8, -8), false, alpha)
+							sh = &is
+						default: // spans reach beyond the texture
+							var is ImageShader
+							is.SetImage(tex, Translate(10, -3), false, alpha)
+							sh = &is
+						}
+						if !direct {
+							sh = struct{ Shader }{sh} // hides srcRow
+						}
+						c := NewCanvas(dst)
+						if masked {
+							c.ClipPath(&ring, Identity, EvenOdd)
+						}
+						c.Fill(&shapes[si], Identity, NonZero, &Paint{Shader: sh})
+						return dst
+					}
+					got, want := draw(true), draw(false)
+					if !slices.Equal(got.Pix, want.Pix) {
+						t.Fatalf("%s alpha %d shape %d mask %v: direct rows differ from shaded spans", kind, alpha, si, masked)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestDirectRowsOverlap checks a layer drawn onto its own image, moved
+// right: its rows overlap the destination's behind it, so they are shaded
+// into a copy first.
+func TestDirectRowsOverlap(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 8))
+	img := randomRGBA(rng, image.Rect(0, 0, 64, 16))
+	// Pixel x of the layer is pixel x-3 of img.
+	moved := &image.RGBA{Pix: img.Pix, Stride: img.Stride, Rect: image.Rect(3, 0, 67, 16)}
+	want := image.NewRGBA(img.Rect)
+	copy(want.Pix, img.Pix)
+	for y := range 16 {
+		for x := 3; x < 64; x++ {
+			o, so := want.PixOffset(x, y), img.PixOffset(x-3, y)
+			s := pack(img.Pix[so], img.Pix[so+1], img.Pix[so+2], img.Pix[so+3])
+			d := pack(want.Pix[o], want.Pix[o+1], want.Pix[o+2], want.Pix[o+3])
+			r, g, b, a := unpack(over(s, d))
+			want.Pix[o], want.Pix[o+1], want.Pix[o+2], want.Pix[o+3] = r, g, b, a
+		}
+	}
+	var p Path
+	p.Rect(3, 0, 61, 16)
+	c := NewCanvas(img)
+	c.Fill(&p, Identity, NonZero, &Paint{Shader: &LayerShader{Src: moved, Dst: img, Alpha: 255}})
+	if !slices.Equal(img.Pix, want.Pix) {
+		t.Fatal("overlapping layer rows were composited in place")
 	}
 }

@@ -240,6 +240,24 @@ func (s *ImageShader) SetMask(t *Texture, toDevice Matrix, smooth bool) bool {
 	return s.hasMask
 }
 
+// srcRow implements rowSource: an RGBA texture moved by whole pixels,
+// without a mask, is its own pixels times alpha where the span lies within
+// the texture (outside, Sample repeats the edge pixels).
+func (s *ImageShader) srcRow(y, x, n int) ([]uint32, uint32, bool) {
+	c := &s.col
+	if !s.hasCol || s.hasMask || !c.unit || c.p.Kind != PlaneRGBA {
+		return nil, 0, false
+	}
+	p, m := c.p, &c.m
+	off := x + int(m[4])
+	if off < 0 || off+n > p.W {
+		return nil, 0, false
+	}
+	// Sample's row, computed the same way.
+	j := clampIndex(m[3]*(float64(y)+0.5)+m[5]+m[1]*0.5, p.H)
+	return p.Pix32[j*p.Stride+off:][:n], s.alpha, true
+}
+
 // ShadeSpan implements Shader.
 func (s *ImageShader) ShadeSpan(y, x int, dst []uint32) {
 	if s.hasCol {
