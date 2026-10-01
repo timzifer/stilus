@@ -4,6 +4,7 @@ import (
 	"image"
 	"math"
 	"sync/atomic"
+	"unsafe"
 )
 
 // BlendMode is a separable or non-separable blend mode of the W3C
@@ -56,7 +57,8 @@ func (b BlendMode) String() string {
 // which makes that the compositing formula of the specification
 // interpolated by coverage.
 type LayerShader struct {
-	// Src is the layer; spans must lie within its rectangle.
+	// Src is the layer, premultiplied like any image.RGBA; spans must lie
+	// within its rectangle.
 	Src *image.RGBA
 	// Dst is the backdrop the canvas draws onto, read for blend modes
 	// other than Normal.
@@ -72,7 +74,23 @@ type LayerShader struct {
 // ShadeSpan implements Shader.
 func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 	n := len(out)
+	if n == 0 {
+		return
+	}
 	sp := c.Src.Pix[c.Src.PixOffset(x, y):][: 4*n : 4*n]
+	if c.Blend == BlendNormal && c.Mask == nil {
+		// The layer's pixels are in the layout of out already.
+		src := unsafe.Slice((*uint32)(unsafe.Pointer(&sp[0])), n)
+		if c.Alpha == 255 {
+			copy(out, src)
+			return
+		}
+		k := uint32(c.Alpha)
+		for i, v := range src {
+			out[i] = mul255(v, k)
+		}
+		return
+	}
 	var dp []byte
 	if c.Blend != BlendNormal {
 		dp = c.Dst.Pix[c.Dst.PixOffset(x, y):][: 4*n : 4*n]
@@ -85,6 +103,10 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 			mrow = c.Mask.Pix[(y-mr.Min.Y)*c.Mask.Stride:][:mr.Dx()]
 		}
 		mx = mr.Min.X
+	}
+	if c.Blend == BlendMultiply || c.Blend == BlendScreen {
+		c.shadeSeparable(x, out, sp, dp, mrow, mx)
+		return
 	}
 	for i := range out {
 		p := sp[4*i : 4*i+4 : 4*i+4]
@@ -110,6 +132,58 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		}
 		out[i] = pack(r, g, b, a)
 	}
+}
+
+// shadeSeparable is ShadeSpan for Multiply and Screen, which are exact in
+// integers on premultiplied colours: αs·αb·Cb·Cs is the product s·d of
+// the premultiplied colours, so the result s·(1−αb) + αs·αb·B (see
+// LayerShader) is s·(1−αb) + s·d for Multiply and
+// s·(1−αb) + αs·d + αb·s − s·d = s + d·(αs − s) for Screen.
+func (c *LayerShader) shadeSeparable(x int, out []uint32, sp, dp, mrow []uint8, mx int) {
+	src := unsafe.Slice((*uint32)(unsafe.Pointer(&sp[0])), len(out))
+	screen := c.Blend == BlendScreen
+	for i, v := range src {
+		k := uint32(c.Alpha)
+		if c.Mask != nil {
+			var m uint8
+			if j := x + i - mx; j >= 0 && j < len(mrow) {
+				m = mrow[j]
+			}
+			k = div255(k * uint32(m))
+		}
+		if k != 255 {
+			v = mul255(v, k)
+		}
+		sr, sg, sb, sa := unpack(v)
+		if sa == 0 {
+			out[i] = 0
+			continue
+		}
+		q := dp[4*i : 4*i+4 : 4*i+4]
+		dr, dg, db, da := q[0], q[1], q[2], q[3]
+		switch {
+		case da == 0:
+		case sa == 255 && da == 255 || max(sr, sg, sb) > sa || max(dr, dg, db) > da:
+			// Opaque pixels have a table; colours above their alpha are
+			// clamped by the general path.
+			sr, sg, sb = blendPixel(c.Blend, sr, sg, sb, sa, dr, dg, db, da)
+		case screen:
+			sr, sg, sb = screenInt(sr, sa, dr), screenInt(sg, sa, dg), screenInt(sb, sa, db)
+		default:
+			sr, sg, sb = multiplyInt(sr, dr, da), multiplyInt(sg, dg, da), multiplyInt(sb, db, da)
+		}
+		out[i] = pack(sr, sg, sb, sa)
+	}
+}
+
+// multiplyInt and screenInt are Multiply and Screen of one channel of
+// premultiplied colours, s at most sa and d at most da.
+func multiplyInt(s, d, da uint8) uint8 {
+	return uint8(div255(uint32(s) * (255 - uint32(da) + uint32(d))))
+}
+
+func screenInt(s, sa, d uint8) uint8 {
+	return uint8(div255(255*uint32(s) + uint32(d)*(uint32(sa)-uint32(s))))
 }
 
 func mulByte(v uint8, k uint32) uint8 { return uint8(div255(uint32(v) * k)) }

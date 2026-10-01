@@ -173,6 +173,10 @@ func (t *Texture) downsample(k int) *Plane {
 	} else {
 		out.Kind, out.Pix32 = PlaneRGBA, make([]uint32, w*h)
 	}
+	if single && src.Kind == PlaneIndex {
+		t.downsampleIndex(out, k)
+		return out
+	}
 	sums := make([]uint32, 4*w)
 	var ones []uint32
 	if src.Kind == PlaneBits {
@@ -219,6 +223,38 @@ func (t *Texture) downsample(k int) *Plane {
 		}
 	}
 	return out
+}
+
+// downsampleIndex is downsample for an indexed base whose colours are
+// opaque greys or levels of alpha: one channel tells the colour, so only
+// it is summed.
+func (t *Texture) downsampleIndex(out *Plane, k int) {
+	src := &t.base
+	var lut [256]uint8
+	for i, c := range src.Pal {
+		r, _, _, a := unpack(c)
+		lut[i] = r
+		if !t.gray {
+			lut[i] = a
+		}
+	}
+	f, w := 1<<k, out.W
+	sums := make([]uint32, w)
+	for dy := range out.H {
+		y0, y1 := dy<<k, min((dy+1)<<k, src.H)
+		clear(sums)
+		for sy := y0; sy < y1; sy++ {
+			for sx, v := range src.Pix8[sy*src.Stride:][:src.W] {
+				sums[sx>>k] += uint32(lut[v])
+			}
+		}
+		rows := uint32(y1 - y0)
+		row := out.Pix8[dy*w:][:w]
+		for dx, s := range sums {
+			n := rows * uint32(min(f, src.W-dx<<k))
+			row[dx] = uint8((s + n/2) / n)
+		}
+	}
 }
 
 // countBits sets ones[dx] to the number of set bits of the bit plane base
