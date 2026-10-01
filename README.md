@@ -43,8 +43,38 @@ c.PopClip()
 ```
 
 Integration points for other renderers: implement `Blitter` (own pixel
-format, GPU upload, coverage masks), `Shader` (gradients, images – called per
-span, never per pixel) or consume `Stroker` output through a `LineSink`.
+format, GPU upload, coverage masks), `Shader` (called per span, never per
+pixel) or consume `Stroker` output through a `LineSink`.
+
+## Shaders
+
+Paints beyond a solid colour, each a `Shader` for `Paint.Shader`; they
+know nothing of PDF either, and serve cera as well as any 2D library:
+
+```go
+// Images: one byte, one bit or four bytes a pixel, mip levels made on
+// first use, nearest or bilinear, with an optional alpha mask.
+tex := stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneIndex, W: w, H: h, Stride: w, Pix8: pix, Pal: stilus.GrayPalette})
+var img stilus.ImageShader
+img.SetImage(tex, toDevice, false, 255)        // toDevice: texture pixels → device
+
+// Gradients: a ramp of premultiplied colours over t in [0, 1].
+var g stilus.LinearGradient                    // or RadialGradient (two circles)
+g.Ramp, g.Alpha, g.Extend = ramp, 255, [2]bool{true, true}
+g.Set(x0, y0, x1, y1, m)
+
+// Gouraud meshes, drawn without seams into a layer, then composited.
+stilus.FillMesh(layer, region, triangles, m, nil)
+c.Fill(rect, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: &stilus.LayerShader{Src: layer, Alpha: 255}})
+
+// Layers with opacity, mask and the 16 W3C/PDF blend modes, exact at
+// antialiased edges; glyph coverage masks per size and quarter pixel.
+var gc stilus.GlyphCache
+gc.FillGlyph(c, fontID, glyphID, outline, m, paint)
+```
+
+`Canvas.ClipStroke` clips to the area a stroke paints, for strokes and
+stroked text painted with a shader.
 
 ## How it is fast
 
@@ -215,11 +245,12 @@ bench/scripts/bench-refs.sh h.json v0.2.0 main   # measure refs side by side, th
 go test -fuzz FuzzStroke                       # fuzzing
 ```
 
-## Not in this milestone
+## Not here
 
-Blend modes, transparency groups and soft masks (M6), shadings and images
-(M5/M7), glyph cache (M4), display list and PDF interpretation (M3). The
-`Blitter`/`Shader` interfaces are where these plug in.
+Display lists, PDF interpretation, colour spaces, transparency groups as
+PDF defines them (knockout, soft masks from groups) and caches across
+documents belong to the renderer (cera). The `Blitter`/`Shader`
+interfaces are where they plug in.
 
 Speed levers tried and measured (Ryzen 7 5800H, A3 at 150 dpi):
 
