@@ -192,8 +192,10 @@ func BenchmarkTranslucentLine(b *testing.B) {
 	}
 }
 
-// BenchmarkGlyphCacheChurn draws a working set just above the cache's
-// budget, over and over.
+// BenchmarkGlyphCacheChurn draws pages of glyphs with a cache smaller
+// than, or just large enough for, their masks: "cyclic" repeats 512 masks
+// in order, "zipf" draws 4096 glyphs of 2048 masks with Zipf frequencies,
+// like text. Every mask made costs two allocations.
 func BenchmarkGlyphCacheChurn(b *testing.B) {
 	var g Path
 	g.MoveTo(0.1, 0)
@@ -204,27 +206,43 @@ func BenchmarkGlyphCacheChurn(b *testing.B) {
 	c := NewCanvas(dst)
 	paint := &Paint{Color: rgba(20, 20, 20, 255)}
 	const em = 16
-	// 128 glyphs in 4 phases: 512 masks of about 16·19 bytes plus 64.
-	page := func(gc *GlyphCache) {
-		for k := range 4096 {
-			m := Matrix{em, 0, 0, -em, float64(k%64)*15 + 0.25*float64(k%4), float64(k/64)*15 + em}
-			gc.FillGlyph(c, 1, int32(k%128), &g, m, paint)
-		}
+	zipf := rand.NewZipf(rand.New(rand.NewPCG(13, 14)), 1.1, 1, 2047)
+	ids := make([]int32, 4096)
+	for k := range ids {
+		ids[k] = int32(zipf.Uint64())
 	}
-	var probe GlyphCache
-	page(&probe)
-	for _, c := range []struct {
-		name string
-		frac float64
-	}{{"fits", 1.1}, {"over-5pct", 0.95}, {"over-25pct", 0.8}} {
-		b.Run(c.name, func(b *testing.B) {
-			gc := GlyphCache{MaxBytes: int(float64(probe.bytes) * c.frac)}
-			page(&gc)
-			b.ReportAllocs()
-			for b.Loop() {
-				page(&gc)
+	for _, pattern := range []string{"cyclic", "zipf"} {
+		page := func(gc *GlyphCache) {
+			for k := range 4096 {
+				// 128 or 512 glyphs in 4 phases.
+				id := int32(k % 128)
+				if pattern == "zipf" {
+					id = ids[k] / 4
+				}
+				fx := 0.25 * float64(k%4)
+				if pattern == "zipf" {
+					fx = 0.25 * float64(ids[k]%4)
+				}
+				m := Matrix{em, 0, 0, -em, float64(k%64)*15 + fx, float64(k/64)*15 + em}
+				gc.FillGlyph(c, 1, id, &g, m, paint)
 			}
-		})
+		}
+		var probe GlyphCache
+		probe.MaxBytes = 1 << 30
+		page(&probe)
+		for _, c := range []struct {
+			name string
+			frac float64
+		}{{"fits", 1.1}, {"over-5pct", 0.95}, {"over-25pct", 0.8}, {"half", 0.5}} {
+			b.Run(pattern+"/"+c.name, func(b *testing.B) {
+				gc := GlyphCache{MaxBytes: int(float64(probe.bytes) * c.frac)}
+				page(&gc)
+				b.ReportAllocs()
+				for b.Loop() {
+					page(&gc)
+				}
+			})
+		}
 	}
 }
 
@@ -387,5 +405,48 @@ func TestTranslucentSegmentOnce(t *testing.T) {
 	}
 	if hits < 100 {
 		t.Fatalf("only %d translucent strokes took the analytic path", hits)
+	}
+}
+
+// TestGlyphCacheEviction draws glyphs through caches far smaller than
+// their masks: they stay within budget and consistent, and draw the bytes
+// of a cache that keeps everything.
+func TestGlyphCacheEviction(t *testing.T) {
+	var g Path
+	g.MoveTo(0.1, 0)
+	g.LineTo(0.6, 0)
+	g.CubicTo(0.9, 0.3, 0.7, 0.8, 0.3, 0.7)
+	g.Close()
+	rng := rand.New(rand.NewPCG(15, 16))
+	r := image.Rect(0, 0, 400, 300)
+	want, got := image.NewRGBA(r), image.NewRGBA(r)
+	cw, cg := NewCanvas(want), NewCanvas(got)
+	var all GlyphCache
+	all.MaxBytes = 1 << 30
+	small := GlyphCache{MaxBytes: 3000}
+	paint := &Paint{Color: rgba(20, 20, 120, 200)}
+	for k := range 3000 {
+		em := float64(8 + rng.IntN(4)*6)
+		m := Matrix{em, 0, 0, -em, rng.Float64() * 380, rng.Float64()*280 + em}
+		id := int32(rng.IntN(40))
+		all.FillGlyph(cw, 1, id, &g, m, paint)
+		small.FillGlyph(cg, 1, id, &g, m, paint)
+		if small.bytes > small.MaxBytes && len(small.ents) > 1 {
+			t.Fatalf("glyph %d: %d bytes cached, budget %d", k, small.bytes, small.MaxBytes)
+		}
+		n := 0
+		for i := range small.ents {
+			e := &small.ents[i]
+			if j, ok := small.masks[e.key]; !ok || int(j) != i {
+				t.Fatalf("glyph %d: entry %d indexed as %d (%v)", k, i, j, ok)
+			}
+			n += e.size()
+		}
+		if n != small.bytes || len(small.masks) != len(small.ents) {
+			t.Fatalf("glyph %d: %d entries of %d bytes, counted %d in %d", k, len(small.masks), n, small.bytes, len(small.ents))
+		}
+	}
+	if !slices.Equal(got.Pix, want.Pix) {
+		t.Fatal("a cache that evicts draws other bytes")
 	}
 }

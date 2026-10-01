@@ -27,7 +27,7 @@ const (
 	// filled as paths: large glyphs are few, and their masks big.
 	MaxCachedEm = 160
 	// DefaultGlyphCacheBytes bounds the masks of a cache whose MaxBytes
-	// is zero; a full cache is emptied.
+	// is zero; a full cache evicts masks to make room.
 	DefaultGlyphCacheBytes = 4 << 20
 
 	// maxMaskArea bounds one mask (glyphs can reach far out of their em).
@@ -48,8 +48,10 @@ type GlyphCache struct {
 	// MaxBytes bounds the masks kept; 0 means DefaultGlyphCacheBytes.
 	MaxBytes int
 
-	masks map[glyphKey]*image.Alpha // nil: nothing to draw at this size
+	masks map[glyphKey]int32 // index into ents
+	ents  []glyphEnt
 	bytes int
+	rng   uint64 // eviction choices; 0 until seeded
 
 	r       *Rasterizer
 	mb      MaskBlitter
@@ -90,8 +92,13 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 		a: q64(m[0]), b: q64(m[1]), c: q64(m[2]), d: q64(m[3]),
 		fx: uint8(fx), fy: uint8(fy),
 	}
-	mask, ok := gc.masks[key]
-	if !ok {
+	var mask *image.Alpha
+	i, ok := gc.masks[key]
+	if ok {
+		e := &gc.ents[i]
+		e.used = true
+		mask = e.mask
+	} else {
 		// The matrix the mask is made with: the quantized linear part and
 		// the subpixel phase of the origin.
 		mm := Matrix{
@@ -236,24 +243,75 @@ func trim(mask *image.Alpha) *image.Alpha {
 	return out
 }
 
-func (gc *GlyphCache) store(key glyphKey, mask *image.Alpha) {
+// glyphEnt is a cached mask (nil: nothing to draw at this size).
+type glyphEnt struct {
+	key  glyphKey
+	mask *image.Alpha
+	used bool // drawn since the eviction scan last passed it
+}
+
+// size returns the bytes an entry counts against MaxBytes.
+func (e *glyphEnt) size() int {
 	n := 64 // key and map overhead
-	if mask != nil {
-		n += len(mask.Pix)
+	if e.mask != nil {
+		n += len(e.mask.Pix)
 	}
+	return n
+}
+
+// store caches mask, evicting entries until it fits the budget.
+//
+// A full cache evicts entries chosen at random, sparing those drawn since
+// they were last considered: frequent glyphs stay, and a set of glyphs
+// drawn over and over that is a little larger than the budget keeps most
+// of its masks, where emptying the cache, or evicting the least recently
+// used mask, would have every glyph rasterized anew on each pass.
+func (gc *GlyphCache) store(key glyphKey, mask *image.Alpha) {
+	e := glyphEnt{key: key, mask: mask}
+	n := e.size()
 	limit := gc.MaxBytes
 	if limit <= 0 {
 		limit = DefaultGlyphCacheBytes
 	}
-	if gc.masks == nil || gc.bytes+n > limit {
-		if gc.masks == nil {
-			gc.masks = make(map[glyphKey]*image.Alpha, 256)
-		}
-		clear(gc.masks)
-		gc.bytes = 0
+	if gc.masks == nil {
+		gc.masks = make(map[glyphKey]int32, 256)
 	}
-	gc.masks[key] = mask
+	for gc.bytes+n > limit && len(gc.ents) > 0 {
+		gc.evict()
+	}
+	gc.masks[key] = int32(len(gc.ents))
+	gc.ents = append(gc.ents, e)
 	gc.bytes += n
+}
+
+// evict removes one entry: the first not drawn since it was last
+// considered among a few chosen at random, else the last of them.
+func (gc *GlyphCache) evict() {
+	if gc.rng == 0 {
+		gc.rng = 0x9e3779b97f4a7c15
+	}
+	var j int
+	for try := 0; try < 4; try++ {
+		// xorshift64
+		gc.rng ^= gc.rng << 13
+		gc.rng ^= gc.rng >> 7
+		gc.rng ^= gc.rng << 17
+		j = int(gc.rng % uint64(len(gc.ents)))
+		if !gc.ents[j].used {
+			break
+		}
+		gc.ents[j].used = false
+	}
+	e := &gc.ents[j]
+	gc.bytes -= e.size()
+	delete(gc.masks, e.key)
+	last := len(gc.ents) - 1
+	if j != last {
+		*e = gc.ents[last]
+		gc.masks[e.key] = int32(j)
+	}
+	gc.ents[last] = glyphEnt{}
+	gc.ents = gc.ents[:last]
 }
 
 // MaskShader paints a solid premultiplied colour (PackRGBA layout) through
