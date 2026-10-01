@@ -108,6 +108,12 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		c.shadeSeparable(x, out, sp, dp, mrow, mx)
 		return
 	}
+	// The separable modes look opaque pixels up in a table, taken once
+	// per span.
+	var tab *[1 << 16]uint8
+	if c.Blend < BlendHue {
+		tab = blendTable(c.Blend)
+	}
 	for i := range out {
 		p := sp[4*i : 4*i+4 : 4*i+4]
 		r, g, b, a := p[0], p[1], p[2], p[3]
@@ -128,7 +134,11 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		}
 		if dp != nil && dp[4*i+3] != 0 {
 			q := dp[4*i : 4*i+4 : 4*i+4]
-			r, g, b = blendPixel(c.Blend, r, g, b, a, q[0], q[1], q[2], q[3])
+			if a == 255 && q[3] == 255 && tab != nil {
+				r, g, b = tab[int(q[0])<<8|int(r)], tab[int(q[1])<<8|int(g)], tab[int(q[2])<<8|int(b)]
+			} else {
+				r, g, b = blendPixel(c.Blend, r, g, b, a, q[0], q[1], q[2], q[3])
+			}
 		}
 		out[i] = pack(r, g, b, a)
 	}
@@ -163,9 +173,9 @@ func (c *LayerShader) shadeSeparable(x int, out []uint32, sp, dp, mrow []uint8, 
 		dr, dg, db, da := q[0], q[1], q[2], q[3]
 		switch {
 		case da == 0:
-		case sa == 255 && da == 255 || max(sr, sg, sb) > sa || max(dr, dg, db) > da:
-			// Opaque pixels have a table; colours above their alpha are
-			// clamped by the general path.
+		case overAlpha(sr, sg, sb, sa)|overAlpha(dr, dg, db, da) < 0:
+			// Colours above their alpha are clamped by the general path.
+			// (Opaque pixels compute the bytes of blendTable.)
 			sr, sg, sb = blendPixel(c.Blend, sr, sg, sb, sa, dr, dg, db, da)
 		case screen:
 			sr, sg, sb = screenInt(sr, sa, dr), screenInt(sg, sa, dg), screenInt(sb, sa, db)
@@ -174,6 +184,12 @@ func (c *LayerShader) shadeSeparable(x int, out []uint32, sp, dp, mrow []uint8, 
 		}
 		out[i] = pack(sr, sg, sb, sa)
 	}
+}
+
+// overAlpha is negative if a colour channel exceeds alpha. It does not
+// branch: on varied colours, the branches of max(r, g, b) > a mispredict.
+func overAlpha(r, g, b, a uint8) int32 {
+	return (int32(a) - int32(r)) | (int32(a) - int32(g)) | (int32(a) - int32(b))
 }
 
 // multiplyInt and screenInt are Multiply and Screen of one channel of
