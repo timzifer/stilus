@@ -4,7 +4,6 @@ import (
 	"math/bits"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 )
 
 // Textures hold pictures the way their samples come: a picture of one
@@ -59,16 +58,22 @@ func (p *Plane) At(x, y int) uint32 {
 // Bytes returns the memory the samples of p take.
 func (p *Plane) Bytes() int { return len(p.Pix8) + 4*len(p.Pix32) }
 
-// pack returns r, g, b, a (premultiplied) in PackRGBA layout.
+// pack returns r, g, b, a (premultiplied) in PackRGBA layout. It shifts
+// in registers: four byte stores read back as one word would stall the
+// load on store forwarding.
 func pack(r, g, b, a uint8) uint32 {
-	v := [4]byte{r, g, b, a}
-	return *(*uint32)(unsafe.Pointer(&v))
+	if bigEndian {
+		return uint32(r)<<24 | uint32(g)<<16 | uint32(b)<<8 | uint32(a)
+	}
+	return uint32(r) | uint32(g)<<8 | uint32(b)<<16 | uint32(a)<<24
 }
 
 // unpack is the inverse of pack.
 func unpack(c uint32) (r, g, b, a uint8) {
-	v := *(*[4]byte)(unsafe.Pointer(&c))
-	return v[0], v[1], v[2], v[3]
+	if bigEndian {
+		return uint8(c >> 24), uint8(c >> 16), uint8(c >> 8), uint8(c)
+	}
+	return uint8(c), uint8(c >> 8), uint8(c >> 16), uint8(c >> 24)
 }
 
 // Shared palettes: opaque greys and levels of alpha (white premultiplied,
