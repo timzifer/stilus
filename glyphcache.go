@@ -116,7 +116,12 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 	if !r.Overlaps(clip) {
 		return
 	}
-	if st := c.top(); st.mask == nil && st.frac == noFrac {
+	// The direct blit gives the bytes of the rectangle fill below where
+	// that takes fillRect's path: an unmasked whole-pixel clip, an edge
+	// budget of at least two, and corners exact in float32.
+	const lim = 1 << 23
+	if st := c.top(); st.mask == nil && st.frac == noFrac && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
+		r.Min.X >= -lim && r.Min.Y >= -lim && r.Max.X <= lim && r.Max.Y <= lim {
 		c.blitMask(mask, origin, PackRGBA(paint.Color), r.Intersect(clip))
 		return
 	}
@@ -135,6 +140,7 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 // through covOpaque, whose single blend can round differently: only full
 // coverage, where both agree, stores the colour.
 func (c *Canvas) blitMask(mask *image.Alpha, origin image.Point, col uint32, r image.Rectangle) {
+	defer c.guard()
 	if col == 0 {
 		return
 	}

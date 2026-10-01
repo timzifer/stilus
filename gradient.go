@@ -167,7 +167,10 @@ func (g *RadialGradient) ShadeSpan(y, x int, dst []uint32) {
 	fx, fy := float64(x)+0.5, float64(y)+0.5
 	u0 := m[0]*fx + m[2]*fy + m[4] - g.x0
 	v0 := m[1]*fx + m[3]*fy + m[5] - g.y0
-	if g.concentric {
+	// u and v are linear along the span, so finite ends make all of it
+	// finite; elsewhere param's b is Inf·0 and the point outside.
+	n := float64(len(dst) - 1)
+	if g.concentric && finite(u0, v0) && finite(u0+m[0]*n, v0+m[1]*n) {
 		for i := range dst {
 			u, v := u0+m[0]*float64(i), v0+m[1]*float64(i)
 			dst[i] = g.color(g.concentricParam(u, v))
@@ -190,6 +193,10 @@ func (g *RadialGradient) ShadeSpan(y, x int, dst []uint32) {
 func (g *RadialGradient) concentricParam(u, v float64) float64 {
 	nq := -g.qa
 	return math.Sqrt(nq*(u*u+v*v)) / nq
+}
+
+func finite(u, v float64) bool {
+	return math.Abs(u) <= math.MaxFloat64 && math.Abs(v) <= math.MaxFloat64
 }
 
 // param returns the parameter of the point (u, v) relative to the first
