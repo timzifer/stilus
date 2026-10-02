@@ -58,6 +58,10 @@ tex := stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneIndex, W: w, H: h, Strid
 var img stilus.ImageShader
 img.SetImage(tex, toDevice, false, 255)        // toDevice: texture pixels → device
 
+// Tiling patterns: a tile repeated under any affine transform; an alpha
+// tile with SetColor is the stencil of an uncoloured pattern.
+img.SetImageWrap(tile, toDevice, false, 255)   // or SetColor(c) + SetMaskWrap(alphaTile, …)
+
 // Gradients: a ramp of premultiplied colours over t in [0, 1].
 var g stilus.LinearGradient                    // or RadialGradient (two circles)
 g.Ramp, g.Alpha, g.Extend = ramp, 255, [2]bool{true, true}
