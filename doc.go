@@ -27,7 +27,7 @@
 //     (Texture with mip levels, edge-repeating or periodic for pattern
 //     tiles), LinearGradient and RadialGradient (a
 //     Ramp of colours), LayerShader (a layer with opacity, mask and
-//     BlendMode), MaskShader and GlyphCache (glyph coverage masks).
+//     BlendMode, removing the backdrop of non-isolated groups), MaskShader and GlyphCache (glyph coverage masks).
 //     FillMesh draws Gouraud-shaded triangles into a layer.
 //
 // # Performance model

@@ -72,7 +72,10 @@ stilus.FillMesh(layer, region, triangles, m, nil)
 c.Fill(rect, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: &stilus.LayerShader{Src: layer, Alpha: 255}})
 
 // Layers with opacity, mask and the 16 W3C/PDF blend modes, exact at
-// antialiased edges; glyph coverage masks per size and quarter pixel.
+// antialiased edges; a non-isolated group drawn onto a copy of its backdrop
+// sets Initial (that backdrop) and Alone (the group drawn alone), so that
+// the backdrop is removed before blending. Glyph coverage masks per size
+// and quarter pixel.
 var gc stilus.GlyphCache
 gc.FillGlyph(c, fontID, glyphID, outline, m, paint)
 ```

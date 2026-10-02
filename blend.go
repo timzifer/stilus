@@ -56,6 +56,14 @@ func (b BlendMode) String() string {
 // and the shader returns s = cs·(1−αb) + αs·αb·B(Cb, Cs) with alpha αs,
 // which makes that the compositing formula of the specification
 // interpolated by coverage.
+//
+// A non-isolated group is drawn onto a copy of its backdrop, so its layer
+// includes the backdrop; blending or knocking out that layer would count
+// the backdrop twice. With Initial and Alone set, the shader first removes
+// the backdrop's contribution as in PDF 2.0, 11.4.8:
+// C = Cn + (Cn − C0)·(α0/αgn − α0), Cn being the layer's colour, C0 and α0
+// the backdrop's, and αgn the alpha of the group drawn alone; the result,
+// with alpha αgn, is then composited like any layer.
 type LayerShader struct {
 	// Src is the layer, premultiplied like any image.RGBA; spans must lie
 	// within its rectangle.
@@ -69,6 +77,11 @@ type LayerShader struct {
 	// Alpha is the constant opacity of the layer.
 	Alpha uint8
 	Blend BlendMode
+	// Initial and Alone, when both are non-nil, make Src the result of a
+	// non-isolated group: Initial is the backdrop the group started from
+	// and Alone the same group drawn onto a transparent image, of which
+	// only the alpha is read. Both cover Src's rectangle.
+	Initial, Alone *image.RGBA
 }
 
 // ShadeSpan implements Shader.
@@ -78,6 +91,12 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		return
 	}
 	sp := c.Src.Pix[c.Src.PixOffset(x, y):][: 4*n : 4*n]
+	if c.Initial != nil && c.Alone != nil {
+		// The paths below read the backdrop-free layer from out, each
+		// pixel before writing it.
+		c.removeBackdrop(y, x, sp, out)
+		sp = unsafe.Slice((*byte)(unsafe.Pointer(&out[0])), 4*n)
+	}
 	if c.Blend == BlendNormal && c.Mask == nil {
 		// The layer's pixels are in the layout of out already.
 		src := unsafe.Slice((*uint32)(unsafe.Pointer(&sp[0])), n)
@@ -161,10 +180,65 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 	}
 }
 
+// removeBackdrop sets out to the layer's pixels sp without the backdrop.
+// In premultiplied colours, with sn and αn the layer's, b0 the backdrop's
+// and g = αgn, the formula of LayerShader is
+// C·g = sn·(g + (1−g)·α0)/αn − (1−g)·b0, clamped to [0, g]. The scale of
+// sn is 1 wherever αn is the union of α0 and g, as in a layer drawn onto
+// its backdrop, but rounding makes that rare; it is one multiplication by
+// a reciprocal from a table. Apart from opaque and empty pixels the loop
+// does not branch: alphas of drawn content change from pixel to pixel at
+// edges, and branches on them mispredict.
+func (c *LayerShader) removeBackdrop(y, x int, sp []uint8, out []uint32) {
+	n := len(out)
+	src := unsafe.Slice((*uint32)(unsafe.Pointer(&sp[0])), n)
+	ip := c.Initial.Pix[c.Initial.PixOffset(x, y):][: 4*n : 4*n]
+	bs := unsafe.Slice((*uint32)(unsafe.Pointer(&ip[0])), n)
+	ap := c.Alone.Pix[c.Alone.PixOffset(x, y):][: 4*n : 4*n]
+	for i, v := range src {
+		an := v >> alphaShift & 0xff
+		ga := uint32(ap[4*i+3])
+		// Inside and outside opaque groups, the common cases, take
+		// branches that predict well.
+		if ga&an == 255 {
+			out[i] = v
+			continue
+		}
+		if ga == 0 {
+			out[i] = 0
+			continue
+		}
+		b0 := bs[i]
+		a0 := b0 >> alphaShift & 0xff
+		// A layer pixel with αn = 0 has no colour: g = 0 makes it transparent.
+		g := ga * min(an, 1)
+		f := uint64(255*g+(255-g)*a0) * recip255[an]
+		sr, sg, sb, _ := unpack(v)
+		br, bg, bb, _ := unpack(mul255(b0, 255-g))
+		out[i] = pack(removeChannel(sr, br, f, g), removeChannel(sg, bg, f, g), removeChannel(sb, bb, f, g), uint8(g))
+	}
+}
+
+// recip255[a] is 2³²/(255·a), rounded; recip255[0] is 0. For a product
+// p = 255·a it is exact in sn·p·recip255[a]/2³² for sn up to 255.
+var recip255 = func() (t [256]uint64) {
+	for a := 1; a < 256; a++ {
+		d := uint64(255 * a)
+		t[a] = (1<<32 + d/2) / d
+	}
+	return t
+}()
+
+// removeChannel returns s·f/2³² − b, rounded and clamped to [0, g].
+func removeChannel(s, b uint8, f uint64, g uint32) uint8 {
+	v := int64((uint64(s)*f+1<<31)>>32) - int64(b)
+	return uint8(min(max(v, 0), int64(g)))
+}
+
 // srcRow implements rowSource: a Normal layer without a mask is its own
 // pixels times Alpha.
 func (c *LayerShader) srcRow(y, x, n int) ([]uint32, uint32, bool) {
-	if c.Blend != BlendNormal || c.Mask != nil || n == 0 {
+	if c.Blend != BlendNormal || c.Mask != nil || c.Initial != nil && c.Alone != nil || n == 0 {
 		return nil, 0, false
 	}
 	sp := c.Src.Pix[c.Src.PixOffset(x, y):][: 4*n : 4*n]

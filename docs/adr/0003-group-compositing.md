@@ -1,6 +1,6 @@
 # 0003. Group compositing: backdrop removal and shape
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-02
 - Needed by: cera ADR 0009 (transparency remainders, items 3 and 4, M8)
 
@@ -48,11 +48,41 @@ do not grow a shape channel: the caller draws shape-only objects into the
 
 None of the new fields changes output when nil.
 
+As implemented:
+
+- **Backdrop removal** is done in premultiplied colours, where the formula
+  is C·αgn = sn·(αgn + (1−αgn)·α0)/αn − (1−αgn)·b0, clamped to [0, αgn]
+  (sn, αn the layer's, b0, α0 the backdrop's). The first term's scale is 1
+  where αn is the union of α0 and αgn, as in a layer drawn onto its
+  backdrop, but 8-bit rounding makes that rare, so it is one 64-bit
+  multiplication by a reciprocal from a table of 256, no division. Pixels
+  where the group is opaque or empty are copied or cleared; the rest does
+  not branch. The backdrop-free pixels are written into the span and the
+  usual paths (opacity, mask, every blend mode) run on them, so their
+  output is that of a layer holding those pixels; `srcRow` declines such
+  layers. Within 1 level of the formula in floating point; a group of
+  Normal objects comes out as the group drawn alone, exactly in the tests.
+- **Shape is not added.** On a `LayerShader` it would change nothing that
+  `Mask` does not: the shader's result is linear in the premultiplied
+  layer pixel for a fixed straight colour, so compositing it with shape f
+  over the backdrop, (1−f)·D + f·(s + D·(1−αs)), is f·s + D·(1−f·αs), the
+  layer masked by f. Shape and opacity differ only where shape replaces
+  what is below instead of covering it, i.e. inside knockout groups, and
+  cera merges knockout objects itself with a shape plane
+  (`koMerge` in cera's `transparency.go`). For `AIS`, cera draws an
+  object's shape plane with its soft mask and constant alpha instead of
+  opaque, and a group's shape plane by drawing its objects into an
+  `image.Alpha`; both are ordinary fills.
+
 ## Consequences
 
 - cera's approximations become exact for the two cases, at the cost of one
-  extra layer (backdrop removal) or one alpha plane (shape) for exactly the
-  groups that need them.
+  extra layer (backdrop removal) or one alpha plane (shape, kept by cera)
+  for exactly the groups that need them.
+- `BenchmarkBackdropRemoval`: on drawn content (ellipses, half of them
+  translucent) a Normal layer with backdrop removal costs about a third of
+  a Multiply layer without it; on random pixels, where branches
+  mispredict, about the same.
 - `LayerShader` keeps one type and one entry point; the slow paths are
   chosen by nil checks once per span.
 
