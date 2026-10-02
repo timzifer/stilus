@@ -288,7 +288,11 @@ type RadialGradient struct {
 	// concentric marks circles with one centre and a start radius of 0,
 	// whose parameter is the distance from the centre over r1.
 	concentric bool
-	ok         bool
+	// linear marks a qa too small for the quadratic formula: the
+	// equation is taken as linear. quad marks a finite qa that is not,
+	// for which quadParam knows the order of the roots.
+	linear, quad bool
+	ok           bool
 }
 
 // Set places the gradient between the circles (x0, y0, r0) and (x1, y1, r1)
@@ -309,6 +313,8 @@ func (g *RadialGradient) Set(x0, y0, r0, x1, y1, r1 float64, m Matrix) bool {
 	g.dx, g.dy, g.dr = x1-x0, y1-y0, r1-r0
 	g.qa = g.dx*g.dx + g.dy*g.dy - g.dr*g.dr
 	g.concentric = g.dx == 0 && g.dy == 0 && r0 == 0 && g.qa < 0 && !math.IsInf(g.qa, 0)
+	g.linear = math.Abs(g.qa) < 1e-12*(g.dx*g.dx+g.dy*g.dy+g.dr*g.dr) || g.qa == 0
+	g.quad = !g.linear && math.Abs(g.qa) <= math.MaxFloat64
 	return true
 }
 
@@ -334,9 +340,12 @@ func (g *RadialGradient) ShadeSpan(y, x int, dst []uint32) {
 		for o := 0; o < len(dst); o += knotChunk {
 			t := ts[:min(knotChunk, len(dst)-o)]
 			for j := range t {
-				if concentric {
+				switch {
+				case concentric:
 					t[j] = g.concentricParam(m[0]*fx+cu, m[1]*fx+cv)
-				} else {
+				case g.quad:
+					t[j] = g.quadParam(m[0]*fx+cu, m[1]*fx+cv)
+				default:
 					t[j] = g.param(m[0]*fx+cu, m[1]*fx+cv)
 				}
 				fx++
@@ -356,9 +365,16 @@ func (g *RadialGradient) ShadeSpan(y, x int, dst []uint32) {
 		return
 	}
 	fx := fx0
-	for i := range dst {
-		dst[i] = g.color(g.param(m[0]*fx+cu, m[1]*fx+cv))
-		fx++
+	if g.quad {
+		for i := range dst {
+			dst[i] = g.color(g.quadParam(m[0]*fx+cu, m[1]*fx+cv))
+			fx++
+		}
+	} else {
+		for i := range dst {
+			dst[i] = g.color(g.param(m[0]*fx+cu, m[1]*fx+cv))
+			fx++
+		}
 	}
 	g.scale(dst)
 }
@@ -387,7 +403,7 @@ func (g *RadialGradient) param(u, v float64) float64 {
 	b := float64(u*g.dx) + float64(v*g.dy) + float64(g.r0*g.dr)
 	c := float64(u*u) + float64(v*v) - float64(g.r0*g.r0)
 	var t1, t2 float64
-	if math.Abs(g.qa) < 1e-12*(g.dx*g.dx+g.dy*g.dy+g.dr*g.dr) || g.qa == 0 {
+	if g.linear {
 		if b == 0 {
 			return math.NaN()
 		}
@@ -413,6 +429,36 @@ func (g *RadialGradient) param(u, v float64) float64 {
 		if (t < 0 && !g.Extend[0]) || (t > 1 && !g.Extend[1]) {
 			continue
 		}
+		return t
+	}
+	return math.NaN()
+}
+
+// quadParam is param for a finite qa that is not taken as linear. Where b
+// and s are finite no root is NaN, and dividing by qa keeps the order of
+// b+s and b−s, or reverses it: the larger root is known without comparing,
+// and the smaller one is divided out only if the larger is rejected. The
+// operations are param's, so t is equal to the bit; elsewhere it defers
+// to param.
+func (g *RadialGradient) quadParam(u, v float64) float64 {
+	b := float64(u*g.dx) + float64(v*g.dy) + float64(g.r0*g.dr)
+	c := float64(u*u) + float64(v*v) - float64(g.r0*g.r0)
+	d := float64(b*b) - float64(g.qa*c)
+	if d < 0 {
+		return math.NaN()
+	}
+	s := math.Sqrt(d)
+	if !(math.Abs(b) <= math.MaxFloat64 && s <= math.MaxFloat64) {
+		return g.param(u, v)
+	}
+	hi, lo := b+s, b-s
+	if g.qa < 0 {
+		hi, lo = lo, hi
+	}
+	if t := hi / g.qa; !(g.r0+t*g.dr < 0) && !(t < 0 && !g.Extend[0]) && !(t > 1 && !g.Extend[1]) {
+		return t
+	}
+	if t := lo / g.qa; !(g.r0+t*g.dr < 0) && !(t < 0 && !g.Extend[0]) && !(t > 1 && !g.Extend[1]) {
 		return t
 	}
 	return math.NaN()

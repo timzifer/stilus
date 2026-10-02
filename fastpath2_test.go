@@ -76,6 +76,52 @@ func TestGlyphBlitMatchesShaderPath(t *testing.T) {
 	}
 }
 
+// quadParam must give param's t to the bit, NaN where param gives NaN,
+// for circles of every arrangement, including focal points on and
+// outside the end circle, shrinking radii and huge coordinates.
+func TestQuadRadialMatchesGeneral(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	pick := func(scale float64) float64 {
+		switch rng.Intn(8) {
+		case 0:
+			return 0
+		case 1:
+			return math.Copysign(math.Exp(rng.NormFloat64()*200), rng.NormFloat64())
+		}
+		return rng.NormFloat64() * scale * math.Exp(rng.NormFloat64()*2)
+	}
+	quads := 0
+	for n := range 20000 {
+		var g RadialGradient
+		g.Ramp, g.Alpha = Ramp{0}, 255
+		g.Extend = [2]bool{rng.Intn(2) == 0, rng.Intn(2) == 0}
+		x0, y0, r0 := pick(50), pick(50), math.Abs(pick(30))
+		x1, y1, r1 := pick(50), pick(50), math.Abs(pick(30))
+		switch n % 4 {
+		case 1: // the focal point on the end circle: qa = 0
+			a := rng.Float64() * 2 * math.Pi
+			x0, y0, r0 = x1+r1*math.Cos(a), y1+r1*math.Sin(a), 0
+		case 2: // one centre
+			x0, y0 = x1, y1
+		}
+		if !g.Set(x0, y0, r0, x1, y1, r1, Identity) || !g.quad {
+			continue
+		}
+		quads++
+		for range 50 {
+			u, v := pick(100), pick(100)
+			want, got := g.param(u, v), g.quadParam(u, v)
+			if math.Float64bits(got) != math.Float64bits(want) && !(math.IsNaN(got) && math.IsNaN(want)) {
+				t.Fatalf("circles (%v, %v, %v) (%v, %v, %v) extend %v at (%v, %v): t %v, want %v",
+					x0, y0, r0, x1, y1, r1, g.Extend, u, v, got, want)
+			}
+		}
+	}
+	if quads < 10000 {
+		t.Fatalf("only %d quadratic gradients", quads)
+	}
+}
+
 // The concentric path must give param's colours byte for byte.
 func TestConcentricRadialMatchesGeneral(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))

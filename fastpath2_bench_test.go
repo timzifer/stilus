@@ -60,3 +60,20 @@ func BenchmarkRadialConcentric(b *testing.B) {
 		c.Fill(&p, Identity, NonZero, paint)
 	}
 }
+
+// BenchmarkRadialTwoPoint fills with a two-point radial gradient whose
+// focal point lies inside the end circle, as in gradients-200.
+func BenchmarkRadialTwoPoint(b *testing.B) {
+	dst := image.NewRGBA(image.Rect(0, 0, 512, 512))
+	c := NewCanvas(dst)
+	var g RadialGradient
+	g.Ramp, g.Alpha, g.Extend = grayRamp(256), 255, [2]bool{true, true}
+	g.Set(180, 200, 0, 256, 256, 240, Identity)
+	var p Path
+	p.Rect(0, 0, 512, 512)
+	paint := &Paint{Shader: &g}
+	b.ReportAllocs()
+	for b.Loop() {
+		c.Fill(&p, Identity, NonZero, paint)
+	}
+}
