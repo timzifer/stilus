@@ -72,7 +72,8 @@ As implemented:
   (`koMerge` in cera's `transparency.go`). For `AIS`, cera draws an
   object's shape plane with its soft mask and constant alpha instead of
   opaque, and a group's shape plane by drawing its objects into an
-  `image.Alpha`; both are ordinary fills.
+  `image.Alpha`; both are ordinary fills. ADR 0004 proposes knockout
+  compositing by shader, where a separate shape does matter.
 
 ## Consequences
 
