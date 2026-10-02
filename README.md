@@ -249,6 +249,24 @@ bench/scripts/bench-refs.sh h.json v0.2.0 main   # measure refs side by side, th
 go test -fuzz FuzzStroke                       # fuzzing
 ```
 
+The benchmark history (`BenchmarkScenes` at 150 dpi per release, charted
+by CI on the `badges` branch) always uses the scenes of the working tree:
+`bench-refs.sh` builds every ref with the current `internal/scenes`. A
+scene added now is therefore charted over past releases as well. Files of
+`internal/scenes` that do not compile against a release, because they use
+API it lacks, are left out of that release, so the scene's line starts at
+the first release that can draw it.
+
+To add a scene, put it in a file of its own in `internal/scenes` that
+appends its constructor to `more` in `init`. `scenes.go` holds the
+framework and must keep compiling against every release. Then chart it
+before committing, with `@` standing for the working tree:
+
+```sh
+bench/scripts/bench-refs.sh h.json $(git tag -l 'v*') dev=@
+(cd bench && go run ./cmd/benchchart render -db ../h.json -o ../h.svg)
+```
+
 ## Not here
 
 Display lists, PDF interpretation, colour spaces, transparency groups as
