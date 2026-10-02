@@ -63,8 +63,8 @@ jobs:
     permissions:
       contents: write # push the badge to the badges branch (main only)
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: go test -cover
