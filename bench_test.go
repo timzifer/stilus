@@ -32,11 +32,17 @@ func BenchmarkScenes(b *testing.B) {
 }
 
 // BenchmarkScenesParallel splits the page into horizontal bands, one canvas
-// per worker, each playing the full operation list.
+// per band, each playing the full operation list. Every worker plays its
+// own instance of the scene: glyph caches and shaders are not safe for
+// concurrent use.
 func BenchmarkScenesParallel(b *testing.B) {
 	const dpi = 150
 	workers := runtime.GOMAXPROCS(0)
-	for _, s := range scenes.All() {
+	sets := make([][]*scenes.Scene, workers)
+	for w := range sets {
+		sets[w] = scenes.All()
+	}
+	for k, s := range sets[0] {
 		b.Run(fmt.Sprintf("%s/%d-workers", s.Name, workers), func(b *testing.B) {
 			img := image.NewRGBA(scenes.Size(dpi))
 			bands := splitBands(img.Bounds(), workers*2)
@@ -53,14 +59,14 @@ func BenchmarkScenesParallel(b *testing.B) {
 				close(next)
 				for w := 0; w < workers; w++ {
 					wg.Add(1)
-					go func() {
+					go func(s *scenes.Scene) {
 						defer wg.Done()
 						for i := range next {
 							c := canvases[i]
 							c.Reset(img, bands[i])
 							s.Draw(c, dpi)
 						}
-					}()
+					}(sets[w][k])
 				}
 				wg.Wait()
 			}

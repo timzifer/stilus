@@ -32,12 +32,18 @@ func main() {
 	size := scenes.Size(*dpi)
 	fmt.Printf("page %dx%d px @ %g dpi, %d thread(s), GOMAXPROCS %d\n", size.Dx(), size.Dy(), *dpi, *threads, runtime.GOMAXPROCS(0))
 	fmt.Printf("%-24s %10s %10s %12s\n", "scene", "min ms", "median ms", "allocs/run")
-	for _, s := range scenes.All() {
+	// One instance of every scene per band: glyph caches and shaders are
+	// not safe for concurrent use.
+	bands := split(size, *threads)
+	sets := make([][]*scenes.Scene, len(bands))
+	for i := range sets {
+		sets[i] = scenes.All()
+	}
+	for k, s := range sets[0] {
 		if *only != "" && !strings.Contains(s.Name, *only) {
 			continue
 		}
 		img := image.NewRGBA(size)
-		bands := split(size, *threads)
 		canvases := make([]*stilus.Canvas, len(bands))
 		for i := range canvases {
 			canvases[i] = stilus.NewCanvas(img)
@@ -54,7 +60,7 @@ func main() {
 				go func(i int) {
 					defer wg.Done()
 					canvases[i].Reset(img, bands[i])
-					s.Draw(canvases[i], *dpi)
+					sets[i][k].Draw(canvases[i], *dpi)
 				}(i)
 			}
 			wg.Wait()
