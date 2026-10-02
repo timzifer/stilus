@@ -108,12 +108,17 @@ func (g *LinearGradient) ShadeSpan(y, x int, dst []uint32) {
 		clear(dst)
 		return
 	}
-	t0 := g.a*(float64(x)+0.5) + g.b*(float64(y)+0.5) + g.c
+	// t is computed from each pixel's own position, not stepped along the
+	// span, so a pixel's colour does not depend on where its span starts
+	// (fx counts exactly: it stays far below 2^52).
+	ty := g.b*(float64(y)+0.5) + g.c
 	if g.a == 0 {
-		fill32(dst, g.color(t0))
+		fill32(dst, g.color(ty))
 	} else {
+		fx := float64(x) + 0.5
 		for i := range dst {
-			dst[i] = g.color(t0 + g.a*float64(i))
+			dst[i] = g.color(g.a*fx + ty)
+			fx++
 		}
 	}
 	g.scale(dst)
@@ -164,23 +169,27 @@ func (g *RadialGradient) ShadeSpan(y, x int, dst []uint32) {
 		return
 	}
 	m := &g.inv
-	fx, fy := float64(x)+0.5, float64(y)+0.5
-	u0 := m[0]*fx + m[2]*fy + m[4] - g.x0
-	v0 := m[1]*fx + m[3]*fy + m[5] - g.y0
+	// u and v are computed from each pixel's own position, not stepped
+	// along the span, so a pixel's colour does not depend on where its
+	// span starts (fx counts exactly: it stays far below 2^52).
+	fy := float64(y) + 0.5
+	cu, cv := m[2]*fy+m[4]-g.x0, m[3]*fy+m[5]-g.y0
+	fx0, fx1 := float64(x)+0.5, float64(x+len(dst)-1)+0.5
 	// u and v are linear along the span, so finite ends make all of it
 	// finite; elsewhere param's b is Inf·0 and the point outside.
-	n := float64(len(dst) - 1)
-	if g.concentric && finite(u0, v0) && finite(u0+m[0]*n, v0+m[1]*n) {
+	if g.concentric && finite(m[0]*fx0+cu, m[1]*fx0+cv) && finite(m[0]*fx1+cu, m[1]*fx1+cv) {
+		fx := fx0
 		for i := range dst {
-			u, v := u0+m[0]*float64(i), v0+m[1]*float64(i)
-			dst[i] = g.color(g.concentricParam(u, v))
+			dst[i] = g.color(g.concentricParam(m[0]*fx+cu, m[1]*fx+cv))
+			fx++
 		}
 		g.scale(dst)
 		return
 	}
+	fx := fx0
 	for i := range dst {
-		u, v := u0+m[0]*float64(i), v0+m[1]*float64(i)
-		dst[i] = g.color(g.param(u, v))
+		dst[i] = g.color(g.param(m[0]*fx+cu, m[1]*fx+cv))
+		fx++
 	}
 	g.scale(dst)
 }

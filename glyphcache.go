@@ -105,11 +105,18 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 			float64(key.a) / 64, float64(key.b) / 64, float64(key.c) / 64, float64(key.d) / 64,
 			float64(fx) / subpixel, float64(fy) / subpixel,
 		}
-		bb := pixelBox(outline, mm)
+		bb, ok := pixelBox(outline, mm)
+		if !ok {
+			// Too far out for a mask's integer bounds: the path may still
+			// cover the clip.
+			c.Fill(outline, m, NonZero, paint)
+			return
+		}
 		if !bb.Add(origin).Overlaps(clip) {
 			return // not cached: this worker may never need it
 		}
-		if bb.Dx()*bb.Dy() > maxMaskArea {
+		// Divided, not multiplied: the area overflows a 32-bit int.
+		if bb.Dx() > maxMaskArea/bb.Dy() {
 			c.Fill(outline, m, NonZero, paint)
 			return
 		}
@@ -174,17 +181,18 @@ func (c *Canvas) blitMask(mask *image.Alpha, origin image.Point, col uint32, r i
 }
 
 // pixelBox returns the device pixels p can touch under m, grown by one
-// pixel. A non-finite result is empty.
-func pixelBox(p *Path, m Matrix) image.Rectangle {
+// pixel. It reports false if the bounds are non-finite or too large for
+// integer pixel coordinates.
+func pixelBox(p *Path, m Matrix) (image.Rectangle, bool) {
 	if len(p.Points) == 0 {
-		return image.Rectangle{}
+		return image.Rectangle{}, true
 	}
 	b := m.transformRect(p.Bounds())
 	const lim = 1 << 30
 	if !(b.X0 >= -lim && b.Y0 >= -lim && b.X1 <= lim && b.Y1 <= lim) {
-		return image.Rectangle{}
+		return image.Rectangle{}, false
 	}
-	return image.Rect(int(math.Floor(b.X0-1)), int(math.Floor(b.Y0-1)), int(math.Ceil(b.X1+1)), int(math.Ceil(b.Y1+1)))
+	return image.Rect(int(math.Floor(b.X0-1)), int(math.Floor(b.Y0-1)), int(math.Ceil(b.X1+1)), int(math.Ceil(b.Y1+1))), true
 }
 
 // q64 quantizes a matrix entry to 1/64.
@@ -232,7 +240,9 @@ func trim(mask *image.Alpha) *image.Alpha {
 			}
 		}
 	}
-	t := image.Rect(x0, y0, x1, y1)
+	// A literal, not image.Rect, which would order the bounds left
+	// inverted when no pixel has coverage.
+	t := image.Rectangle{Min: image.Pt(x0, y0), Max: image.Pt(x1, y1)}
 	if t.Empty() {
 		return nil
 	}

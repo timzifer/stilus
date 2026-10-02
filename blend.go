@@ -104,6 +104,23 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		}
 		mx = mr.Min.X
 	}
+	if c.Blend == BlendNormal {
+		// Masked Normal: scale the packed pixels by the combined alpha.
+		src := unsafe.Slice((*uint32)(unsafe.Pointer(&sp[0])), n)
+		k0 := uint32(c.Alpha)
+		for i, v := range src {
+			var m uint8
+			if j := x + i - mx; j >= 0 && j < len(mrow) {
+				m = mrow[j]
+			}
+			v = mul255(v, div255(k0*uint32(m)))
+			if v>>alphaShift&0xff == 0 {
+				v = 0
+			}
+			out[i] = v
+		}
+		return
+	}
 	if c.Blend == BlendMultiply || c.Blend == BlendScreen {
 		c.shadeSeparable(x, out, sp, dp, mrow, mx)
 		return
