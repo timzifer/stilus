@@ -15,7 +15,7 @@ when its shaders or kernels exist with tests and cera's ADR can use them.
 
 | ADR | title | needed by | status |
 |---|---|---|---|
-| [0001](0001-shading-shaders.md) | Shaders for shadings: non-uniform ramps, sampled grids, mesh shader | cera ADR 0001 (M7) | proposed |
+| [0001](0001-shading-shaders.md) | Shaders for shadings: non-uniform ramps, sampled grids, mesh shader | cera ADR 0001 (M7) | accepted |
 | [0002](0002-repeating-textures.md) | Repeating textures for tiling patterns | cera ADR 0002 (M7) | accepted |
 | [0003](0003-group-compositing.md) | Group compositing: backdrop removal and shape | cera ADR 0009 (M8) | proposed |
 
