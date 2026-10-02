@@ -26,6 +26,10 @@ type Op struct {
 	Path   *stilus.Path
 	Style  *stilus.StrokeStyle
 	Paint  *stilus.Paint
+	// Draw, when non-nil, draws the operation instead, with m the page to
+	// device transform: for paints set up in device space (gradients,
+	// images, layers) and for glyphs drawn through a cache.
+	Draw func(c *stilus.Canvas, m stilus.Matrix)
 }
 
 // Scene is a prebuilt list of operations in page space.
@@ -53,7 +57,9 @@ func (s *Scene) Draw(c *stilus.Canvas, dpi float64) {
 	}
 	for i := range s.Ops {
 		op := &s.Ops[i]
-		if op.Stroke {
+		if op.Draw != nil {
+			op.Draw(c, m)
+		} else if op.Stroke {
 			c.Stroke(op.Path, m, op.Style, op.Paint)
 		} else {
 			c.Fill(op.Path, m, op.Rule, op.Paint)
@@ -229,7 +235,18 @@ func MaskClip() *Scene {
 	return &Scene{Name: "hatch-2000-maskclip", Clip: pageClip(), Mask: &m, Ops: hatch(2000, &stilus.StrokeStyle{Width: 0})}
 }
 
+// more holds the scenes of the other files of this package, which use API
+// that older releases lack. To chart a new scene over past releases,
+// bench/scripts/bench-refs.sh builds every release with the scenes of the
+// working tree and leaves out the files that do not compile against it;
+// this file must compile against all of them.
+var more []func() *Scene
+
 // All returns every scene.
 func All() []*Scene {
-	return []*Scene{Hatch(), HatchThick(), Short(), ShortHair(), Glyphs(), Mixed(), Contours(), MaskClip()}
+	all := []*Scene{Hatch(), HatchThick(), Short(), ShortHair(), Glyphs(), Mixed(), Contours(), MaskClip()}
+	for _, f := range more {
+		all = append(all, f())
+	}
+	return all
 }
