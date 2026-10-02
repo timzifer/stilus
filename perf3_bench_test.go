@@ -195,7 +195,8 @@ func BenchmarkTranslucentLine(b *testing.B) {
 // BenchmarkGlyphCacheChurn draws pages of glyphs with a cache smaller
 // than, or just large enough for, their masks: "cyclic" repeats 512 masks
 // in order, "zipf" draws 4096 glyphs of 2048 masks with Zipf frequencies,
-// like text. Every mask made costs two allocations.
+// like text. Masks made are reported per page; evicted masks are reused,
+// so making them allocates nothing.
 func BenchmarkGlyphCacheChurn(b *testing.B) {
 	var g Path
 	g.MoveTo(0.1, 0)
@@ -238,9 +239,12 @@ func BenchmarkGlyphCacheChurn(b *testing.B) {
 				gc := GlyphCache{MaxBytes: int(float64(probe.bytes) * c.frac)}
 				page(&gc)
 				b.ReportAllocs()
+				m0, n := gc.misses, 0
 				for b.Loop() {
 					page(&gc)
+					n++
 				}
+				b.ReportMetric(float64(gc.misses-m0)/float64(n), "masks/page")
 			})
 		}
 	}
@@ -445,8 +449,52 @@ func TestGlyphCacheEviction(t *testing.T) {
 		if n != small.bytes || len(small.masks) != len(small.ents) {
 			t.Fatalf("glyph %d: %d entries of %d bytes, counted %d in %d", k, len(small.masks), n, small.bytes, len(small.ents))
 		}
+		n = 0
+		for _, m := range small.free {
+			n += cap(m.Pix)
+		}
+		if n != small.freeBytes || n > small.MaxBytes/8 || len(small.free) > maxFreeMasks {
+			t.Fatalf("glyph %d: %d free masks of %d bytes, counted %d, budget %d", k, len(small.free), n, small.freeBytes, small.MaxBytes/8)
+		}
+	}
+	if small.evictions == 0 || len(small.free) == 0 {
+		t.Fatalf("%d evictions, %d masks kept for reuse", small.evictions, len(small.free))
 	}
 	if !slices.Equal(got.Pix, want.Pix) {
 		t.Fatal("a cache that evicts draws other bytes")
+	}
+}
+
+// TestGlyphCacheChurnAllocs checks that a cache too small for the masks
+// it draws reuses evicted ones: once warm it hardly allocates.
+func TestGlyphCacheChurnAllocs(t *testing.T) {
+	var g Path
+	g.MoveTo(0.1, 0)
+	g.LineTo(0.6, 0)
+	g.CubicTo(0.9, 0.3, 0.7, 0.8, 0.3, 0.7)
+	g.Close()
+	dst := image.NewRGBA(image.Rect(0, 0, 512, 512))
+	c := NewCanvas(dst)
+	paint := &Paint{Color: rgba(20, 20, 20, 255)}
+	var gc GlyphCache
+	page := func() {
+		for k := range 1024 {
+			m := Matrix{16, 0, 0, -16, float64(k%32)*15 + 0.25*float64(k%4), float64(k/32)*15 + 16}
+			gc.FillGlyph(c, 1, int32(k%128), &g, m, paint)
+		}
+	}
+	page()
+	// Four fifths of what the page's masks take.
+	gc = GlyphCache{MaxBytes: gc.bytes * 4 / 5}
+	page()
+	page()
+	m0 := gc.misses
+	// Not exactly none: maps may grow now and then. Without reuse every
+	// mask made costs two.
+	if allocs := testing.AllocsPerRun(5, page); allocs >= 1 {
+		t.Errorf("%.1f allocations per page", allocs)
+	}
+	if gc.misses == m0 {
+		t.Fatal("the cache holds every mask: no churn")
 	}
 }
