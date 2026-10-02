@@ -186,10 +186,8 @@ func (g *Gradient) color(t float64) uint32 {
 	case !(t >= 0): // NaN
 		return g.Outside
 	}
-	if g.knotted() {
-		c, _ := g.knotColor(t, 0)
-		return c
-	}
+	// Without knots: callers take the knotted paths first, which keeps
+	// color small enough to inline into their loops.
 	r := g.Ramp
 	return r[int(t*float64(len(r)-1)+0.5)]
 }
@@ -249,6 +247,10 @@ func (g *LinearGradient) ShadeSpan(y, x int, dst []uint32) {
 	// (fx counts exactly: it stays far below 2^52).
 	ty := g.b*(float64(y)+0.5) + g.c
 	switch {
+	case g.a == 0 && g.knotted():
+		var c [1]uint32
+		g.knotColors([]float64{ty}, c[:])
+		fill32(dst, c[0])
 	case g.a == 0:
 		fill32(dst, g.color(ty))
 	case g.knotted():
