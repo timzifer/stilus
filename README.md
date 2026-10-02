@@ -62,14 +62,20 @@ img.SetImage(tex, toDevice, false, 255)        // toDevice: texture pixels → d
 // tile with SetColor is the stencil of an uncoloured pattern.
 img.SetImageWrap(tile, toDevice, false, 255)   // or SetColor(c) + SetMaskWrap(alphaTile, …)
 
-// Gradients: a ramp of premultiplied colours over t in [0, 1].
+// Gradients: a ramp of premultiplied colours over t in [0, 1], evenly
+// spaced or at knots (interpolated, with exact hard stops).
 var g stilus.LinearGradient                    // or RadialGradient (two circles)
 g.Ramp, g.Alpha, g.Extend = ramp, 255, [2]bool{true, true}
+g.Knots = knots                                // optional, one per ramp entry
 g.Set(x0, y0, x1, y1, m)
 
-// Gouraud meshes, drawn without seams into a layer, then composited.
+// Gouraud meshes, without seams: a shader for the mesh's outline or clip,
+// set once for all bands, or drawn into a layer.
+var mesh stilus.MeshShader
+mesh.Alpha = 255
+mesh.Set(triangles, m, nil)
+c.Fill(outline, m, stilus.NonZero, &stilus.Paint{Shader: &mesh})
 stilus.FillMesh(layer, region, triangles, m, nil)
-c.Fill(rect, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: &stilus.LayerShader{Src: layer, Alpha: 255}})
 
 // Layers with opacity, mask and the 16 W3C/PDF blend modes, exact at
 // antialiased edges; a non-isolated group drawn onto a copy of its backdrop

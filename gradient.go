@@ -8,8 +8,8 @@ import "math"
 // tile or span it is drawn in.
 
 // Ramp is a colour ramp: premultiplied colours (PackRGBA layout) at evenly
-// spaced parameters from 0 to 1. A gradient with an empty ramp paints
-// nothing.
+// spaced parameters from 0 to 1, or at the parameters a gradient's Knots
+// give. A gradient with an empty ramp paints nothing.
 type Ramp []uint32
 
 // At returns the colour of the ramp nearest to t, clamped to [0, 1].
@@ -38,7 +38,136 @@ type Gradient struct {
 	// Alpha multiplies the gradient's colours; 255 is opaque, 0 paints
 	// nothing.
 	Alpha uint8
+	// Knots, if not empty, are the parameters of the Ramp's entries: as
+	// many as entries, non-decreasing, within [0, 1]. Colours are then
+	// interpolated linearly between the two entries around t, and a knot
+	// given twice is a hard stop exactly there (t at the stop takes the
+	// later entry); t before the first knot or past the last takes the
+	// colour of the first or last entry. Without knots the entries are
+	// evenly spaced and looked up nearest. Set reads the knots: call it
+	// again after changing them.
+	Knots []float32
+
+	// From Knots, built by prepare: the knots, the inverse width of each
+	// interval, and for each of knotBuckets uniform buckets of t the last
+	// knot at or before the bucket's start.
+	kt   []float64
+	kinv []float64
+	kidx []int32
 }
+
+// knotBuckets is the number of uniform buckets that index the knots.
+const knotBuckets = 256
+
+// prepare builds the knot index, keeping its buffers, and reports whether
+// the knots are usable.
+func (g *Gradient) prepare() bool {
+	g.kt, g.kinv = g.kt[:0], g.kinv[:0]
+	k := g.Knots
+	if len(k) == 0 {
+		return true
+	}
+	if len(k) != len(g.Ramp) {
+		return false
+	}
+	prev := 0.0
+	for _, v := range k {
+		f := float64(v)
+		if !(f >= prev && f <= 1) {
+			return false
+		}
+		g.kt = append(g.kt, f)
+		prev = f
+	}
+	for i := range len(k) - 1 {
+		inv := 0.0
+		if d := g.kt[i+1] - g.kt[i]; d > 0 {
+			inv = 1 / d
+		}
+		g.kinv = append(g.kinv, inv)
+	}
+	if cap(g.kidx) < knotBuckets+1 {
+		g.kidx = make([]int32, knotBuckets+1)
+	}
+	g.kidx = g.kidx[:knotBuckets+1]
+	i := 0
+	for j := range g.kidx {
+		b := float64(j) / knotBuckets
+		for i+1 < len(g.kt) && g.kt[i+1] <= b {
+			i++
+		}
+		g.kidx[j] = int32(i)
+	}
+	return true
+}
+
+// knotColor returns the colour at t in [0, 1] between the knots, those
+// of the interval that starts at the last knot at or before t. i is a
+// guess of that interval, which neighbouring pixels mostly share; the
+// interval found is returned for the next pixel.
+func (g *Gradient) knotColor(t float64, i int) (uint32, int) {
+	k := g.kt
+	if !(k[i] <= t && (i+1 == len(k) || t < k[i+1])) {
+		i = int(g.kidx[int(t*knotBuckets)])
+		for i+1 < len(k) && k[i+1] <= t {
+			i++
+		}
+	}
+	if t <= k[i] || i+1 == len(k) {
+		return g.Ramp[i], i
+	}
+	// k[i] < t < k[i+1]: blend with a weight of 0 to 256.
+	w := uint64(int64((t-k[i])*g.kinv[i]*256 + 0.5))
+	a, b := expand(g.Ramp[i]), expand(g.Ramp[i+1])
+	return compact(((a*(256-w) + b*w + 0x0080008000800080) >> 8) & lanes), i
+}
+
+// knotColors sets dst to the colours at the parameters ts, with knots.
+func (g *Gradient) knotColors(ts []float64, dst []uint32) {
+	dst = dst[:len(ts)]
+	k, inv, idx, r := g.kt, g.kinv, g.kidx, g.Ramp
+	i := 0
+	for j, t := range ts {
+		switch {
+		case t < 0:
+			if !g.Extend[0] {
+				dst[j] = g.Outside
+				continue
+			}
+			t = 0
+		case t > 1:
+			if !g.Extend[1] {
+				dst[j] = g.Outside
+				continue
+			}
+			t = 1
+		case !(t >= 0): // NaN
+			dst[j] = g.Outside
+			continue
+		}
+		// knotColor, inlined.
+		if !(k[i] <= t && (i+1 == len(k) || t < k[i+1])) {
+			i = int(idx[int(t*knotBuckets)])
+			for i+1 < len(k) && k[i+1] <= t {
+				i++
+			}
+		}
+		if t <= k[i] || i+1 >= len(k) || i+1 >= len(r) || i >= len(inv) {
+			dst[j] = r[i]
+			continue
+		}
+		w := uint64(int64((t-k[i])*inv[i]*256 + 0.5))
+		a, b := expand(r[i]), expand(r[i+1])
+		dst[j] = compact(((a*(256-w) + b*w + 0x0080008000800080) >> 8) & lanes)
+	}
+}
+
+// knotted reports whether colours are looked up between knots: Set found
+// them usable, and the ramp has not changed length since.
+func (g *Gradient) knotted() bool { return len(g.kt) > 0 && len(g.kt) == len(g.Ramp) }
+
+// knotChunk is the number of parameters computed at a time for knots.
+const knotChunk = 64
 
 // color returns the colour at parameter t, Outside where the gradient does
 // not extend.
@@ -56,6 +185,10 @@ func (g *Gradient) color(t float64) uint32 {
 		t = 1
 	case !(t >= 0): // NaN
 		return g.Outside
+	}
+	if g.knotted() {
+		c, _ := g.knotColor(t, 0)
+		return c
 	}
 	r := g.Ramp
 	return r[int(t*float64(len(r)-1)+0.5)]
@@ -83,10 +216,13 @@ type LinearGradient struct {
 
 // Set places the gradient from (x0, y0) to (x1, y1) in a space that m maps
 // to device space, and reports whether it can be drawn: false for
-// coincident points and singular or non-finite transforms. It keeps Ramp,
-// Extend, Outside and Alpha.
+// coincident points, singular or non-finite transforms and unusable Knots.
+// It keeps Ramp, Extend, Outside, Alpha and Knots.
 func (g *LinearGradient) Set(x0, y0, x1, y1 float64, m Matrix) bool {
 	g.ok = false
+	if !g.prepare() {
+		return false
+	}
 	inv, ok := m.Invert()
 	dx, dy := x1-x0, y1-y0
 	den := dx*dx + dy*dy
@@ -112,9 +248,21 @@ func (g *LinearGradient) ShadeSpan(y, x int, dst []uint32) {
 	// span, so a pixel's colour does not depend on where its span starts
 	// (fx counts exactly: it stays far below 2^52).
 	ty := g.b*(float64(y)+0.5) + g.c
-	if g.a == 0 {
+	switch {
+	case g.a == 0:
 		fill32(dst, g.color(ty))
-	} else {
+	case g.knotted():
+		var ts [knotChunk]float64
+		fx := float64(x) + 0.5
+		for o := 0; o < len(dst); o += knotChunk {
+			t := ts[:min(knotChunk, len(dst)-o)]
+			for j := range t {
+				t[j] = g.a*fx + ty
+				fx++
+			}
+			g.knotColors(t, dst[o:])
+		}
+	default:
 		fx := float64(x) + 0.5
 		for i := range dst {
 			dst[i] = g.color(g.a*fx + ty)
@@ -143,11 +291,11 @@ type RadialGradient struct {
 
 // Set places the gradient between the circles (x0, y0, r0) and (x1, y1, r1)
 // in a space that m maps to device space, and reports whether it can be
-// drawn: false for negative radii and singular or non-finite transforms.
-// It keeps Ramp, Extend, Outside and Alpha.
+// drawn: false for negative radii, singular or non-finite transforms and
+// unusable Knots. It keeps Ramp, Extend, Outside, Alpha and Knots.
 func (g *RadialGradient) Set(x0, y0, r0, x1, y1, r1 float64, m Matrix) bool {
 	inv, ok := m.Invert()
-	g.ok = ok && inv.finite() && r0 >= 0 && r1 >= 0
+	g.ok = ok && inv.finite() && r0 >= 0 && r1 >= 0 && g.prepare()
 	for _, v := range [...]float64{x0, y0, r0, x1, y1, r1} {
 		g.ok = g.ok && !math.IsNaN(v) && !math.IsInf(v, 0)
 	}
@@ -177,7 +325,26 @@ func (g *RadialGradient) ShadeSpan(y, x int, dst []uint32) {
 	fx0, fx1 := float64(x)+0.5, float64(x+len(dst)-1)+0.5
 	// u and v are linear along the span, so finite ends make all of it
 	// finite; elsewhere param's b is Inf·0 and the point outside.
-	if g.concentric && finite(m[0]*fx0+cu, m[1]*fx0+cv) && finite(m[0]*fx1+cu, m[1]*fx1+cv) {
+	concentric := g.concentric && finite(m[0]*fx0+cu, m[1]*fx0+cv) && finite(m[0]*fx1+cu, m[1]*fx1+cv)
+	if g.knotted() {
+		var ts [knotChunk]float64
+		fx := fx0
+		for o := 0; o < len(dst); o += knotChunk {
+			t := ts[:min(knotChunk, len(dst)-o)]
+			for j := range t {
+				if concentric {
+					t[j] = g.concentricParam(m[0]*fx+cu, m[1]*fx+cv)
+				} else {
+					t[j] = g.param(m[0]*fx+cu, m[1]*fx+cv)
+				}
+				fx++
+			}
+			g.knotColors(t, dst[o:])
+		}
+		g.scale(dst)
+		return
+	}
+	if concentric {
 		fx := fx0
 		for i := range dst {
 			dst[i] = g.color(g.concentricParam(m[0]*fx+cu, m[1]*fx+cv))
