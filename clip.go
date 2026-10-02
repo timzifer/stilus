@@ -319,6 +319,15 @@ func (s *clipState) derive() {
 
 var noFrac = [4]uint8{255, 255, 255, 255}
 
+// clearOfFrac reports whether r, within s.bounds, keeps off the border
+// columns and rows that the rectangle clip covers only partially.
+func (s *clipState) clearOfFrac(r image.Rectangle) bool {
+	return (s.frac[0] == 255 || r.Min.X > s.bounds.Min.X) &&
+		(s.frac[1] == 255 || r.Min.Y > s.bounds.Min.Y) &&
+		(s.frac[2] == 255 || r.Max.X < s.bounds.Max.X) &&
+		(s.frac[3] == 255 || r.Max.Y < s.bounds.Max.Y)
+}
+
 // snap rounds values within 1/512 px of an integer, so pixel-aligned clips
 // produced by float arithmetic stay on the fast path.
 func snap(v float64) float64 {

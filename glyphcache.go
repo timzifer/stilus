@@ -10,9 +10,10 @@ import (
 // composited: the text of a page repeats a few dozen glyphs thousands of
 // times. Masks are keyed by font, glyph, the linear part of the glyph's
 // device matrix (to 1/64 pixel per em) and the position of its origin to a
-// quarter pixel in x and y. Under a clip that is a whole-pixel rectangle a
-// mask is composited straight onto the destination; under any other clip
-// it goes through the canvas as a pixel-aligned rectangle with a
+// quarter pixel in x and y. Under a rectangle clip a mask is composited
+// straight onto the destination where it keeps clear of the border pixels
+// a fractional clip covers partially; under a mask clip, or touching such
+// a border, it goes through the canvas as a pixel-aligned rectangle with a
 // MaskShader, so it honours the clip stack like every other fill. Both
 // give the same bytes.
 //
@@ -131,10 +132,12 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 		return
 	}
 	// The direct blit gives the bytes of the rectangle fill below where
-	// that takes fillRect's path: an unmasked whole-pixel clip, an edge
-	// budget of at least two, and corners exact in float32.
+	// that takes fillRect's path: an unmasked clip whose fractional
+	// borders the glyph does not reach (elsewhere the frac blitter passes
+	// runs on unchanged), an edge budget of at least two, and corners
+	// exact in float32.
 	const lim = 1 << 23
-	if st := c.top(); st.mask == nil && st.frac == noFrac && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
+	if st := c.top(); st.mask == nil && st.clearOfFrac(r.Intersect(clip)) && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
 		r.Min.X >= -lim && r.Min.Y >= -lim && r.Max.X <= lim && r.Max.Y <= lim {
 		c.blitMask(mask, origin, PackRGBA(paint.Color), r.Intersect(clip))
 		return

@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-// The glyph cache composites masks directly under whole-pixel rectangle
-// clips and through a MaskShader fill under masked clips. A mask clip that
-// covers the whole canvas takes the second path without changing coverage,
-// so both must give the same bytes.
+// The glyph cache composites masks directly under rectangle clips, away
+// from fractional borders, and through a MaskShader fill under masked
+// clips. A mask clip that covers the whole canvas takes the second path
+// without changing coverage, so both must give the same bytes.
 func TestGlyphBlitMatchesShaderPath(t *testing.T) {
 	var g Path
 	g.MoveTo(0.1, 0)
@@ -25,7 +25,8 @@ func TestGlyphBlitMatchesShaderPath(t *testing.T) {
 	cover.Close()
 	rng := rand.New(rand.NewSource(1))
 	// Images at the origin and off it, with and without a region limit
-	// and a rectangle clip, both whole-pixel.
+	// and a rectangle clip, whole-pixel or with fractional borders, some
+	// of them cut off by the region.
 	for _, tc := range []struct {
 		img, region image.Rectangle
 		clip        Rect
@@ -33,6 +34,10 @@ func TestGlyphBlitMatchesShaderPath(t *testing.T) {
 		{image.Rect(0, 0, 96, 64), image.Rect(0, 0, 96, 64), Rect{5, 3, 80, 60}},
 		{image.Rect(-10, -10, 128, 96), image.Rect(-5, -5, 120, 90), Rect{-100, -100, 500, 500}},
 		{image.Rect(-10, -10, 128, 96), image.Rect(-10, -10, 128, 96), Rect{3, 2, 96, 84}},
+		{image.Rect(0, 0, 96, 64), image.Rect(0, 0, 96, 64), Rect{5.3, 3.7, 80.5, 59.2}},
+		{image.Rect(0, 0, 96, 64), image.Rect(0, 0, 96, 64), Rect{5, 3.25, 80.75, 60}},
+		{image.Rect(-10, -10, 128, 96), image.Rect(-5, -5, 120, 90), Rect{-20.5, 2.5, 110.5, 200.5}},
+		{image.Rect(0, 0, 96, 64), image.Rect(0, 0, 96, 64), Rect{40.2, 30.6, 40.9, 31.1}},
 	} {
 		direct, shaded := image.NewRGBA(tc.img), image.NewRGBA(tc.img)
 		for i := 0; i < len(direct.Pix); i += 4 { // premultiplied
