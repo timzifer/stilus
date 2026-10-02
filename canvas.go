@@ -56,6 +56,8 @@ type Canvas struct {
 	overflow int
 	empty    clipState
 	tmp      Path
+	ids      []int32  // FillShape's strips of a clip; rows of a shape's records
+	rec      shapeRec // records a shape's form
 	err      error
 	sink     uint32 // keeps touchStroke's loads
 }
@@ -202,52 +204,19 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 		return
 	}
 	pr := prepStroke(m, st)
-	sm := pr.sm
-	// Cull against the clip with the widest possible outline extent.
-	pad := max(st.Width*sm, 1) / 2 * max(max(st.MiterLimit, 1.5), 1)
-	if !(pad < 1<<30) {
-		pad = 1 << 30
-	}
-	pad += 2
+	pad := strokePad(st, pr.sm)
 	bb := m.transformRect(p.Bounds())
-	cb := cs.bounds
-	if bb.X1+pad < float64(cb.Min.X) || bb.X0-pad > float64(cb.Max.X) ||
-		bb.Y1+pad < float64(cb.Min.Y) || bb.Y0-pad > float64(cb.Max.Y) {
+	if strokeMisses(bb, pad, cs.bounds) {
 		return
 	}
-	c.touchStroke(p, m, max(st.Width*sm, 1)/2)
-	b := c.paint(paint)
-	f, dense := pr.f, pr.dense
-	if dense {
-		// Drawn as a solid stroke at the pattern's mean coverage.
-		c.scale.f, c.scale.next = uint32(math.Round(f*255)), b
-		if c.scale.f == 0 {
-			return
-		}
-		b = &c.scale
+	c.touchStroke(p, m, max(st.Width*pr.sm, 1)/2)
+	b, ok := c.strokePaint(cs, paint, pr)
+	if !ok {
+		return
 	}
-	b = c.chain(cs, b)
 	c.setClip(cs.bounds)
 	c.r.Reset()
-	overlap := mayOverlap(p, st)
-	opaque := paint.Shader == nil && paint.Color.A == 255
-	if !dense && (opaque && (cs.mask == nil || !overlap) || singleSegment(p, st)) {
-		// Opaque: the analytic middle rows may be composited separately
-		// from the rest of the stroke, because layers of one opaque color
-		// at full coverage are idempotent. Where parts of the stroke may
-		// overlap and a clip reduces coverage, that no longer holds: at a
-		// rectangle clip's fractional border the pixels are summed in the
-		// accumulator instead, and under a mask the outline path is used.
-		// A single undashed segment needs no opaque paint: its end bands
-		// and its analytic rows are disjoint rows, so every pixel is
-		// composited once, with the coverage of one of them.
-		c.seg.r, c.seg.b = &c.r, b
-		c.seg.solid = nil
-		c.seg.frac = cs.frac
-		if cs.mask == nil && opaque {
-			c.seg.solid = &c.solid
-		}
-		c.seg.setBorder(cs, overlap)
+	if c.strokeFast(cs, b, paint, pr, mayOverlap(p, st), singleSegment(p, st)) {
 		c.s.strokeFast(&c.r, &c.seg, p, m, st, pr)
 	} else {
 		c.s.stroke(&c.r, p, m, st, pr)
@@ -257,6 +226,66 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 		c.setErr(ErrDashBudget)
 	}
 	c.r.Rasterize(NonZero, b)
+}
+
+// strokePad returns how far a stroke's outline can reach beyond the device
+// box of its path, sm being sigmaMax of its transform: the widest possible
+// outline extent.
+func strokePad(st *StrokeStyle, sm float64) float64 {
+	pad := max(st.Width*sm, 1) / 2 * max(max(st.MiterLimit, 1.5), 1)
+	if !(pad < 1<<30) {
+		pad = 1 << 30
+	}
+	return pad + 2
+}
+
+// strokeMisses reports whether a stroke whose path has the device box bb
+// lies outside the clip bounds cb.
+func strokeMisses(bb Rect, pad float64, cb image.Rectangle) bool {
+	return bb.X1+pad < float64(cb.Min.X) || bb.X0-pad > float64(cb.Max.X) ||
+		bb.Y1+pad < float64(cb.Min.Y) || bb.Y0-pad > float64(cb.Max.Y)
+}
+
+// strokePaint returns the blitter chain a stroke is composited through,
+// and false when a dense dash pattern leaves nothing to draw.
+func (c *Canvas) strokePaint(cs *clipState, paint *Paint, pr strokePrep) (Blitter, bool) {
+	b := c.paint(paint)
+	if pr.dense {
+		// Drawn as a solid stroke at the pattern's mean coverage.
+		c.scale.f, c.scale.next = uint32(math.Round(pr.f*255)), b
+		if c.scale.f == 0 {
+			return nil, false
+		}
+		b = &c.scale
+	}
+	return c.chain(cs, b), true
+}
+
+// strokeFast reports whether a stroke takes the analytic path, and if so
+// sets c.seg up for it: b is the stroke's blitter chain, overlap and single
+// are mayOverlap and singleSegment of its path and style.
+func (c *Canvas) strokeFast(cs *clipState, b Blitter, paint *Paint, pr strokePrep, overlap, single bool) bool {
+	opaque := paint.Shader == nil && paint.Color.A == 255
+	if pr.dense || !(opaque && (cs.mask == nil || !overlap) || single) {
+		return false
+	}
+	// Opaque: the analytic middle rows may be composited separately from
+	// the rest of the stroke, because layers of one opaque color at full
+	// coverage are idempotent. Where parts of the stroke may overlap and a
+	// clip reduces coverage, that no longer holds: at a rectangle clip's
+	// fractional border the pixels are summed in the accumulator instead,
+	// and under a mask the outline path is used. A single undashed segment
+	// needs no opaque paint: its end bands and its analytic rows are
+	// disjoint rows, so every pixel is composited once, with the coverage
+	// of one of them.
+	c.seg.r, c.seg.b = &c.r, b
+	c.seg.solid = nil
+	c.seg.frac = cs.frac
+	if cs.mask == nil && opaque {
+		c.seg.solid = &c.solid
+	}
+	c.seg.setBorder(cs, overlap)
+	return true
 }
 
 // touchStroke loads the first touchRows rows of segments up to

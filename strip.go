@@ -395,11 +395,23 @@ func (f *segFast) unlimitRows()         { f.r.unlimitRows() }
 // trapezoid).
 func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	clip := f.r.clip
-	y0, y1 = max(y0, clip.Min.Y), min(y1, clip.Max.Y)
+	if max(y0, clip.Min.Y) >= min(y1, clip.Max.Y) {
+		return
+	}
+	var rc rowCtx
+	if rc.set(ax, ay, bx, by, dx, dy) {
+		f.strip(&rc, y0, y1)
+	}
+}
+
+// set prepares the rows of the strip between the line through A and B and
+// the parallel line through D. It reports false for a degenerate or
+// horizontal strip, which has no analytic rows.
+func (rc *rowCtx) set(ax, ay, bx, by, dx, dy float64) bool {
 	vx, vy := bx-ax, by-ay
 	l := math.Hypot(vx, vy)
-	if y0 >= y1 || !(l > 0) || vy == 0 {
-		return
+	if !(l > 0) || vy == 0 {
+		return false
 	}
 	nx, ny := -vy/l, vx/l
 	k1, k2 := nx*ax+ny*ay, nx*dx+ny*dy
@@ -427,24 +439,35 @@ func (f *segFast) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 	if sl < 0 {
 		dtop = 1
 	}
-	if cap(f.cov) < clip.Dx() {
-		f.cov = make([]uint8, clip.Dx())
-	}
 	// A pixel is fully covered when its whole projection lies between the
 	// lines: k2 + h <= n·c <= k1 - h. n·c is linear in the column, so the
 	// covered columns of a row form one interval, emitted as a run.
 	inx := 1 / nx
-	rc := rowCtx{
+	*rc = rowCtx{
 		nx: nx, ny: ny, inx: inx, k1: k1, k2: k2, lo: k2 + h, hi: k1 - h, tr: tr,
 		xl: xl + (dtop-yl)*sl, xr: xr + (1-dtop-yr)*sl, sl: sl,
 		// Only strips wide enough to have a real interior are split into
 		// edge pixels and a run; for thin strokes one span is cheaper.
 		runs: (k1-k2-2*h)*math.Abs(inx) >= minInteriorRun,
 	}
+	return true
+}
+
+// strip fills rows [y0, y1) of the strip rc, within the clip. rc's border
+// columns are overwritten.
+func (f *segFast) strip(rc *rowCtx, y0, y1 int) {
+	clip := f.r.clip
+	y0, y1 = max(y0, clip.Min.Y), min(y1, clip.Max.Y)
+	if y0 >= y1 {
+		return
+	}
+	if cap(f.cov) < clip.Dx() {
+		f.cov = make([]uint8, clip.Dx())
+	}
 	if f.solid != nil && !rc.runs {
-		f.solidRows(y0, y1, &rc)
+		f.solidRows(y0, y1, rc)
 	} else {
-		f.blitRows(y0, y1, &rc)
+		f.blitRows(y0, y1, rc)
 	}
 }
 
