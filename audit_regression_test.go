@@ -330,3 +330,162 @@ func TestClipPathBeyondLimit(t *testing.T) {
 		}
 	}
 }
+
+// A gradient pixel has the same colour whichever span it is shaded in:
+// right at a hard stop, stepping t along the span from a different start
+// used to round to the other side.
+func TestGradientSpanIndependent(t *testing.T) {
+	ramp := Ramp{pack(255, 0, 0, 255), pack(0, 0, 255, 255)}
+	var lin LinearGradient
+	lin.Ramp, lin.Alpha, lin.Extend = ramp, 255, [2]bool{true, true}
+	lin.Set(0, 0, 31, 0, Identity)
+	var rad RadialGradient
+	rad.Ramp, rad.Alpha, rad.Extend = ramp, 255, [2]bool{true, true}
+	rad.Set(3.3, 1.7, 0, 3.3, 1.7, 31, Identity)
+	var rot RadialGradient
+	rot.Ramp, rot.Alpha, rot.Extend = ramp, 255, [2]bool{true, true}
+	rot.Set(1, 2, 3, 20, 5, 29, Rotate(0.3))
+	for name, s := range map[string]Shader{"linear": &lin, "radial": &rad, "radial off-centre": &rot} {
+		for _, y := range []int{0, 7, -13} {
+			one := make([]uint32, 1)
+			for _, x0 := range []int{-100, -37, -20, -3, 1} {
+				span := make([]uint32, 140)
+				s.ShadeSpan(y, x0, span)
+				for i := range span {
+					s.ShadeSpan(y, x0+i, one)
+					if one[0] != span[i] {
+						t.Fatalf("%s: pixel (%d,%d) is %v alone, %v in a span from x=%d", name, x0+i, y, UnpackRGBA(one[0]), UnpackRGBA(span[i]), x0)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A bit plane needs only the bytes of its last row, not a full stride.
+func TestSampleBitsLastRowUnpadded(t *testing.T) {
+	tex := NewTexture(Plane{Kind: PlaneBits, W: 8, H: 2, Stride: 2, Pix8: []byte{255, 0, 255}, Pal: GrayPalette})
+	for _, smooth := range []bool{false, true} {
+		var s Sampler
+		s.Setup(tex, Identity, smooth)
+		dst := make([]uint32, 8)
+		s.Sample(1, 0, dst)
+		if dst[3] != tex.base.At(3, 1) {
+			t.Errorf("smooth=%v: last row sampled as %#x", smooth, dst[3])
+		}
+	}
+}
+
+// A glyph whose mask would cover no pixel is not cached as a full, empty
+// mask.
+func TestEmptyGlyphMaskNotStored(t *testing.T) {
+	var p Path
+	p.MoveTo(10, 10)
+	p.LineTo(90, 90)
+	c := NewCanvas(image.NewRGBA(image.Rect(0, 0, 100, 100)))
+	var gc GlyphCache
+	gc.FillGlyph(c, 1, 1, &p, Identity, white)
+	for _, e := range gc.ents {
+		if e.mask != nil {
+			t.Errorf("empty glyph cached as %v, %d bytes", e.mask.Rect, len(e.mask.Pix))
+		}
+	}
+}
+
+// A glyph too large for integer mask bounds is filled as a path, not
+// dropped.
+func TestHugeGlyphFilled(t *testing.T) {
+	var p Path
+	p.Rect(0, 0, 1<<31, 1)
+	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	c := NewCanvas(img)
+	var gc GlyphCache
+	gc.FillGlyph(c, 1, 1, &p, Identity, white)
+	if img.RGBAAt(1, 0).A != 255 {
+		t.Errorf("huge glyph dropped: alpha %d", img.RGBAAt(1, 0).A)
+	}
+}
+
+// The mask area budget holds where int is 32 bits: 65536² wrapped to 0.
+func TestGlyphMaskAreaNoOverflow(t *testing.T) {
+	var p Path
+	p.Rect(0, 0, 65534, 65534)
+	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	c := NewCanvas(img)
+	var gc GlyphCache
+	gc.FillGlyph(c, 1, 1, &p, Identity, white)
+	if c.Err() != nil || img.RGBAAt(5, 5).A != 255 {
+		t.Errorf("err %v, alpha %d", c.Err(), img.RGBAAt(5, 5).A)
+	}
+}
+
+// The masked Normal path scales each pixel like the general one: every
+// channel by the layer alpha times the mask.
+func TestLayerNormalMasked(t *testing.T) {
+	r := image.Rect(0, 0, 64, 4)
+	src := image.NewRGBA(r)
+	rng := rand.New(rand.NewSource(1))
+	for i := 0; i < len(src.Pix); i += 4 {
+		a := uint8(rng.Intn(256))
+		src.Pix[i], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3] = uint8(rng.Intn(int(a)+1)), uint8(rng.Intn(int(a)+1)), uint8(rng.Intn(int(a)+1)), a
+	}
+	mask := image.NewAlpha(image.Rect(5, 1, 60, 3))
+	for i := range mask.Pix {
+		mask.Pix[i] = uint8(rng.Intn(256))
+	}
+	for _, alpha := range []uint8{0, 1, 128, 200, 255} {
+		s := &LayerShader{Src: src, Mask: mask, Alpha: alpha}
+		out := make([]uint32, r.Dx())
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			s.ShadeSpan(y, 0, out)
+			for x, v := range out {
+				k := uint32(0)
+				if (image.Point{x, y}).In(mask.Rect) {
+					k = div255(uint32(alpha) * uint32(mask.AlphaAt(x, y).A))
+				}
+				p := src.RGBAAt(x, y)
+				w := pack(mulByte(p.R, k), mulByte(p.G, k), mulByte(p.B, k), mulByte(p.A, k))
+				if w>>alphaShift&0xff == 0 {
+					w = 0
+				}
+				if v != w {
+					t.Fatalf("alpha %d at (%d,%d): %#x, want %#x", alpha, x, y, v, w)
+				}
+			}
+		}
+	}
+}
+
+func BenchmarkLayerNormalMasked(b *testing.B) {
+	r := image.Rect(0, 0, 512, 512)
+	src := image.NewRGBA(r)
+	mask := image.NewAlpha(r)
+	for i := range src.Pix {
+		src.Pix[i] = 255
+	}
+	for i := range mask.Pix {
+		mask.Pix[i] = uint8(i)
+	}
+	c := NewCanvas(image.NewRGBA(r))
+	paint := &Paint{Shader: &LayerShader{Src: src, Mask: mask, Alpha: 200}}
+	var p Path
+	p.Rect(0, 0, 512, 512)
+	c.Fill(&p, Identity, NonZero, paint)
+	b.ReportAllocs()
+	for b.Loop() {
+		c.Fill(&p, Identity, NonZero, paint)
+	}
+}
+
+func BenchmarkEmptyGlyphCached(b *testing.B) {
+	var p Path
+	p.MoveTo(10, 10)
+	p.LineTo(90, 90)
+	c := NewCanvas(image.NewRGBA(image.Rect(0, 0, 100, 100)))
+	var gc GlyphCache
+	gc.FillGlyph(c, 1, 1, &p, Identity, white)
+	b.ReportAllocs()
+	for b.Loop() {
+		gc.FillGlyph(c, 1, 1, &p, Identity, white)
+	}
+}

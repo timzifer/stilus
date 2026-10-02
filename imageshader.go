@@ -116,7 +116,7 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 					dst[i] = pal[row[clampIndex(u0+du*float64(x+i), p.W)]]
 				}
 			default:
-				row, pal := p.Pix8[j*p.Stride:][:p.Stride], p.Pal
+				row, pal := p.Pix8[j*p.Stride:][:(p.W+7)/8], p.Pal
 				for i := range dst {
 					k := clampIndex(u0+du*float64(x+i), p.W)
 					dst[i] = pal[row[k>>3]>>(7-uint(k)&7)&1]
@@ -159,7 +159,7 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 				dst[i] = lerp(c0, c1, tx)
 			}
 		default:
-			r0, r1, pal := p.Pix8[y0*p.Stride:][:p.Stride], p.Pix8[y1*p.Stride:][:p.Stride], p.Pal
+			r0, r1, pal := p.Pix8[y0*p.Stride:][:(p.W+7)/8], p.Pix8[y1*p.Stride:][:(p.W+7)/8], p.Pal
 			for i := range dst {
 				x0, x1, tx := split(u0+du*float64(x+i), p.W)
 				if x0 != last {
