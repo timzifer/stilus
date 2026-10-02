@@ -217,6 +217,35 @@ func TestSampleUnitMatchesNearest(t *testing.T) {
 	}
 }
 
+// TestBilinearSpanIndependent checks that an axis-aligned bilinear span
+// gives every pixel the colour it gets sampled alone: the texel pair a
+// span reuses changes from (0, 0) to (0, 1) at the left clamp although
+// its first texel stays the same.
+func TestBilinearSpanIndependent(t *testing.T) {
+	pal := &Palette{0: 0xff000000, 1: 0xffffffff}
+	planes := map[string]Plane{
+		"rgba":  {Kind: PlaneRGBA, W: 2, H: 1, Stride: 2, Pix32: []uint32{0xff000000, 0xffffffff}},
+		"index": {Kind: PlaneIndex, W: 2, H: 1, Stride: 2, Pix8: []uint8{0, 1}, Pal: pal},
+		"bits":  {Kind: PlaneBits, W: 2, H: 1, Stride: 1, Pix8: []uint8{0x40}, Pal: pal},
+	}
+	for name, p := range planes {
+		var s Sampler
+		if !s.Setup(NewTexture(p), Scale(10, 10), true) {
+			t.Fatalf("%s: setup failed", name)
+		}
+		span, one := make([]uint32, 30), make([]uint32, 1)
+		for y := 0; y < 10; y++ {
+			s.Sample(y, -5, span)
+			for i, got := range span {
+				s.Sample(y, i-5, one)
+				if got != one[0] {
+					t.Fatalf("%s (%d, %d): %x in a span, %x alone", name, i-5, y, got, one[0])
+				}
+			}
+		}
+	}
+}
+
 func BenchmarkLayerShader(b *testing.B) {
 	rng := rand.New(rand.NewPCG(7, 8))
 	r := image.Rect(0, 0, 512, 64)

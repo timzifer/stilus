@@ -135,7 +135,8 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 	if dv == 0 {
 		// Axis-aligned: two rows for the whole span, mixed once per
 		// column pair, which neighbouring pixels share when the texture
-		// is magnified.
+		// is magnified. The pair is keyed by x0+x1, which tells (k, k)
+		// from (k, k+1): at the left clamp x0 stays 0 while x1 moves.
 		y0, y1, ty := split(v0, p.H)
 		last := -1
 		var c0, c1 uint32
@@ -144,8 +145,8 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 			r0, r1 := p.Pix32[y0*p.Stride:][:p.W], p.Pix32[y1*p.Stride:][:p.W]
 			for i := range dst {
 				x0, x1, tx := split(u0+du*float64(x+i), p.W)
-				if x0 != last {
-					c0, c1, last = lerp(r0[x0], r1[x0], ty), lerp(r0[x1], r1[x1], ty), x0
+				if x0+x1 != last {
+					c0, c1, last = lerp(r0[x0], r1[x0], ty), lerp(r0[x1], r1[x1], ty), x0+x1
 				}
 				dst[i] = lerp(c0, c1, tx)
 			}
@@ -153,8 +154,8 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 			r0, r1, pal := p.Pix8[y0*p.Stride:][:p.W], p.Pix8[y1*p.Stride:][:p.W], p.Pal
 			for i := range dst {
 				x0, x1, tx := split(u0+du*float64(x+i), p.W)
-				if x0 != last {
-					c0, c1, last = lerp(pal[r0[x0]], pal[r1[x0]], ty), lerp(pal[r0[x1]], pal[r1[x1]], ty), x0
+				if x0+x1 != last {
+					c0, c1, last = lerp(pal[r0[x0]], pal[r1[x0]], ty), lerp(pal[r0[x1]], pal[r1[x1]], ty), x0+x1
 				}
 				dst[i] = lerp(c0, c1, tx)
 			}
@@ -162,11 +163,11 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 			r0, r1, pal := p.Pix8[y0*p.Stride:][:(p.W+7)/8], p.Pix8[y1*p.Stride:][:(p.W+7)/8], p.Pal
 			for i := range dst {
 				x0, x1, tx := split(u0+du*float64(x+i), p.W)
-				if x0 != last {
+				if x0+x1 != last {
 					s0, s1 := 7-uint(x0)&7, 7-uint(x1)&7
 					c0 = lerp(pal[r0[x0>>3]>>s0&1], pal[r1[x0>>3]>>s0&1], ty)
 					c1 = lerp(pal[r0[x1>>3]>>s1&1], pal[r1[x1>>3]>>s1&1], ty)
-					last = x0
+					last = x0 + x1
 				}
 				dst[i] = lerp(c0, c1, tx)
 			}
