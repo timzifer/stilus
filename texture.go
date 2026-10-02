@@ -4,6 +4,7 @@ import (
 	"math/bits"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // Textures hold pictures the way their samples come: a picture of one
@@ -100,6 +101,9 @@ type Texture struct {
 	// gray and alpha say that every colour of base is an opaque grey or
 	// a level of alpha, so that its levels can be one byte a pixel.
 	gray, alpha bool
+	// opaque says whether every colour of base has alpha 255: 0 not yet
+	// known, 1 opaque, 2 not. Levels of an opaque texture are opaque.
+	opaque atomic.Uint32
 
 	mu   sync.Mutex
 	mips [maxMip + 1]atomic.Pointer[Plane]
@@ -117,13 +121,56 @@ func NewTexture(p Plane) *Texture {
 			n = 2
 		}
 		t.gray, t.alpha = true, true
+		opaque := true
 		for _, c := range p.Pal[:n] {
 			r, g, b, a := unpack(c)
 			t.gray = t.gray && r == g && g == b && a == 255
 			t.alpha = t.alpha && r == g && g == b && b == a
+			opaque = opaque && a == 255
+		}
+		t.opaque.Store(2)
+		if opaque {
+			t.opaque.Store(1)
 		}
 	}
 	return t
+}
+
+// isOpaque reports whether every pixel of t has alpha 255. For an RGBA
+// texture it scans the base plane once, when first asked.
+func (t *Texture) isOpaque() bool {
+	switch t.opaque.Load() {
+	case 1:
+		return true
+	case 2:
+		return false
+	}
+	p, v := &t.base, uint32(1)
+	for y := 0; y < p.H && v == 1; y++ {
+		for _, c := range p.Pix32[y*p.Stride:][:p.W] {
+			if c>>alphaShift&0xff != 255 {
+				v = 2
+				break
+			}
+		}
+	}
+	t.opaque.Store(v)
+	return v == 1
+}
+
+// overlaps reports whether the samples of p share memory with d.
+func (p *Plane) overlaps(d []uint32) bool {
+	if len(d) == 0 {
+		return false
+	}
+	lo := uintptr(unsafe.Pointer(unsafe.SliceData(d)))
+	hi := lo + 4*uintptr(len(d))
+	in := func(ptr unsafe.Pointer, n int) bool {
+		a := uintptr(ptr)
+		return n > 0 && a < hi && lo < a+uintptr(n)
+	}
+	return in(unsafe.Pointer(unsafe.SliceData(p.Pix32)), 4*len(p.Pix32)) ||
+		in(unsafe.Pointer(unsafe.SliceData(p.Pix8)), len(p.Pix8))
 }
 
 // Base returns the plane of t at full resolution.

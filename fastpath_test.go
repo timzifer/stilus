@@ -244,6 +244,134 @@ func TestBilinearSpanIndependent(t *testing.T) {
 			}
 		}
 	}
+
+	// Random pictures at scales that step by less than, about and more
+	// than one texel, where a span moves its pair on by one column or
+	// jumps.
+	rng := rand.New(rand.NewPCG(11, 12))
+	rpal := new(Palette)
+	for i := range rpal {
+		a := uint8(rng.IntN(256))
+		rpal[i] = pack(uint8(rng.IntN(int(a)+1)), uint8(rng.IntN(int(a)+1)), uint8(rng.IntN(int(a)+1)), a)
+	}
+	rnd := map[string]Plane{
+		"rgba":  {Kind: PlaneRGBA, W: 19, H: 7, Stride: 21, Pix32: make([]uint32, 21*7)},
+		"index": {Kind: PlaneIndex, W: 19, H: 7, Stride: 19, Pix8: make([]uint8, 19*7), Pal: rpal},
+		"bits":  {Kind: PlaneBits, W: 19, H: 7, Stride: 3, Pix8: make([]uint8, 3*7), Pal: rpal},
+	}
+	for name, p := range rnd {
+		for i := range p.Pix32 {
+			p.Pix32[i] = rpal[rng.IntN(256)]
+		}
+		for i := range p.Pix8 {
+			p.Pix8[i] = uint8(rng.IntN(256))
+		}
+		for _, sx := range []float64{7.3, 2.5, 1.3, 1, 0.8, 0.6} {
+			var s Sampler
+			if !s.Setup(NewTexture(p), Scale(sx, 1.7).Mul(Translate(-3.4, 0.6)), true) {
+				t.Fatalf("%s: setup failed", name)
+			}
+			span, one := make([]uint32, 180), make([]uint32, 1)
+			for y := 0; y < 14; y++ {
+				s.Sample(y, -12, span)
+				for i, got := range span {
+					s.Sample(y, i-12, one)
+					if got != one[0] {
+						t.Fatalf("%s scale %g (%d, %d): %x in a span, %x alone", name, sx, i-12, y, got, one[0])
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestOpaqueImageShadedInPlace checks that shading an opaque texture
+// straight into the destination gives the bytes of compositing its shaded
+// span, for every kind of plane, mip level and wrap, and that the shortcut
+// is refused where it would not.
+func TestOpaqueImageShadedInPlace(t *testing.T) {
+	rng := rand.New(rand.NewPCG(9, 10))
+	var pal Palette
+	for i := range pal {
+		pal[i] = pack(uint8(rng.IntN(256)), uint8(rng.IntN(256)), uint8(rng.IntN(256)), 255)
+	}
+	rgba := Plane{Kind: PlaneRGBA, W: 37, H: 23, Stride: 40, Pix32: make([]uint32, 40*23)}
+	for i := range rgba.Pix32 {
+		rgba.Pix32[i] = rng.Uint32() | 0xff<<alphaShift
+	}
+	index := Plane{Kind: PlaneIndex, W: 29, H: 31, Stride: 29, Pix8: make([]uint8, 29*31), Pal: &pal}
+	bits := Plane{Kind: PlaneBits, W: 21, H: 17, Stride: 3, Pix8: make([]uint8, 3*17), Pal: &pal}
+	for _, p := range []*Plane{&index, &bits} {
+		for i := range p.Pix8 {
+			p.Pix8[i] = uint8(rng.IntN(256))
+		}
+	}
+	r := image.Rect(-8, -4, 120, 90)
+	for _, p := range []Plane{rgba, index, bits} {
+		tex := NewTexture(p)
+		for _, m := range []Matrix{
+			Translate(3, 5),
+			Scale(3.7, 2.1).Mul(Translate(-4.3, 1.6)),
+			Scale(0.3, 0.45).Mul(Translate(10.5, 2.25)),
+			Scale(0.07, 0.09),
+			Scale(2, 2).Mul(Rotate(0.4)).Mul(Translate(30, -10)),
+		} {
+			for _, wrap := range []bool{false, true} {
+				for _, smooth := range []bool{false, true} {
+					var sh ImageShader
+					if wrap {
+						sh.SetImageWrap(tex, m, smooth, 255)
+					} else {
+						sh.SetImage(tex, m, smooth, 255)
+					}
+					dst, want := randomRGBA(rng, r), image.NewRGBA(r)
+					copy(want.Pix, dst.Pix)
+					fused, plain := NewShaderBlitter(dst, &sh), NewShaderBlitter(want, &sh)
+					if fused.os == nil {
+						t.Fatal("ImageShader is no opaqueSource")
+					}
+					if !sh.opaqueSpan(fused.t.row(0, 0, 1)) {
+						t.Fatalf("kind %d: opaque texture not taken as opaque", p.Kind)
+					}
+					plain.os = nil
+					for y := r.Min.Y; y < r.Max.Y; y++ {
+						x0 := r.Min.X + rng.IntN(r.Dx())
+						x1 := x0 + 1 + rng.IntN(r.Max.X-x0)
+						fused.BlitRun(y, x0, x1, 255)
+						plain.BlitRun(y, x0, x1, 255)
+					}
+					for i := range dst.Pix {
+						if dst.Pix[i] != want.Pix[i] {
+							t.Fatalf("kind %d %v wrap %v smooth %v: byte %d: %d, want %d",
+								p.Kind, m, wrap, smooth, i, dst.Pix[i], want.Pix[i])
+						}
+					}
+				}
+			}
+		}
+	}
+
+	var sh ImageShader
+	d := make([]uint32, 4)
+	sh.SetImage(NewTexture(rgba), Identity, false, 200)
+	if sh.opaqueSpan(d) {
+		t.Error("constant alpha 200 taken as opaque")
+	}
+	translucent := rgba
+	translucent.Pix32 = append([]uint32(nil), rgba.Pix32...)
+	translucent.Pix32[40*22+36] &^= 1 << alphaShift
+	sh.SetImage(NewTexture(translucent), Identity, false, 255)
+	if sh.opaqueSpan(d) {
+		t.Error("texture with a translucent pixel taken as opaque")
+	}
+	sh.SetImage(NewTexture(rgba), Identity, false, 255)
+	if sh.opaqueSpan(rgba.Pix32[100:110]) {
+		t.Error("shaded in place over its own pixels")
+	}
+	sh.SetMask(NewTexture(index), Identity, false)
+	if sh.opaqueSpan(d) {
+		t.Error("masked texture taken as opaque")
+	}
 }
 
 func BenchmarkLayerShader(b *testing.B) {

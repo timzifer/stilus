@@ -271,11 +271,21 @@ type rowSource interface {
 	srcRow(y, x, n int) (s []uint32, k uint32, ok bool)
 }
 
+// opaqueSource is implemented by shaders that can tell that their spans
+// are opaque throughout: composited at full coverage they replace the
+// destination, so ShaderBlitter shades them straight into it.
+type opaqueSource interface {
+	// opaqueSpan reports whether every pixel ShadeSpan sets has alpha
+	// 255, and ShadeSpan reads no memory of d.
+	opaqueSpan(d []uint32) bool
+}
+
 // ShaderBlitter composites the output of a Shader onto an image.RGBA.
 type ShaderBlitter struct {
 	t       target
 	s       Shader
-	rs      rowSource // s, if it is one
+	rs      rowSource    // s, if it is one
+	os      opaqueSource // s, if it is one
 	scratch []uint32
 }
 
@@ -295,6 +305,7 @@ func (b *ShaderBlitter) Reset(dst *image.RGBA, s Shader) {
 func (b *ShaderBlitter) setShader(s Shader) {
 	b.s = s
 	b.rs, _ = s.(rowSource)
+	b.os, _ = s.(opaqueSource)
 }
 
 // direct returns the shader's own row for the n pixels at (x, y), if it
@@ -326,6 +337,10 @@ func (b *ShaderBlitter) span(y, x, n int) []uint32 {
 
 func (b *ShaderBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
 	d := b.t.row(y, x0, x1)
+	if alpha == 255 && b.os != nil && b.os.opaqueSpan(d) {
+		b.s.ShadeSpan(y, x0, d)
+		return
+	}
 	if s, k, ok := b.direct(y, x0, x1-x0, d); ok {
 		spanOver(d, s, k, uint32(alpha))
 		return
