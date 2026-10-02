@@ -10,9 +10,10 @@ import (
 // composited: the text of a page repeats a few dozen glyphs thousands of
 // times. Masks are keyed by font, glyph, the linear part of the glyph's
 // device matrix (to 1/64 pixel per em) and the position of its origin to a
-// quarter pixel in x and y. Under a clip that is a whole-pixel rectangle a
-// mask is composited straight onto the destination; under any other clip
-// it goes through the canvas as a pixel-aligned rectangle with a
+// quarter pixel in x and y. Under a rectangle clip a mask is composited
+// straight onto the destination where it keeps clear of the border pixels
+// a fractional clip covers partially; under a mask clip, or touching such
+// a border, it goes through the canvas as a pixel-aligned rectangle with a
 // MaskShader, so it honours the clip stack like every other fill. Both
 // give the same bytes.
 //
@@ -33,6 +34,8 @@ const (
 	// maxMaskArea bounds one mask (glyphs can reach far out of their em).
 	maxMaskArea = 400 * 400
 	subpixel    = 4
+	// maxFreeMasks bounds the evicted masks kept for reuse.
+	maxFreeMasks = 8
 )
 
 type glyphKey struct {
@@ -52,6 +55,14 @@ type GlyphCache struct {
 	ents  []glyphEnt
 	bytes int
 	rng   uint64 // eviction choices; 0 until seeded
+
+	// free holds evicted masks, whose memory the next masks reuse: a
+	// cache that churns allocates nothing once it has evicted a few.
+	// Their pixels, freeBytes, stay within an eighth of the budget.
+	free      []*image.Alpha
+	freeBytes int
+	// misses counts the masks made, evictions those dropped.
+	misses, evictions int
 
 	r       *Rasterizer
 	mb      MaskBlitter
@@ -121,6 +132,7 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 			return
 		}
 		mask = gc.rasterize(outline, mm, bb)
+		gc.misses++
 		gc.store(key, mask)
 	}
 	if mask == nil {
@@ -131,10 +143,12 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 		return
 	}
 	// The direct blit gives the bytes of the rectangle fill below where
-	// that takes fillRect's path: an unmasked whole-pixel clip, an edge
-	// budget of at least two, and corners exact in float32.
+	// that takes fillRect's path: an unmasked clip whose fractional
+	// borders the glyph does not reach (elsewhere the frac blitter passes
+	// runs on unchanged), an edge budget of at least two, and corners
+	// exact in float32.
 	const lim = 1 << 23
-	if st := c.top(); st.mask == nil && st.frac == noFrac && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
+	if st := c.top(); st.mask == nil && st.clearOfFrac(r.Intersect(clip)) && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
 		r.Min.X >= -lim && r.Min.Y >= -lim && r.Max.X <= lim && r.Max.Y <= lim {
 		c.blitMask(mask, origin, PackRGBA(paint.Color), r.Intersect(clip))
 		return
@@ -221,14 +235,14 @@ func (gc *GlyphCache) rasterize(outline *Path, m Matrix, bb image.Rectangle) *im
 	gc.mb.Mask = mask
 	gc.r.Fill(outline, m, NonZero, &gc.mb)
 	gc.mb.Mask = nil
-	out := trim(mask)
+	out := gc.trim(mask)
 	mask.Pix = nil
 	return out
 }
 
 // trim returns a copy of the part of mask that has coverage (every pixel of
 // a cached mask is composited), or nil if none has.
-func trim(mask *image.Alpha) *image.Alpha {
+func (gc *GlyphCache) trim(mask *image.Alpha) *image.Alpha {
 	r := mask.Rect
 	x0, y0, x1, y1 := r.Max.X, r.Max.Y, r.Min.X, r.Min.Y
 	for y := r.Min.Y; y < r.Max.Y; y++ {
@@ -246,11 +260,69 @@ func trim(mask *image.Alpha) *image.Alpha {
 	if t.Empty() {
 		return nil
 	}
-	out := &image.Alpha{Pix: make([]uint8, t.Dx()*t.Dy()), Stride: t.Dx(), Rect: t}
+	out := gc.newMask(t)
 	for y := t.Min.Y; y < t.Max.Y; y++ {
 		copy(out.Pix[(y-t.Min.Y)*out.Stride:][:t.Dx()], mask.Pix[mask.PixOffset(t.Min.X, y):])
 	}
 	return out
+}
+
+// recycle keeps the evicted mask m for reuse if there is room, else in
+// place of the smallest kept one if m is larger: larger masks fit more.
+func (gc *GlyphCache) recycle(m *image.Alpha) {
+	if m == nil {
+		return
+	}
+	n, room := cap(m.Pix), gc.budget()/8-gc.freeBytes
+	if len(gc.free) < maxFreeMasks {
+		if n <= room {
+			if gc.free == nil {
+				gc.free = make([]*image.Alpha, 0, maxFreeMasks)
+			}
+			gc.free = append(gc.free, m)
+			gc.freeBytes += n
+		}
+		return
+	}
+	k := 0
+	for i, f := range gc.free {
+		if cap(f.Pix) < cap(gc.free[k].Pix) {
+			k = i
+		}
+	}
+	if d := n - cap(gc.free[k].Pix); d > 0 && d <= room {
+		gc.free[k] = m
+		gc.freeBytes += d
+	}
+}
+
+// budget returns the bytes the cache's masks may take.
+func (gc *GlyphCache) budget() int {
+	if gc.MaxBytes <= 0 {
+		return DefaultGlyphCacheBytes
+	}
+	return gc.MaxBytes
+}
+
+// newMask returns a mask of r, its pixels unset: the smallest evicted one
+// large enough, sparing the larger ones for larger masks, else a new one.
+func (gc *GlyphCache) newMask(r image.Rectangle) *image.Alpha {
+	n := r.Dx() * r.Dy()
+	k := -1
+	for i, m := range gc.free {
+		if c := cap(m.Pix); c >= n && (k < 0 || c < cap(gc.free[k].Pix)) {
+			k = i
+		}
+	}
+	if k < 0 {
+		return &image.Alpha{Pix: make([]uint8, n), Stride: r.Dx(), Rect: r}
+	}
+	m, last := gc.free[k], len(gc.free)-1
+	gc.free[k], gc.free[last] = gc.free[last], nil
+	gc.free = gc.free[:last]
+	gc.freeBytes -= cap(m.Pix)
+	*m = image.Alpha{Pix: m.Pix[:n], Stride: r.Dx(), Rect: r}
+	return m
 }
 
 // glyphEnt is a cached mask (nil: nothing to draw at this size).
@@ -279,10 +351,7 @@ func (e *glyphEnt) size() int {
 func (gc *GlyphCache) store(key glyphKey, mask *image.Alpha) {
 	e := glyphEnt{key: key, mask: mask}
 	n := e.size()
-	limit := gc.MaxBytes
-	if limit <= 0 {
-		limit = DefaultGlyphCacheBytes
-	}
+	limit := gc.budget()
 	if gc.masks == nil {
 		gc.masks = make(map[glyphKey]int32, 256)
 	}
@@ -313,8 +382,10 @@ func (gc *GlyphCache) evict() {
 		gc.ents[j].used = false
 	}
 	e := &gc.ents[j]
+	gc.evictions++
 	gc.bytes -= e.size()
 	delete(gc.masks, e.key)
+	gc.recycle(e.mask)
 	last := len(gc.ents) - 1
 	if j != last {
 		*e = gc.ents[last]

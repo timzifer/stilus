@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-// The glyph cache composites masks directly under whole-pixel rectangle
-// clips and through a MaskShader fill under masked clips. A mask clip that
-// covers the whole canvas takes the second path without changing coverage,
-// so both must give the same bytes.
+// The glyph cache composites masks directly under rectangle clips, away
+// from fractional borders, and through a MaskShader fill under masked
+// clips. A mask clip that covers the whole canvas takes the second path
+// without changing coverage, so both must give the same bytes.
 func TestGlyphBlitMatchesShaderPath(t *testing.T) {
 	var g Path
 	g.MoveTo(0.1, 0)
@@ -25,7 +25,8 @@ func TestGlyphBlitMatchesShaderPath(t *testing.T) {
 	cover.Close()
 	rng := rand.New(rand.NewSource(1))
 	// Images at the origin and off it, with and without a region limit
-	// and a rectangle clip, both whole-pixel.
+	// and a rectangle clip, whole-pixel or with fractional borders, some
+	// of them cut off by the region.
 	for _, tc := range []struct {
 		img, region image.Rectangle
 		clip        Rect
@@ -33,6 +34,10 @@ func TestGlyphBlitMatchesShaderPath(t *testing.T) {
 		{image.Rect(0, 0, 96, 64), image.Rect(0, 0, 96, 64), Rect{5, 3, 80, 60}},
 		{image.Rect(-10, -10, 128, 96), image.Rect(-5, -5, 120, 90), Rect{-100, -100, 500, 500}},
 		{image.Rect(-10, -10, 128, 96), image.Rect(-10, -10, 128, 96), Rect{3, 2, 96, 84}},
+		{image.Rect(0, 0, 96, 64), image.Rect(0, 0, 96, 64), Rect{5.3, 3.7, 80.5, 59.2}},
+		{image.Rect(0, 0, 96, 64), image.Rect(0, 0, 96, 64), Rect{5, 3.25, 80.75, 60}},
+		{image.Rect(-10, -10, 128, 96), image.Rect(-5, -5, 120, 90), Rect{-20.5, 2.5, 110.5, 200.5}},
+		{image.Rect(0, 0, 96, 64), image.Rect(0, 0, 96, 64), Rect{40.2, 30.6, 40.9, 31.1}},
 	} {
 		direct, shaded := image.NewRGBA(tc.img), image.NewRGBA(tc.img)
 		for i := 0; i < len(direct.Pix); i += 4 { // premultiplied
@@ -68,6 +73,52 @@ func TestGlyphBlitMatchesShaderPath(t *testing.T) {
 				t.Fatalf("%v: pixel %d channel %d: %d vs %d", tc.img, i/4, i%4, direct.Pix[i], shaded.Pix[i])
 			}
 		}
+	}
+}
+
+// quadParam must give param's t to the bit, NaN where param gives NaN,
+// for circles of every arrangement, including focal points on and
+// outside the end circle, shrinking radii and huge coordinates.
+func TestQuadRadialMatchesGeneral(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	pick := func(scale float64) float64 {
+		switch rng.Intn(8) {
+		case 0:
+			return 0
+		case 1:
+			return math.Copysign(math.Exp(rng.NormFloat64()*200), rng.NormFloat64())
+		}
+		return rng.NormFloat64() * scale * math.Exp(rng.NormFloat64()*2)
+	}
+	quads := 0
+	for n := range 20000 {
+		var g RadialGradient
+		g.Ramp, g.Alpha = Ramp{0}, 255
+		g.Extend = [2]bool{rng.Intn(2) == 0, rng.Intn(2) == 0}
+		x0, y0, r0 := pick(50), pick(50), math.Abs(pick(30))
+		x1, y1, r1 := pick(50), pick(50), math.Abs(pick(30))
+		switch n % 4 {
+		case 1: // the focal point on the end circle: qa = 0
+			a := rng.Float64() * 2 * math.Pi
+			x0, y0, r0 = x1+r1*math.Cos(a), y1+r1*math.Sin(a), 0
+		case 2: // one centre
+			x0, y0 = x1, y1
+		}
+		if !g.Set(x0, y0, r0, x1, y1, r1, Identity) || !g.quad {
+			continue
+		}
+		quads++
+		for range 50 {
+			u, v := pick(100), pick(100)
+			want, got := g.param(u, v), g.quadParam(u, v)
+			if math.Float64bits(got) != math.Float64bits(want) && !(math.IsNaN(got) && math.IsNaN(want)) {
+				t.Fatalf("circles (%v, %v, %v) (%v, %v, %v) extend %v at (%v, %v): t %v, want %v",
+					x0, y0, r0, x1, y1, r1, g.Extend, u, v, got, want)
+			}
+		}
+	}
+	if quads < 10000 {
+		t.Fatalf("only %d quadratic gradients", quads)
 	}
 }
 

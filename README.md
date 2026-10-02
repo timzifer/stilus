@@ -312,6 +312,16 @@ Speed levers tried and measured (Ryzen 7 5800H, A3 at 150 dpi):
   across the pixel loop (the clip's border columns and the paint are read
   through pointers, the border rows are taken out of the loop) and
   keeping the per-row helpers small enough to inline: hatching −7…8 %.
+- *Fewer branches in the half-plane area* (`area` from |u|: one test for
+  the linear middle, then the quadratic of max(h − |u|, 0), mirrored by
+  the sign of u): bit-identical, but slower everywhere, measured
+  interleaved: hatching +33…42 %, short strokes +9 %. The cases of
+  `area` follow the pixels of a strip in a pattern the branch predictor
+  learns; the longer dependency chain costs more than the mispredictions
+  it saves. Choosing it only for strips of few rows: short strokes
+  +7…8 %. There is little to skip either: 95 % of the pixels a hairline
+  hatch row visits are partially covered, none fully, 5 % not at all.
+  Not pursued.
 
 What remains in stroke scenes is arithmetic: the analytic strip's
 per-pixel half-plane areas (`trapezoid.area`, branchy) and the stroker's
