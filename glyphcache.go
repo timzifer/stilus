@@ -78,6 +78,13 @@ type GlyphCache struct {
 // cache assumes that equal ids have equal outlines. Small glyphs painted
 // with a solid colour are drawn from the cache; large ones, and any glyph
 // painted with a shader, are filled as paths.
+//
+// FillGlyph makes the glyph's key and looks it up before it learns that
+// the glyph lies outside the clip, and a per-glyph test would need the
+// outline's bounds. When a page is drawn in bands, each playing every
+// glyph, the caller should cull whole text runs against the band
+// (Canvas.Clip) by their box, known from the font's bounding box and the
+// advances, before calling FillGlyph for their glyphs.
 func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Path, m Matrix, paint *Paint) {
 	clip := c.Clip()
 	if clip.Empty() {

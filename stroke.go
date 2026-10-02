@@ -96,6 +96,7 @@ type Stroker struct {
 	dashFast, dashing, dashStraight bool
 	fastHits, fastTries             int  // statistics for tests
 	noLine                          bool // tests: single segments take fastPoly's general path
+	noCull                          bool // tests: no culling against the sink's clip
 	fast                            fastState
 	m                               Matrix
 	st                              *StrokeStyle
@@ -318,7 +319,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 func (s *Stroker) setCull(r float64) {
 	s.cull = false
 	rz, ok := s.sink.(*Rasterizer)
-	if !ok || rz.w <= 0 || rz.h <= 0 {
+	if !ok || s.noCull || rz.w <= 0 || rz.h <= 0 {
 		return
 	}
 	// Outline points lie within r of the path's control hull, except for

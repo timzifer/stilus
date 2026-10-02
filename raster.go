@@ -208,7 +208,11 @@ func (r *Rasterizer) culled(p *Path, m Matrix) bool {
 	if len(p.Points) == 0 {
 		return true
 	}
-	bb := m.transformRect(p.Bounds())
+	return r.culledBox(m.transformRect(p.Bounds()))
+}
+
+// culledBox reports whether a path's device-space box bb misses the clip.
+func (r *Rasterizer) culledBox(bb Rect) bool {
 	// NaN comparisons are false, so a NaN box is never culled here; the
 	// per-point checks drop it later.
 	return bb.X1 < r.cx0 || bb.Y1 <= r.cy0 || bb.X0 >= r.cx1 || bb.Y0 >= r.cy1
@@ -338,15 +342,11 @@ func (r *Rasterizer) addQuad(x0, y0, x1, y1, x2, y2 float64) {
 		r.addQuad(clampCoord(x0), clampCoord(y0), clampCoord(x1), clampCoord(y1), clampCoord(x2), clampCoord(y2))
 		return
 	}
-	ddx, ddy := x0-2*x1+x2, y0-2*y1+y2
-	n := segCount(math.Sqrt(ddx*ddx+ddy*ddy) * (0.25 / flattenTol))
+	n, ax, ay, bx, by := quadPoly(x0, y0, x1, y1, x2, y2)
 	if n <= 1 {
 		r.AddLine(x0, y0, x2, y2)
 		return
 	}
-	// B(t) = a t² + b t + p0
-	ax, ay := ddx, ddy
-	bx, by := 2*(x1-x0), 2*(y1-y0)
 	dt := 1 / float64(n)
 	px, py := x0, y0
 	for i := 1; i < n; i++ {
@@ -370,18 +370,11 @@ func (r *Rasterizer) addCubic(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
 			clampCoord(x2), clampCoord(y2), clampCoord(x3), clampCoord(y3))
 		return
 	}
-	d1x, d1y := x0-2*x1+x2, y0-2*y1+y2
-	d2x, d2y := x1-2*x2+x3, y1-2*y2+y3
-	l := math.Sqrt(math.Max(d1x*d1x+d1y*d1y, d2x*d2x+d2y*d2y))
-	n := segCount(l * (0.75 / flattenTol))
+	n, ax, ay, bx, by, cx, cy := cubicPoly(x0, y0, x1, y1, x2, y2, x3, y3)
 	if n <= 1 {
 		r.AddLine(x0, y0, x3, y3)
 		return
 	}
-	// B(t) = a t³ + b t² + c t + p0
-	cx, cy := 3*(x1-x0), 3*(y1-y0)
-	bx, by := 3*(x2-x1)-cx, 3*(y2-y1)-cy
-	ax, ay := x3-x0-cx-bx, y3-y0-cy-by
 	dt := 1 / float64(n)
 	px, py := x0, y0
 	for i := 1; i < n; i++ {
@@ -392,6 +385,27 @@ func (r *Rasterizer) addCubic(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
 		px, py = qx, qy
 	}
 	r.AddLine(px, py, x3, y3)
+}
+
+// quadPoly returns the number of chords a quadratic is flattened into and
+// its polynomial B(t) = a t² + b t + p0.
+func quadPoly(x0, y0, x1, y1, x2, y2 float64) (n int, ax, ay, bx, by float64) {
+	ax, ay = x0-2*x1+x2, y0-2*y1+y2
+	n = segCount(math.Sqrt(ax*ax+ay*ay) * (0.25 / flattenTol))
+	return n, ax, ay, 2 * (x1 - x0), 2 * (y1 - y0)
+}
+
+// cubicPoly returns the number of chords a cubic is flattened into and its
+// polynomial B(t) = a t³ + b t² + c t + p0.
+func cubicPoly(x0, y0, x1, y1, x2, y2, x3, y3 float64) (n int, ax, ay, bx, by, cx, cy float64) {
+	d1x, d1y := x0-2*x1+x2, y0-2*y1+y2
+	d2x, d2y := x1-2*x2+x3, y1-2*y2+y3
+	l := math.Sqrt(math.Max(d1x*d1x+d1y*d1y, d2x*d2x+d2y*d2y))
+	n = segCount(l * (0.75 / flattenTol))
+	cx, cy = 3*(x1-x0), 3*(y1-y0)
+	bx, by = 3*(x2-x1)-cx, 3*(y2-y1)-cy
+	ax, ay = x3-x0-cx-bx, y3-y0-cy-by
+	return n, ax, ay, bx, by, cx, cy
 }
 
 // segCount returns ceil(sqrt(v)) clamped to [1, maxSegs].

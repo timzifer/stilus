@@ -19,7 +19,7 @@ when its shaders or kernels exist with tests and cera's ADR can use them.
 | [0002](0002-repeating-textures.md) | Repeating textures for tiling patterns | cera ADR 0002 (M7) | accepted |
 | [0003](0003-group-compositing.md) | Group compositing: backdrop removal and shape | cera ADR 0009 (M8) | accepted |
 | [0004](0004-knockout-compositing.md) | Knockout compositing by shader | cera ADR 0009 (M8) | proposed |
-| [0005](0005-prepared-geometry.md) | Prepared geometry shared by bands | cera's banded rendering | proposed |
+| [0005](0005-prepared-geometry.md) | Prepared geometry shared by bands | cera's banded rendering | accepted |
 
 ## Template
 

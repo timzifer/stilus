@@ -40,6 +40,12 @@ c.ClipRect(stilus.Rect{X0: 0, Y0: 0, X1: 842, Y1: 595}, ctm)
 c.Stroke(path, ctm, style, &stilus.Paint{Color: color.RGBA{0, 0, 0, 255}})
 c.Fill(path, ctm, stilus.EvenOdd, &stilus.Paint{Shader: myShader}) // per-span callback
 c.PopClip()
+
+// Prepared geometry for banded rendering: set once per page, drawn by
+// every band's canvas (concurrently), each replaying only its own rows.
+var sh stilus.Shape
+sh.SetStroke(path, ctm, style)                    // or SetFill(path, ctm, rule)
+c.FillShape(&sh, paint)                           // same bytes as c.Stroke(path, ctm, style, paint)
 ```
 
 Integration points for other renderers: implement `Blitter` (own pixel
@@ -109,6 +115,15 @@ stroked text painted with a shader.
   round joins and segments meeting end to end are exactly as on the outline
   path. Covers polylines, flattened curves, closed shapes and straight
   dashes; within 2/255 of the outline path (`TestPolylineFastPath`).
+- **Prepared geometry** (`Shape`, [ADR 0005](docs/adr/0005-prepared-geometry.md)):
+  a page rendered in bands plays every operation in every band, and an
+  operation crossing many bands would be transformed, flattened, dashed
+  and stroked once per band. A `Shape` records what the rasterizer and the
+  analytic strips receive – device edges with their row limits, strips with
+  their set-up done – binned by rows; a band replays the records that
+  reach it. They are made by the first band that draws the shape, so the
+  work stays in the workers. Byte-identical to `Fill`/`Stroke`; 2 000
+  hatch lines drawn as 64 bands on one core: 87 → 54 ms (one band: 46 ms).
 - **Rectangle clips** (91 % of real PDF clips) cost nothing per pixel;
   other clips are rasterized once into a mask that is never cleared as a
   whole and keeps fully opaque runs as runs.
@@ -290,7 +305,9 @@ Speed levers tried and measured (Ryzen 7 5800H, A3 at 150 dpi):
   band heights 16–256. Operations crossing a band border are stroked once
   per band, which costs more than the cache misses saved; only uncached
   glyphs gained (−25 % with 8 workers). Still the right structure for M3,
-  but not a speed lever on its own.
+  but not a speed lever on its own. Prepared geometry (`Shape`) removes
+  the per-band stroking for operations spanning three bands or more; for
+  one crossing a single border, drawing it twice stays cheaper.
 - *Deferred span compositing* (spans appended to per-band streams,
   composited band by band): bit-identical, −10…17 % on scattered strokes,
   but +70 % on long hatch lines (recording every row), and deciding per
