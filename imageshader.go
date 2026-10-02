@@ -17,6 +17,14 @@ type Sampler struct {
 	// unit says that m is a translation by whole pixels, so that nearest
 	// sampling copies texels.
 	unit bool
+	// wrap says that p repeats in both directions with its size as
+	// period, rather than its edge pixels.
+	wrap bool
+	// fu and fv step the coordinates of a periodic texture along rows.
+	fu, fv fixedAxis
+	// levels says that p is indexed and its colours are levels of alpha
+	// (all four channels equal), so that one channel can be mixed for all.
+	levels bool
 }
 
 // Setup chooses the mip level of t for drawing it with toDevice, which
@@ -25,8 +33,22 @@ type Sampler struct {
 // the nearest pixel unless smooth is set; reduced ones bilinearly from the
 // level at most twice as fine as the device.
 func (s *Sampler) Setup(t *Texture, toDevice Matrix, smooth bool) bool {
+	return s.setup(t, toDevice, smooth, false)
+}
+
+// SetupWrap is Setup for a texture that repeats in both directions with
+// the period of its base size: texture coordinates are taken modulo W and
+// H before sampling, and bilinear samples at the border read the opposite
+// edge. Its mip levels are periodic too, of the base size over 2^k
+// rounded, so that a level still repeats with a whole number of pixels.
+// Textures of 2^30 pixels or more along an axis cannot be repeated.
+func (s *Sampler) SetupWrap(t *Texture, toDevice Matrix, smooth bool) bool {
+	return s.setup(t, toDevice, smooth, true)
+}
+
+func (s *Sampler) setup(t *Texture, toDevice Matrix, smooth, wrap bool) bool {
 	inv, ok := toDevice.Invert()
-	if !ok || !inv.finite() {
+	if !ok || !inv.finite() || wrap && max(t.base.W, t.base.H) >= maxWrapSize {
 		return false
 	}
 	// Base pixels per device pixel along the device axes.
@@ -36,7 +58,12 @@ func (s *Sampler) Setup(t *Texture, toDevice Matrix, smooth bool) bool {
 		r /= 2
 		k++
 	}
-	s.p = t.Level(k)
+	if wrap {
+		s.p = t.wrapLevel(k)
+	} else {
+		s.p = t.Level(k)
+	}
+	s.wrap = wrap
 	if k > 0 {
 		inv = inv.Mul(Scale(float64(s.p.W)/float64(t.base.W), float64(s.p.H)/float64(t.base.H)))
 	}
@@ -44,6 +71,10 @@ func (s *Sampler) Setup(t *Texture, toDevice Matrix, smooth bool) bool {
 	s.bilinear = smooth || r > 1+1e-6
 	s.unit = !s.bilinear && inv[0] == 1 && inv[1] == 0 && inv[2] == 0 && inv[3] == 1 &&
 		inv[4] == math.Trunc(inv[4]) && math.Abs(inv[4]) < 1<<30
+	if wrap {
+		s.fu, s.fv = newFixedAxis(inv[0], s.p.W), newFixedAxis(inv[1], s.p.H)
+	}
+	s.levels = s.p.Kind == PlaneIndex && t.alpha
 	return true
 }
 
@@ -54,8 +85,12 @@ func (s *Sampler) Release() { s.p = nil }
 // pixel's coordinates are computed from its own position rather than
 // accumulated along the span, so that a pixel samples the same texel
 // whichever band, tile or span it is drawn in. Outside the texture the
-// edge pixels repeat.
+// edge pixels repeat, or with SetupWrap the texture itself.
 func (s *Sampler) Sample(y, x int, dst []uint32) {
+	if s.wrap {
+		s.sampleWrap(y, x, dst)
+		return
+	}
 	p, m := s.p, &s.m
 	fy := float64(y) + 0.5
 	u0 := m[2]*fy + m[4] + m[0]*0.5
@@ -212,16 +247,21 @@ type ImageShader struct {
 	color     uint32 // premultiplied, when !hasCol
 	alpha     uint32 // constant alpha of a texture, 0-255
 	buf       []uint32
+	// stencil holds color times every level of alpha, for painting a
+	// solid colour through a mask, when stencilOK.
+	stencil   *[256]uint32
+	stencilOK bool
 }
 
-// Reset clears the shader, keeping its buffer, and drops its textures.
+// Reset clears the shader, keeping its buffers, and drops its textures.
 func (s *ImageShader) Reset() {
-	*s = ImageShader{buf: s.buf}
+	*s = ImageShader{buf: s.buf, stencil: s.stencil}
 }
 
 // SetColor paints the premultiplied colour c (PackRGBA layout) instead of a
 // texture: a stencil.
 func (s *ImageShader) SetColor(c uint32) {
+	s.stencilOK = s.stencilOK && s.color == c
 	s.hasCol, s.col.p, s.color = false, nil, c
 }
 
@@ -240,9 +280,26 @@ func (s *ImageShader) SetMask(t *Texture, toDevice Matrix, smooth bool) bool {
 	return s.hasMask
 }
 
+// SetImageWrap is SetImage for a texture that repeats in both directions
+// with the period of its base size (see Sampler.SetupWrap): the tile of a
+// coloured pattern.
+func (s *ImageShader) SetImageWrap(t *Texture, toDevice Matrix, smooth bool, alpha uint8) bool {
+	s.alpha = uint32(alpha)
+	s.hasCol = s.col.SetupWrap(t, toDevice, smooth)
+	return s.hasCol
+}
+
+// SetMaskWrap is SetMask for a repeating mask texture: with SetColor, the
+// stencil tile of an uncoloured pattern.
+func (s *ImageShader) SetMaskWrap(t *Texture, toDevice Matrix, smooth bool) bool {
+	s.hasMask = s.mask.SetupWrap(t, toDevice, smooth)
+	return s.hasMask
+}
+
 // srcRow implements rowSource: an RGBA texture moved by whole pixels,
 // without a mask, is its own pixels times alpha where the span lies within
-// the texture (outside, Sample repeats the edge pixels).
+// the texture, or within one period of a repeating one (elsewhere, Sample
+// repeats the edge pixels or the period).
 func (s *ImageShader) srcRow(y, x, n int) ([]uint32, uint32, bool) {
 	c := &s.col
 	if !s.hasCol || s.hasMask || !c.unit || c.p.Kind != PlaneRGBA {
@@ -250,16 +307,43 @@ func (s *ImageShader) srcRow(y, x, n int) ([]uint32, uint32, bool) {
 	}
 	p, m := c.p, &c.m
 	off := x + int(m[4])
+	// Sample's row, computed the same way.
+	if c.wrap {
+		off = wrapIndex(off, p.W)
+	}
 	if off < 0 || off+n > p.W {
 		return nil, 0, false
 	}
-	// Sample's row, computed the same way.
-	j := clampIndex(m[3]*(float64(y)+0.5)+m[5]+m[1]*0.5, p.H)
+	var j int
+	if c.wrap {
+		j = c.rowV(y)
+	} else {
+		j = clampIndex(m[3]*(float64(y)+0.5)+m[5]+m[1]*0.5, p.H)
+	}
 	return p.Pix32[j*p.Stride+off:][:n], s.alpha, true
 }
 
 // ShadeSpan implements Shader.
 func (s *ImageShader) ShadeSpan(y, x int, dst []uint32) {
+	if !s.hasCol && s.hasMask {
+		// A stencil: the mask's level picks the colour times it.
+		if !s.stencilOK {
+			if s.stencil == nil {
+				s.stencil = new([256]uint32)
+			}
+			for a := range s.stencil {
+				s.stencil[a] = mul255(s.color, uint32(a))
+			}
+			s.stencilOK = true
+		}
+		s.mask.Sample(y, x, dst)
+		lut := s.stencil
+		for i, c := range dst {
+			// Mask colours are levels of alpha: all four channels are equal.
+			dst[i] = lut[uint8(c)]
+		}
+		return
+	}
 	if s.hasCol {
 		s.col.Sample(y, x, dst)
 		if s.alpha != 255 {

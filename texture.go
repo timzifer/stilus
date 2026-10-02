@@ -103,6 +103,9 @@ type Texture struct {
 
 	mu   sync.Mutex
 	mips [maxMip + 1]atomic.Pointer[Plane]
+	// wmips are the levels of the texture taken as periodic, for
+	// SetupWrap, where they differ from mips.
+	wmips [maxMip + 1]atomic.Pointer[Plane]
 }
 
 // NewTexture returns a texture of p.
@@ -159,6 +162,81 @@ func (t *Texture) Level(k int) *Plane {
 	p := t.downsample(k)
 	t.mips[k].Store(p)
 	return p
+}
+
+// wrapLevel returns mip level k of t taken as repeating with the period
+// of its base size, making it if needed. Its size is the base size over
+// 2^k, rounded, so that it repeats with a whole number of pixels; a pixel
+// averages the base pixels whose columns and rows fall in its share of the
+// period, so that blocks hold 2^k or, when the size does not divide, one
+// more or fewer base pixels in each direction. Sizes that divide give the
+// levels of Level.
+func (t *Texture) wrapLevel(k int) *Plane {
+	k = min(k, t.Levels())
+	if k <= 0 {
+		return &t.base
+	}
+	if f := 1<<k - 1; t.base.W&f == 0 && t.base.H&f == 0 {
+		return t.Level(k)
+	}
+	if p := t.wmips[k].Load(); p != nil {
+		return p
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if p := t.wmips[k].Load(); p != nil {
+		return p
+	}
+	p := t.downsampleWrap(k)
+	t.wmips[k].Store(p)
+	return p
+}
+
+// wrapSize returns n/2^k rounded, at least 1.
+func wrapSize(n, k int) int { return max(1, (n+1<<(k-1))>>k) }
+
+// downsampleWrap makes wrapLevel k. It is made once per texture and
+// level, of tiles that are mostly small, so it reads pixels through At.
+func (t *Texture) downsampleWrap(k int) *Plane {
+	src := &t.base
+	w, h := wrapSize(src.W, k), wrapSize(src.H, k)
+	out := &Plane{W: w, H: h, Stride: w}
+	single := t.gray || t.alpha
+	if single {
+		out.Kind, out.Pix8, out.Pal = PlaneIndex, make([]uint8, w*h), GrayPalette
+		if !t.gray {
+			out.Pal = AlphaPalette
+		}
+	} else {
+		out.Kind, out.Pix32 = PlaneRGBA, make([]uint32, w*h)
+	}
+	for dy := range h {
+		y0, y1 := dy*src.H/h, (dy+1)*src.H/h
+		for dx := range w {
+			x0, x1 := dx*src.W/w, (dx+1)*src.W/w
+			var s [4]uint32
+			for sy := y0; sy < y1; sy++ {
+				for sx := x0; sx < x1; sx++ {
+					r, g, b, a := unpack(src.At(sx, sy))
+					s[0] += uint32(r)
+					s[1] += uint32(g)
+					s[2] += uint32(b)
+					s[3] += uint32(a)
+				}
+			}
+			n := uint32((y1 - y0) * (x1 - x0))
+			c := pack(uint8((s[0]+n/2)/n), uint8((s[1]+n/2)/n), uint8((s[2]+n/2)/n), uint8((s[3]+n/2)/n))
+			switch r, _, _, a := unpack(c); {
+			case !single:
+				out.Pix32[dy*w+dx] = c
+			case t.gray:
+				out.Pix8[dy*w+dx] = r
+			default:
+				out.Pix8[dy*w+dx] = a
+			}
+		}
+	}
+	return out
 }
 
 // downsample averages base over blocks of 2^k × 2^k pixels (smaller at
