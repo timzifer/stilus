@@ -28,7 +28,8 @@
 //     tiles), LinearGradient and RadialGradient (a
 //     Ramp of colours, evenly spaced or at Knots), MeshShader
 //     (Gouraud-shaded triangles), LayerShader (a layer with opacity, mask
-//     and BlendMode), MaskShader and GlyphCache (glyph coverage masks).
+//     and BlendMode, removing the backdrop of non-isolated groups),
+//     MaskShader and GlyphCache (glyph coverage masks).
 //     FillMesh draws Gouraud-shaded triangles into a layer.
 //
 // # Performance model
