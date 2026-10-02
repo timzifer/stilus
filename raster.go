@@ -36,8 +36,10 @@ const (
 	bandShift = 5
 	bandH     = 1 << bandShift // rows per accumulation band
 	blkShift  = 2              // one dirty bit per 1<<blkShift cells
-	// maxCoord bounds device coordinates before clipping; values beyond it
-	// are clamped. It keeps all intermediate products finite.
+	// maxCoord bounds the control points of curves flattened by AddPath;
+	// curves reaching beyond it are flattened between clamped control
+	// points, which keeps the flattening arithmetic finite. Lines are
+	// clipped at their exact coordinates.
 	maxCoord = 1 << 40
 	// DefaultMaxEdges is the default edge budget per path.
 	DefaultMaxEdges = 1 << 22
@@ -233,11 +235,10 @@ func (r *Rasterizer) AddPath(p *Path, m Matrix) {
 		if !ident {
 			x, y = m.Apply(x, y)
 		}
-		// Checked before clamping, which would turn infinities finite.
 		if !(math.Abs(x) <= math.MaxFloat64 && math.Abs(y) <= math.MaxFloat64) {
 			bad = true
 		}
-		return clampCoord(x), clampCoord(y)
+		return x, y
 	}
 	for _, v := range p.Verbs {
 		if int(v) >= len(numPoints) || pi+numPoints[v] > len(pts) {
@@ -307,9 +308,34 @@ func (r *Rasterizer) boxMisses(x0, x1, x2, x3, y0, y1, y2, y3 float64) bool {
 		(x0 <= r.cx0 && x1 <= r.cx0 && x2 <= r.cx0 && x3 <= r.cx0)
 }
 
+// clampInf clamps infinities to ±maxCoord, which keeps an overflowed
+// outline closed; finite values are clipped exactly by AddLine.
+func clampInf(v float64) float64 {
+	if math.IsInf(v, 0) {
+		return clampCoord(v)
+	}
+	return v
+}
+
+// beyond reports whether any of the coordinates exceeds maxCoord.
+func beyond(v ...float64) bool {
+	for _, c := range v {
+		if !(math.Abs(c) <= maxCoord) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Rasterizer) addQuad(x0, y0, x1, y1, x2, y2 float64) {
 	if r.boxMisses(x0, x1, x2, x2, y0, y1, y2, y2) {
 		r.AddLine(x0, y0, x2, y2)
+		return
+	}
+	if beyond(x0, y0, x1, y1, x2, y2) {
+		// The gap between an exact end and its clamped counterpart needs
+		// no edge: it is horizontal or lies above or below the clip.
+		r.addQuad(clampCoord(x0), clampCoord(y0), clampCoord(x1), clampCoord(y1), clampCoord(x2), clampCoord(y2))
 		return
 	}
 	ddx, ddy := x0-2*x1+x2, y0-2*y1+y2
@@ -336,6 +362,12 @@ func (r *Rasterizer) addQuad(x0, y0, x1, y1, x2, y2 float64) {
 func (r *Rasterizer) addCubic(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
 	if r.boxMisses(x0, x1, x2, x3, y0, y1, y2, y3) {
 		r.AddLine(x0, y0, x3, y3)
+		return
+	}
+	if beyond(x0, y0, x1, y1, x2, y2, x3, y3) {
+		// As in addQuad.
+		r.addCubic(clampCoord(x0), clampCoord(y0), clampCoord(x1), clampCoord(y1),
+			clampCoord(x2), clampCoord(y2), clampCoord(x3), clampCoord(y3))
 		return
 	}
 	d1x, d1y := x0-2*x1+x2, y0-2*y1+y2

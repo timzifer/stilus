@@ -489,3 +489,72 @@ func BenchmarkEmptyGlyphCached(b *testing.B) {
 		gc.FillGlyph(c, 1, 1, &p, Identity, white)
 	}
 }
+
+// AddPath clips lines at their exact coordinates: clamping each to ±2^40
+// first turned the slope 1/2 of the long edge into 1.
+func TestAddPathHugeLineSlope(t *testing.T) {
+	var p Path
+	p.MoveTo(0, 0)
+	p.LineTo(1<<42, 1<<41)
+	p.LineTo(1<<42, 0)
+	p.Close()
+	clip := image.Rect(0, 0, 16, 16)
+	a, b := image.NewAlpha(clip), image.NewAlpha(clip)
+	r := NewRasterizer(clip)
+	r.Fill(&p, Identity, NonZero, &MaskBlitter{a})
+	for i := range 3 {
+		q, z := p.Points[i], p.Points[(i+1)%3]
+		r.AddLine(float64(q.X), float64(q.Y), float64(z.X), float64(z.Y))
+	}
+	r.Rasterize(NonZero, &MaskBlitter{b})
+	if !slices.Equal(a.Pix, b.Pix) {
+		t.Errorf("AddPath differs from its edges added directly: (10,7) %d vs %d", a.AlphaAt(10, 7).A, b.AlphaAt(10, 7).A)
+	}
+	if a.AlphaAt(10, 7).A != 0 || a.AlphaAt(10, 3).A != 255 {
+		t.Errorf("(10,7) %d, (10,3) %d: want 0 and 255 under the line y = x/2", a.AlphaAt(10, 7).A, a.AlphaAt(10, 3).A)
+	}
+}
+
+// Curves reaching beyond maxCoord, flattened between clamped control
+// points, still close the outline with the exact lines next to them.
+func TestAddPathHugeCurveClosed(t *testing.T) {
+	clip := image.Rect(0, 0, 16, 16)
+	for _, cubic := range []bool{false, true} {
+		var p Path
+		p.MoveTo(-4, -4)
+		p.LineTo(1<<44, -4)
+		if cubic {
+			p.CubicTo(1<<45, 1<<43, 1<<45, 1<<44, 1<<44, 1<<45)
+		} else {
+			p.QuadTo(1<<45, 1<<44, 1<<44, 1<<45)
+		}
+		p.LineTo(-4, 1<<45)
+		p.Close()
+		a := image.NewAlpha(clip)
+		NewRasterizer(clip).Fill(&p, Identity, NonZero, &MaskBlitter{a})
+		for i, v := range a.Pix {
+			if v != 255 {
+				t.Fatalf("cubic=%v: pixel %d alpha %d, want the clip covered", cubic, i, v)
+			}
+		}
+	}
+}
+
+// A stroke far beyond the coordinate range is clipped at its exact
+// outline, like a fill of that outline.
+func TestStrokeHugeSlope(t *testing.T) {
+	var p Path
+	p.MoveTo(0, 0)
+	p.LineTo(1<<42, 1<<41)
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	c := NewCanvas(img)
+	c.Stroke(&p, Identity, &StrokeStyle{Width: 2}, white)
+	for _, q := range []image.Point{{10, 5}, {14, 7}} {
+		if img.RGBAAt(q.X, q.Y).A == 0 {
+			t.Errorf("(%d,%d) on the line y = x/2 not covered", q.X, q.Y)
+		}
+	}
+	if img.RGBAAt(10, 9).A != 0 {
+		t.Errorf("(10,9) off the line covered: alpha %d", img.RGBAAt(10, 9).A)
+	}
+}

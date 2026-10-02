@@ -149,7 +149,7 @@ func (s *Stroker) fastPoly(v, seg []float64, closed bool) bool {
 		x, y := m.Apply(pts[k], pts[k+1])
 		if !(math.Abs(x) < 1<<30 && math.Abs(y) < 1<<30) {
 			huge = true
-			x, y = clampCoord(x), clampCoord(y)
+			x, y = clampInf(x), clampInf(y)
 		}
 		pts[k], pts[k+1] = x, y
 		o := own[k/2]
@@ -737,7 +737,7 @@ func (s *Stroker) fastLine(v, seg []float64) bool {
 		x, y := m.Apply(pts[k], pts[k+1])
 		if !(math.Abs(x) < 1<<30 && math.Abs(y) < 1<<30) {
 			huge = true
-			x, y = clampCoord(x), clampCoord(y)
+			x, y = clampInf(x), clampInf(y)
 		}
 		pts[k], pts[k+1] = x, y
 		o := own[k/2] & 1
