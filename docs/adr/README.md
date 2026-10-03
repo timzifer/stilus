@@ -20,6 +20,7 @@ when its shaders or kernels exist with tests and cera's ADR can use them.
 | [0003](0003-group-compositing.md) | Group compositing: backdrop removal and shape | cera ADR 0009 (M8) | accepted |
 | [0004](0004-knockout-compositing.md) | Knockout compositing by shader | cera ADR 0009 (M8) | proposed |
 | [0005](0005-prepared-geometry.md) | Prepared geometry shared by bands | cera's banded rendering | accepted |
+| [0006](0006-union.md) | Union of many paths in one coverage pass | cera#21 (batched same-paint operations) | accepted |
 
 ## Template
 

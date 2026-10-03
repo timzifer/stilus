@@ -34,6 +34,14 @@ type StrokeStyle struct {
 // LineSink receives device-space line segments. Segments emitted by the
 // Stroker form closed polygons that must be filled with the NonZero rule.
 // *Rasterizer implements LineSink.
+//
+// The outline of a stroke winds in one direction everywhere it covers,
+// inner corners, joins, caps and dashes included: its winding number is
+// never positive where another part of it is negative. The direction is
+// that of a stroke under the identity unless the transform mirrors
+// (negative determinant) and the stroke is not a hairline, whose outline is
+// built in device space. So the union of many strokes, oriented alike, is
+// one NonZero fill of their outlines (see Union, TestStrokeOutlineWinding).
 type LineSink interface {
 	AddLine(x0, y0, x1, y1 float64)
 }
