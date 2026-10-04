@@ -111,6 +111,18 @@ type Rasterizer struct {
 	bucket []int32
 	order  []int32
 	active []int32
+
+	// Analytic stroke rows summed with the edges (see addStrip).
+	strips  []accStrip
+	sorder  []int32
+	sactive []int32
+}
+
+// accStrip is the analytic rows [y0, y1) (relative to the clip's top) of
+// a stroke segment (see strip.go), summed into the accumulator.
+type accStrip struct {
+	rc     rowCtx
+	y0, y1 int32
 }
 
 // NewRasterizer returns a rasterizer clipped to clip.
@@ -182,6 +194,7 @@ func (r *Rasterizer) discard() {
 // describing that path until the next one starts (Reset, AddPath, AddLine).
 func (r *Rasterizer) clearEdges() {
 	r.edges = r.edges[:0]
+	r.strips = r.strips[:0]
 	r.minY = math.MaxInt32
 	r.minX = math.MaxInt32
 	r.maxX = math.MinInt32
@@ -226,6 +239,11 @@ func (r *Rasterizer) AddPath(p *Path, m Matrix) {
 	if !m.finite() || r.w <= 0 || r.h <= 0 || r.culled(p, m) {
 		return
 	}
+	r.addPath(p, m)
+}
+
+// addPath is AddPath for a finite m and a path not culled.
+func (r *Rasterizer) addPath(p *Path, m Matrix) {
 	ident := m == Identity
 	pts := p.Points
 	var sx, sy, cx, cy float64 // subpath start, current point
@@ -533,10 +551,17 @@ func (r *Rasterizer) emit(x0, y0, x1, y1 float64, dir int32) {
 	}
 }
 
+// reverse reverses the orientation of the edges added since there were n.
+func (r *Rasterizer) reverse(n int) {
+	for i := n; i < len(r.edges); i++ {
+		r.edges[i].dir = -r.edges[i].dir
+	}
+}
+
 // Rasterize converts all added edges into spans and resets the rasterizer.
 func (r *Rasterizer) Rasterize(rule FillRule, b Blitter) {
 	defer func() { r.clearEdges(); r.done = true }()
-	if len(r.edges) == 0 {
+	if len(r.edges) == 0 && len(r.strips) == 0 {
 		return
 	}
 	// Narrow paths (most strokes, glyphs, small shapes) are swept over their
@@ -551,40 +576,18 @@ func (r *Rasterizer) Rasterize(rule FillRule, b Blitter) {
 		for i := range r.edges {
 			mask |= r.rasterEdge(&r.edges[i], row0)
 		}
+		for i := range r.strips {
+			mask |= r.rasterStrip(&r.strips[i], row0)
+		}
 		r.sweep(row0, mask, rule, b)
 		return
 	}
-	// Sort edges by their first band: a counting sort when bands are few
-	// relative to edges, else a comparison sort, so that the empty bands of
-	// a tall sparse path cost nothing.
+	if len(r.strips) > 0 {
+		r.rasterizeStrips(row0, nb, rule, b)
+		return
+	}
 	band := func(ei int32) int { return (int(r.edges[ei].y0>>8) - row0) >> bandShift }
-	if cap(r.order) < len(r.edges) {
-		r.order = make([]int32, len(r.edges))
-	}
-	order := r.order[:len(r.edges)]
-	if nb <= 4*len(r.edges) {
-		if cap(r.bucket) < nb+1 {
-			r.bucket = make([]int32, nb+1)
-		}
-		bucket := r.bucket[:nb+1]
-		clear(bucket)
-		for i := range r.edges {
-			bucket[band(int32(i))+1]++
-		}
-		for i := 1; i <= nb; i++ {
-			bucket[i] += bucket[i-1]
-		}
-		for i := range r.edges {
-			bi := band(int32(i))
-			order[bucket[bi]] = int32(i)
-			bucket[bi]++
-		}
-	} else {
-		for i := range order {
-			order[i] = int32(i)
-		}
-		slices.SortFunc(order, func(a, b int32) int { return cmp.Compare(r.edges[a].y0, r.edges[b].y0) })
-	}
+	order := r.sortEdges(row0, nb)
 	active := r.active[:0]
 	next := 0
 	for bi := 0; bi < nb; bi++ {
@@ -616,6 +619,218 @@ func (r *Rasterizer) Rasterize(rule FillRule, b Blitter) {
 		}
 	}
 	r.active = active[:0]
+}
+
+// sortEdges returns the edges' indices sorted by their first band: a
+// counting sort when bands are few relative to edges, else a comparison
+// sort, so that the empty bands of a tall sparse path cost nothing.
+func (r *Rasterizer) sortEdges(row0, nb int) []int32 {
+	band := func(ei int32) int { return (int(r.edges[ei].y0>>8) - row0) >> bandShift }
+	if cap(r.order) < len(r.edges) {
+		r.order = make([]int32, len(r.edges))
+	}
+	order := r.order[:len(r.edges)]
+	if nb <= 4*len(r.edges) {
+		bucket := r.buckets(nb)
+		for i := range r.edges {
+			bucket[band(int32(i))+1]++
+		}
+		for i := 1; i <= nb; i++ {
+			bucket[i] += bucket[i-1]
+		}
+		for i := range r.edges {
+			bi := band(int32(i))
+			order[bucket[bi]] = int32(i)
+			bucket[bi]++
+		}
+	} else {
+		for i := range order {
+			order[i] = int32(i)
+		}
+		slices.SortFunc(order, func(a, b int32) int { return cmp.Compare(r.edges[a].y0, r.edges[b].y0) })
+	}
+	return order
+}
+
+// sortStrips is sortEdges for the strips.
+func (r *Rasterizer) sortStrips(row0, nb int) []int32 {
+	band := func(si int32) int { return (int(r.strips[si].y0) - row0) >> bandShift }
+	r.sorder = grow32(r.sorder, len(r.strips))
+	order := r.sorder
+	if nb <= 4*len(r.strips) {
+		bucket := r.buckets(nb)
+		for i := range r.strips {
+			bucket[band(int32(i))+1]++
+		}
+		for i := 1; i <= nb; i++ {
+			bucket[i] += bucket[i-1]
+		}
+		for i := range r.strips {
+			bi := band(int32(i))
+			order[bucket[bi]] = int32(i)
+			bucket[bi]++
+		}
+	} else {
+		for i := range order {
+			order[i] = int32(i)
+		}
+		slices.SortFunc(order, func(a, b int32) int { return cmp.Compare(r.strips[a].y0, r.strips[b].y0) })
+	}
+	return order
+}
+
+// buckets returns nb+1 zeroed counters.
+func (r *Rasterizer) buckets(nb int) []int32 {
+	if cap(r.bucket) < nb+1 {
+		r.bucket = make([]int32, nb+1)
+	}
+	b := r.bucket[:nb+1]
+	clear(b)
+	return b
+}
+
+// rasterizeStrips is Rasterize's band loop for edges and strips.
+func (r *Rasterizer) rasterizeStrips(row0, nb int, rule FillRule, b Blitter) {
+	band := func(ei int32) int { return (int(r.edges[ei].y0>>8) - row0) >> bandShift }
+	sband := func(si int32) int { return (int(r.strips[si].y0) - row0) >> bandShift }
+	order := r.sortEdges(row0, nb)
+	sorder := r.sortStrips(row0, nb)
+	active, sactive := r.active[:0], r.sactive[:0]
+	next, snext := 0, 0
+	for bi := 0; bi < nb; bi++ {
+		if len(active) == 0 && len(sactive) == 0 {
+			// Nothing reaches this band: skip to the next edge's or strip's.
+			nbi := nb
+			if next < len(order) {
+				nbi = band(order[next])
+			}
+			if snext < len(sorder) {
+				nbi = min(nbi, sband(sorder[snext]))
+			}
+			if nbi == nb {
+				break
+			}
+			bi = max(bi, nbi)
+		}
+		for ; next < len(order) && band(order[next]) <= bi; next++ {
+			active = append(active, order[next])
+		}
+		for ; snext < len(sorder) && sband(sorder[snext]) <= bi; snext++ {
+			sactive = append(sactive, sorder[snext])
+		}
+		bandRow := row0 + bi<<bandShift
+		bandEnd := int32(bandRow + bandH)
+		var mask uint64
+		j := 0
+		for _, ei := range active {
+			e := &r.edges[ei]
+			mask |= r.rasterEdge(e, bandRow)
+			if e.y1 > bandEnd<<8 {
+				active[j] = ei
+				j++
+			}
+		}
+		active = active[:j]
+		j = 0
+		for _, si := range sactive {
+			st := &r.strips[si]
+			mask |= r.rasterStrip(st, bandRow)
+			if st.y1 > bandEnd {
+				sactive[j] = si
+				j++
+			}
+		}
+		sactive = sactive[:j]
+		if mask != 0 {
+			r.sweep(bandRow, mask, rule, b)
+		}
+	}
+	r.active, r.sactive = active[:0], sactive[:0]
+}
+
+// fullArea is a fully covered pixel in accumulator units: the area in
+// 1/256 pixels times the 512 of a cell's two halves.
+const fullArea = 256 * 512
+
+// addStrip adds rows [y0, y1) (device rows) of the analytic strip rc to
+// the accumulator, as coverage summed with the edges', winding like an
+// edge going down on its left. Rows outside the clip are dropped.
+func (r *Rasterizer) addStrip(rc *rowCtx, y0, y1 int) {
+	r.begin()
+	oy := r.clip.Min.Y
+	y0, y1 = max(y0, oy), min(y1, r.clip.Max.Y)
+	if y0 >= y1 || r.w <= 0 {
+		return
+	}
+	// The strip's pixels lie between its left line at its leftmost row and
+	// its right line at its rightmost one (see rowCtx.span).
+	f0, f1 := float64(y0), float64(y1-1)
+	xa := min(rc.xl+f0*rc.sl, rc.xl+f1*rc.sl)
+	xb := max(rc.xr+f0*rc.sl, rc.xr+f1*rc.sl) + 1
+	r.minX = min(r.minX, fixed(math.Floor(xa), r.cx0, r.w))
+	r.maxX = max(r.maxX, fixed(math.Floor(xb), r.cx0, r.w))
+	r.minY = min(r.minY, int32(y0-oy)<<8)
+	r.maxY = max(r.maxY, int32(y1-oy)<<8)
+	r.strips = append(r.strips, accStrip{rc: *rc, y0: int32(y0 - oy), y1: int32(y1 - oy)})
+}
+
+// rasterStrip accumulates the rows of s inside the band starting at
+// bandRow (relative to the clip) and returns the mask of touched band
+// rows. Each pixel adds its covered area, as segFast composites it: the
+// difference to its left neighbour's goes to its cell.
+func (r *Rasterizer) rasterStrip(s *accStrip, bandRow int) uint64 {
+	j0, j1 := max(int(s.y0), bandRow), min(int(s.y1), bandRow+bandH)
+	rc := &s.rc
+	nx, k1, k2, tr := rc.nx, rc.k1, rc.k2, rc.tr
+	ox, oy := r.clip.Min.X, r.clip.Min.Y
+	stride, nw := r.stride, r.nw
+	var mask uint64
+	for j := j0; j < j1; j++ {
+		i0, i1, fy := rc.span(j+oy, ox, ox+r.w)
+		if i0 >= i1 {
+			continue
+		}
+		d := rc.centre(i0, fy)
+		ri := j - bandRow
+		c0, n := i0-ox, i1-i0
+		acc := r.acc[ri*stride+c0 : ri*stride+c0+n+1]
+		a, b := n, n // fully covered interior [a, b), as segFast.emitRow
+		if rc.runs {
+			ta, tb := (rc.lo-d)*rc.inx, (rc.hi-d)*rc.inx
+			if ta > tb {
+				ta, tb = tb, ta
+			}
+			if ia, ib := max(int(math.Ceil(ta-1e-9)), 0), min(ffloor(tb+1e-9)+1, n); ia < ib {
+				a, b = ia, ib
+			}
+		}
+		var prev int64
+		for i := 0; i < a; i++ {
+			v := int64((tr.area(k1-d) - tr.area(k2-d)) * fullArea)
+			acc[i] += v - prev
+			prev = v
+			d += nx
+		}
+		if b > a {
+			acc[a] += fullArea - prev
+			prev = fullArea
+			d += float64(b-a) * nx
+		}
+		for i := b; i < n; i++ {
+			v := int64((tr.area(k1-d) - tr.area(k2-d)) * fullArea)
+			acc[i] += v - prev
+			prev = v
+			d += nx
+		}
+		acc[n] -= prev
+		if !r.narrow {
+			markRange(r.dirty[ri*nw:(ri+1)*nw], c0, c0+n)
+		}
+		r.rmin[ri] = min(r.rmin[ri], int32(c0))
+		r.rmax[ri] = max(r.rmax[ri], int32(c0+n))
+		mask |= 1 << uint(ri)
+	}
+	return mask
 }
 
 // rasterEdge accumulates the part of e inside the band starting at bandRow
