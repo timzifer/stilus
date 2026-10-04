@@ -46,6 +46,13 @@ c.PopClip()
 var sh stilus.Shape
 sh.SetStroke(path, ctm, style)                    // or SetFill(path, ctm, rule)
 c.FillShape(&sh, paint)                           // same bytes as c.Stroke(path, ctm, style, paint)
+
+// Union: many fills and strokes of one paint accumulated together and
+// composited once, without seams where they abut or overlap.
+var u stilus.Union
+u.Stroke(line1, ctm, style)                       // u.Fill(path, ctm, rule), u.Shape(&sh)
+u.Stroke(line2, ctm, style)
+c.FillUnion(&u, paint)
 ```
 
 Integration points for other renderers: implement `Blitter` (own pixel
@@ -258,6 +265,11 @@ avoided in `simd_amd64.go`:
   their cost is that of a solid stroke; `Stroker.Coverage()` reports the
   factor. Walking a pattern dash by dash is bounded by 32 transitions per
   device pixel of the subpath.
+- Conflation: shapes of one paint drawn one after another leave light seams
+  where they abut or overlap along antialiased edges, 1 − (1 − a)(1 − b)
+  instead of a + b. `Union` and `Canvas.FillUnion` sum their coverage in
+  one accumulator instead and match the supersampled union
+  (`TestFillUnionRef`; [ADR 0006](docs/adr/0006-union.md)).
 - Fuzz targets: `FuzzFill`, `FuzzStroke`.
 
 ## Development

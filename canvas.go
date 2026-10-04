@@ -42,6 +42,7 @@ type Canvas struct {
 	dst    *image.RGBA
 	r      Rasterizer
 	seg    segFast
+	ustrip stripSink // FillUnion's analytic rows
 	s      Stroker
 	solid  SolidBlitter
 	shader ShaderBlitter
