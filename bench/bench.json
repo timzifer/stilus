@@ -4,14 +4,14 @@
     "commit": "8977a452a8f4e0b0483ce40bb4a5e7b01e0635ef",
     "date": "2026-09-30T11:03:53+02:00",
     "results": {
-      "contours-3000": 83113212,
-      "glyphs-30000-uncached": 60560200,
-      "hatch-2000-0.35mm": 70639712,
-      "hatch-2000-hairline": 59034869,
-      "hatch-2000-maskclip": 60617123,
-      "mixed-drawing": 49748329,
-      "short-20000-0.35mm": 39180073,
-      "short-20000-hairline": 32806406
+      "contours-3000": 71609122,
+      "glyphs-30000-uncached": 59728451,
+      "hatch-2000-0.35mm": 66182891,
+      "hatch-2000-hairline": 55699816,
+      "hatch-2000-maskclip": 60231211,
+      "mixed-drawing": 45648685,
+      "short-20000-0.35mm": 33711570,
+      "short-20000-hairline": 28619967
     }
   },
   {
@@ -19,14 +19,14 @@
     "commit": "3a16d92c14fd530f469081509bcceb128c38c6f8",
     "date": "2026-09-30T11:16:13+02:00",
     "results": {
-      "contours-3000": 75210212,
-      "glyphs-30000-uncached": 60833618,
-      "hatch-2000-0.35mm": 68547764,
-      "hatch-2000-hairline": 57763381,
-      "hatch-2000-maskclip": 58441474,
-      "mixed-drawing": 48505850,
-      "short-20000-0.35mm": 39757080,
-      "short-20000-hairline": 34036776
+      "contours-3000": 71394554,
+      "glyphs-30000-uncached": 59771839,
+      "hatch-2000-0.35mm": 67607050,
+      "hatch-2000-hairline": 57645491,
+      "hatch-2000-maskclip": 59206342,
+      "mixed-drawing": 45741479,
+      "short-20000-0.35mm": 33908353,
+      "short-20000-hairline": 29383355
     }
   },
   {
@@ -34,14 +34,14 @@
     "commit": "1e604afcc5074a49cb6f830cff63f74e0622656e",
     "date": "2026-09-30T12:07:59+02:00",
     "results": {
-      "contours-3000": 79959549,
-      "glyphs-30000-uncached": 60037983,
-      "hatch-2000-0.35mm": 67256906,
-      "hatch-2000-hairline": 55819911,
-      "hatch-2000-maskclip": 59288329,
-      "mixed-drawing": 47468570,
-      "short-20000-0.35mm": 37587766,
-      "short-20000-hairline": 34468738
+      "contours-3000": 76019049,
+      "glyphs-30000-uncached": 59385033,
+      "hatch-2000-0.35mm": 66327551,
+      "hatch-2000-hairline": 55792393,
+      "hatch-2000-maskclip": 59097484,
+      "mixed-drawing": 47334075,
+      "short-20000-0.35mm": 37854574,
+      "short-20000-hairline": 32936697
     }
   },
   {
@@ -49,14 +49,14 @@
     "commit": "c5a1fcd9689c9312aee82175ed2d71130cd06529",
     "date": "2026-09-30T13:30:06+02:00",
     "results": {
-      "contours-3000": 78601934,
-      "glyphs-30000-uncached": 62873672,
-      "hatch-2000-0.35mm": 67423927,
-      "hatch-2000-hairline": 57634675,
-      "hatch-2000-maskclip": 59783390,
-      "mixed-drawing": 47697189,
-      "short-20000-0.35mm": 38412214,
-      "short-20000-hairline": 34804333
+      "contours-3000": 76759440,
+      "glyphs-30000-uncached": 62993965,
+      "hatch-2000-0.35mm": 67547978,
+      "hatch-2000-hairline": 57585250,
+      "hatch-2000-maskclip": 59359335,
+      "mixed-drawing": 46859857,
+      "short-20000-0.35mm": 38519391,
+      "short-20000-hairline": 33861937
     }
   },
   {
@@ -64,14 +64,14 @@
     "commit": "e357c11160b78af9187422908c67f94828e0f518",
     "date": "2026-09-30T14:47:16+02:00",
     "results": {
-      "contours-3000": 76953552,
-      "glyphs-30000-uncached": 62647123,
-      "hatch-2000-0.35mm": 63952728,
-      "hatch-2000-hairline": 51577301,
-      "hatch-2000-maskclip": 58155693,
-      "mixed-drawing": 43861465,
-      "short-20000-0.35mm": 38676491,
-      "short-20000-hairline": 33470901
+      "contours-3000": 72670556,
+      "glyphs-30000-uncached": 62226891,
+      "hatch-2000-0.35mm": 63391263,
+      "hatch-2000-hairline": 51472572,
+      "hatch-2000-maskclip": 57802389,
+      "mixed-drawing": 43057164,
+      "short-20000-0.35mm": 37059508,
+      "short-20000-hairline": 31642430
     }
   },
   {
@@ -79,14 +79,14 @@
     "commit": "42130da71f3f5e5c3588d06acb67abc0ddb41def",
     "date": "2026-09-30T21:23:23+02:00",
     "results": {
-      "contours-3000": 76348806,
-      "glyphs-30000-uncached": 62633020,
-      "hatch-2000-0.35mm": 64152266,
-      "hatch-2000-hairline": 52078448,
-      "hatch-2000-maskclip": 58672860,
-      "mixed-drawing": 45065351,
-      "short-20000-0.35mm": 36599868,
-      "short-20000-hairline": 31868974
+      "contours-3000": 72828284,
+      "glyphs-30000-uncached": 61674711,
+      "hatch-2000-0.35mm": 63041925,
+      "hatch-2000-hairline": 51984190,
+      "hatch-2000-maskclip": 57468897,
+      "mixed-drawing": 42789879,
+      "short-20000-0.35mm": 34530985,
+      "short-20000-hairline": 29707970
     }
   },
   {
@@ -94,18 +94,18 @@
     "commit": "92cee4a2606b69d9a71d1707733b695b988405c1",
     "date": "2026-10-01T10:14:41+02:00",
     "results": {
-      "contours-3000": 77933044,
-      "glyphs-30000-uncached": 62865478,
-      "gradients-200": 88609074,
-      "hatch-2000-0.35mm": 63935538,
-      "hatch-2000-hairline": 51620286,
-      "hatch-2000-maskclip": 58028602,
-      "images-60": 58778364,
-      "layers-24": 61439778,
-      "mixed-drawing": 45642597,
-      "short-20000-0.35mm": 37497673,
-      "short-20000-hairline": 32173786,
-      "text-30000-cached": 17628837
+      "contours-3000": 72948019,
+      "glyphs-30000-uncached": 61827848,
+      "gradients-200": 87502436,
+      "hatch-2000-0.35mm": 62820780,
+      "hatch-2000-hairline": 51514717,
+      "hatch-2000-maskclip": 57347309,
+      "images-60": 58692502,
+      "layers-24": 61325727,
+      "mixed-drawing": 42821938,
+      "short-20000-0.35mm": 34757508,
+      "short-20000-hairline": 29904499,
+      "text-30000-cached": 17629792
     }
   },
   {
@@ -113,18 +113,18 @@
     "commit": "1a750a5658ce09eb07c13e588a67c7655feb3dd7",
     "date": "2026-10-01T11:32:26+02:00",
     "results": {
-      "contours-3000": 74032705,
-      "glyphs-30000-uncached": 62673071,
-      "gradients-200": 84858195,
-      "hatch-2000-0.35mm": 63710928,
-      "hatch-2000-hairline": 52272478,
-      "hatch-2000-maskclip": 58987103,
-      "images-60": 57633512,
-      "layers-24": 33714372,
-      "mixed-drawing": 44820473,
-      "short-20000-0.35mm": 35709831,
-      "short-20000-hairline": 30965099,
-      "text-30000-cached": 18732877
+      "contours-3000": 72926487,
+      "glyphs-30000-uncached": 61781823,
+      "gradients-200": 84153250,
+      "hatch-2000-0.35mm": 62720240,
+      "hatch-2000-hairline": 52152623,
+      "hatch-2000-maskclip": 58610003,
+      "images-60": 56974103,
+      "layers-24": 33496451,
+      "mixed-drawing": 43037586,
+      "short-20000-0.35mm": 34875022,
+      "short-20000-hairline": 29770233,
+      "text-30000-cached": 18315576
     }
   },
   {
@@ -132,18 +132,18 @@
     "commit": "01df07d5b7a803a118950589503d01cdf4d28752",
     "date": "2026-10-01T15:01:04+02:00",
     "results": {
-      "contours-3000": 75630566,
-      "glyphs-30000-uncached": 62960516,
-      "gradients-200": 68450220,
-      "hatch-2000-0.35mm": 63567357,
-      "hatch-2000-hairline": 51412814,
-      "hatch-2000-maskclip": 58099123,
-      "images-60": 56631823,
-      "layers-24": 33722302,
-      "mixed-drawing": 43239521,
-      "short-20000-0.35mm": 37064522,
-      "short-20000-hairline": 30811219,
-      "text-30000-cached": 17725279
+      "contours-3000": 72911999,
+      "glyphs-30000-uncached": 62048629,
+      "gradients-200": 68162778,
+      "hatch-2000-0.35mm": 62826152,
+      "hatch-2000-hairline": 51513165,
+      "hatch-2000-maskclip": 57879053,
+      "images-60": 56644793,
+      "layers-24": 33683524,
+      "mixed-drawing": 42760828,
+      "short-20000-0.35mm": 34652396,
+      "short-20000-hairline": 29749594,
+      "text-30000-cached": 18105706
     }
   },
   {
@@ -151,18 +151,18 @@
     "commit": "73c161ef3a6afe1b706f375b5099e69ebc5596f8",
     "date": "2026-10-02T08:05:14+02:00",
     "results": {
-      "contours-3000": 77609823,
-      "glyphs-30000-uncached": 62311742,
-      "gradients-200": 66935166,
-      "hatch-2000-0.35mm": 63357715,
-      "hatch-2000-hairline": 51487624,
-      "hatch-2000-maskclip": 58300412,
-      "images-60": 56162434,
-      "layers-24": 30927171,
-      "mixed-drawing": 43012318,
-      "short-20000-0.35mm": 35443270,
-      "short-20000-hairline": 30286221,
-      "text-30000-cached": 18253895
+      "contours-3000": 72647619,
+      "glyphs-30000-uncached": 61787150,
+      "gradients-200": 66835720,
+      "hatch-2000-0.35mm": 62631073,
+      "hatch-2000-hairline": 51360642,
+      "hatch-2000-maskclip": 58022307,
+      "images-60": 56202511,
+      "layers-24": 30891375,
+      "mixed-drawing": 42692720,
+      "short-20000-0.35mm": 34121050,
+      "short-20000-hairline": 29216773,
+      "text-30000-cached": 17819902
     }
   },
   {
@@ -170,19 +170,19 @@
     "commit": "b8023575fe574b674bad56d18cce3a0651ac5a2f",
     "date": "2026-10-02T09:12:01+02:00",
     "results": {
-      "contours-3000": 76451949,
-      "glyphs-30000-uncached": 63323554,
-      "gradients-200": 66897570,
-      "hatch-2000-0.35mm": 63824272,
-      "hatch-2000-hairline": 52221029,
-      "hatch-2000-maskclip": 59208490,
-      "images-60": 57401007,
-      "layers-24": 30937604,
-      "mixed-drawing": 45380391,
-      "patterns-200": 47496519,
-      "short-20000-0.35mm": 35469571,
-      "short-20000-hairline": 31932236,
-      "text-30000-cached": 18548418
+      "contours-3000": 72931390,
+      "glyphs-30000-uncached": 62048000,
+      "gradients-200": 66944340,
+      "hatch-2000-0.35mm": 62876022,
+      "hatch-2000-hairline": 52147492,
+      "hatch-2000-maskclip": 58736674,
+      "images-60": 57186893,
+      "layers-24": 30902299,
+      "mixed-drawing": 42807066,
+      "patterns-200": 46953039,
+      "short-20000-0.35mm": 34149872,
+      "short-20000-hairline": 29584744,
+      "text-30000-cached": 18064912
     }
   },
   {
@@ -190,19 +190,19 @@
     "commit": "a65fa4bf627c98bd944902d7815d4e73f17cf05b",
     "date": "2026-10-02T09:36:01+02:00",
     "results": {
-      "contours-3000": 75043397,
-      "glyphs-30000-uncached": 62673434,
-      "gradients-200": 66685123,
-      "hatch-2000-0.35mm": 63822352,
-      "hatch-2000-hairline": 51533936,
-      "hatch-2000-maskclip": 57689617,
-      "images-60": 56714581,
-      "layers-24": 26100448,
-      "mixed-drawing": 45706405,
-      "patterns-200": 47882079,
-      "short-20000-0.35mm": 36746161,
-      "short-20000-hairline": 31719380,
-      "text-30000-cached": 17819447
+      "contours-3000": 72753013,
+      "glyphs-30000-uncached": 61721088,
+      "gradients-200": 66233204,
+      "hatch-2000-0.35mm": 62824345,
+      "hatch-2000-hairline": 51588793,
+      "hatch-2000-maskclip": 57442718,
+      "images-60": 56641995,
+      "layers-24": 26062203,
+      "mixed-drawing": 42777941,
+      "patterns-200": 47649313,
+      "short-20000-0.35mm": 33783586,
+      "short-20000-hairline": 29039365,
+      "text-30000-cached": 17577831
     }
   },
   {
@@ -210,19 +210,19 @@
     "commit": "d13f6286b5d8948957b1aef3d0b89a1340059dfd",
     "date": "2026-10-02T09:39:38+02:00",
     "results": {
-      "contours-3000": 75848741,
-      "glyphs-30000-uncached": 63428800,
-      "gradients-200": 66774111,
-      "hatch-2000-0.35mm": 64093008,
-      "hatch-2000-hairline": 51963043,
-      "hatch-2000-maskclip": 57993284,
-      "images-60": 57156199,
-      "layers-24": 26121027,
-      "mixed-drawing": 43262105,
-      "patterns-200": 47911952,
-      "short-20000-0.35mm": 35979586,
-      "short-20000-hairline": 31006417,
-      "text-30000-cached": 17576528
+      "contours-3000": 72747367,
+      "glyphs-30000-uncached": 62393811,
+      "gradients-200": 66158461,
+      "hatch-2000-0.35mm": 62747092,
+      "hatch-2000-hairline": 51472559,
+      "hatch-2000-maskclip": 57332229,
+      "images-60": 56599544,
+      "layers-24": 26023596,
+      "mixed-drawing": 42727957,
+      "patterns-200": 47440849,
+      "short-20000-0.35mm": 34221373,
+      "short-20000-hairline": 29462335,
+      "text-30000-cached": 17639660
     }
   },
   {
@@ -230,19 +230,19 @@
     "commit": "4ed319e03b7461a0548fb260fa1b0f5838ad9fd4",
     "date": "2026-10-02T10:05:21+02:00",
     "results": {
-      "contours-3000": 73636553,
-      "glyphs-30000-uncached": 63552275,
-      "gradients-200": 66566707,
-      "hatch-2000-0.35mm": 63072678,
-      "hatch-2000-hairline": 51718083,
-      "hatch-2000-maskclip": 57316293,
-      "images-60": 56827863,
-      "layers-24": 26249160,
-      "mixed-drawing": 43842535,
-      "patterns-200": 47721728,
-      "short-20000-0.35mm": 35711821,
-      "short-20000-hairline": 31265422,
-      "text-30000-cached": 17916415
+      "contours-3000": 72566275,
+      "glyphs-30000-uncached": 62572749,
+      "gradients-200": 66284929,
+      "hatch-2000-0.35mm": 62778389,
+      "hatch-2000-hairline": 51516656,
+      "hatch-2000-maskclip": 57406525,
+      "images-60": 56601076,
+      "layers-24": 26032148,
+      "mixed-drawing": 42743265,
+      "patterns-200": 47281803,
+      "short-20000-0.35mm": 34123491,
+      "short-20000-hairline": 29442483,
+      "text-30000-cached": 17592693
     }
   },
   {
@@ -250,39 +250,39 @@
     "commit": "66170e3f4bf5a649cc318fa2921a51ffb4156ede",
     "date": "2026-10-02T12:24:12+02:00",
     "results": {
-      "contours-3000": 74927111,
-      "glyphs-30000-uncached": 63584867,
-      "gradients-200": 68147186,
-      "hatch-2000-0.35mm": 63809814,
-      "hatch-2000-hairline": 51717327,
-      "hatch-2000-maskclip": 58393318,
-      "images-60": 57392629,
-      "layers-24": 26381270,
-      "mixed-drawing": 43279337,
-      "patterns-200": 47460844,
-      "short-20000-0.35mm": 35206352,
-      "short-20000-hairline": 30003892,
-      "text-30000-cached": 18735516
+      "contours-3000": 72524400,
+      "glyphs-30000-uncached": 62695160,
+      "gradients-200": 67202593,
+      "hatch-2000-0.35mm": 62786072,
+      "hatch-2000-hairline": 51624298,
+      "hatch-2000-maskclip": 58034603,
+      "images-60": 57027939,
+      "layers-24": 26307768,
+      "mixed-drawing": 42607643,
+      "patterns-200": 46792644,
+      "short-20000-0.35mm": 34131109,
+      "short-20000-hairline": 29569090,
+      "text-30000-cached": 18214854
     }
   },
   {
-    "ref": "main",
-    "commit": "eaa0881d5596c5d89b06ae500e241b4d594056dc",
-    "date": "2026-10-04T07:12:04+02:00",
+    "ref": "v0.8.0",
+    "commit": "d93ccd582f49a0b7d40e5116049d7cd11b0f4f58",
+    "date": "2026-10-06T09:13:29+02:00",
     "results": {
-      "contours-3000": 73880463,
-      "glyphs-30000-uncached": 63805637,
-      "gradients-200": 62453908,
-      "hatch-2000-0.35mm": 63648861,
-      "hatch-2000-hairline": 51642937,
-      "hatch-2000-maskclip": 58322477,
-      "images-60": 44189261,
-      "layers-24": 26298022,
-      "mixed-drawing": 43028033,
-      "patterns-200": 44824748,
-      "short-20000-0.35mm": 36398078,
-      "short-20000-hairline": 31195114,
-      "text-30000-cached": 11338993
+      "contours-3000": 72656701,
+      "glyphs-30000-uncached": 62654796,
+      "gradients-200": 62548072,
+      "hatch-2000-0.35mm": 62838019,
+      "hatch-2000-hairline": 52147779,
+      "hatch-2000-maskclip": 58855981,
+      "images-60": 44121827,
+      "layers-24": 26276591,
+      "mixed-drawing": 42617056,
+      "patterns-200": 44406169,
+      "short-20000-0.35mm": 34361181,
+      "short-20000-hairline": 29637580,
+      "text-30000-cached": 11424806
     }
   }
 ]
