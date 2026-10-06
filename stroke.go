@@ -89,6 +89,9 @@ type Stroker struct {
 
 	truncated bool
 	coverage  float64
+	// halt, when set, stops the stroke at the next segment once true: a
+	// sink that records under a budget sets it when full.
+	halt *bool
 
 	sink LineSink
 	dev  bool          // hairline: geometry in device space, one pixel wide
@@ -263,7 +266,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 	flush := func() {
 		// A single point is a dot only as a closed subpath or when its
 		// segments all led back to it; a lone MoveTo paints nothing.
-		if n := len(s.poly); n > 2 || (n == 2 && (closed || drawn)) {
+		if n := len(s.poly); (n > 2 || (n == 2 && (closed || drawn))) && (s.halt == nil || !*s.halt) {
 			if dashed {
 				s.dash(s.poly, closed)
 			} else {
@@ -282,7 +285,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 	verbs := p.Verbs
 	for vi := 0; vi < len(verbs); vi++ {
 		v := verbs[vi]
-		if int(v) >= len(numPoints) || pi+numPoints[v] > len(pts) {
+		if int(v) >= len(numPoints) || pi+numPoints[v] > len(pts) || (s.halt != nil && *s.halt) {
 			break
 		}
 		switch v {

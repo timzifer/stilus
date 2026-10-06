@@ -198,7 +198,7 @@ func (c *Canvas) FillUnion(u *Union, paint *Paint) {
 	r := &c.r
 	r.Reset()
 	c.ustrip.r = r
-	sep, trunc := false, false
+	sep, trunc, over := false, false, false
 	for i := range u.ops {
 		op := &u.ops[i]
 		if op.sep {
@@ -225,7 +225,9 @@ func (c *Canvas) FillUnion(u *Union, paint *Paint) {
 				if r.culledBox(s.bb) {
 					continue
 				}
-				c.addEdges(s.form(0, c), cs.bounds)
+				f := s.form(0, c)
+				c.addEdges(f, cs.bounds)
+				over = over || f.overflow
 			case strokeMisses(s.bb, s.pad, cs.bounds):
 				continue
 			default:
@@ -233,6 +235,7 @@ func (c *Canvas) FillUnion(u *Union, paint *Paint) {
 				c.addEdges(f, cs.bounds)
 				c.addAccStrips(f, cs.bounds)
 				trunc = trunc || f.truncated
+				over = over || f.overflow
 			}
 		}
 		if op.neg {
@@ -240,6 +243,9 @@ func (c *Canvas) FillUnion(u *Union, paint *Paint) {
 		}
 	}
 	c.checkBudget()
+	if over {
+		c.setErr(ErrEdgeBudget)
+	}
 	if trunc {
 		c.setErr(ErrDashBudget)
 	}

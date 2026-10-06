@@ -435,7 +435,7 @@ func TestGlyphCacheEviction(t *testing.T) {
 		id := int32(rng.IntN(40))
 		all.FillGlyph(cw, 1, id, &g, m, paint)
 		small.FillGlyph(cg, 1, id, &g, m, paint)
-		if small.bytes > small.MaxBytes && len(small.ents) > 1 {
+		if small.bytes > small.MaxBytes {
 			t.Fatalf("glyph %d: %d bytes cached, budget %d", k, small.bytes, small.MaxBytes)
 		}
 		n := 0
