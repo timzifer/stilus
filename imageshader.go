@@ -7,7 +7,10 @@ import "math"
 // texture: so an image goes through the clip stack and gets antialiased
 // edges like any fill, and a band or tile samples only its own pixels.
 
-// Sampler reads a texture at device pixels.
+// Sampler reads a texture at device pixels. It caches what nearest
+// sampling along the device axes shares between pixels (the texel column
+// of every device column, the expanded rows of a magnified texture), so
+// it is not safe for concurrent use; use one per worker.
 type Sampler struct {
 	p *Plane
 	// m maps device space to the pixel space of p (x right, y down,
@@ -28,7 +31,30 @@ type Sampler struct {
 	// opaque says that every pixel of p has alpha 255, and so every
 	// sample.
 	opaque bool
+	// cached says that p is sampled at the nearest pixel along the device
+	// axes with u independent of y (m[1] = m[2] = 0), so that the texel
+	// column of a device column is the same on every row and is read from
+	// nc; rows says that rows also repeat (|m[3]| < 1, magnified), so that
+	// the expanded rows are kept too.
+	cached, rows bool
+	nc           nearestCache
 }
+
+// nearestCache holds, for a nearest axis-aligned sampler, the texel
+// columns of a range of device columns and the colours of one texel row
+// at them. Both are computed by the same expressions as Sample's per-pixel
+// path, so a pixel gets the same texel whether or not it is cached.
+type nearestCache struct {
+	ok   bool    // cols is valid
+	u0   float64 // the u0 of Sample that cols was computed for
+	x0   int     // the device column of cols[0] and row[0]
+	cols []int32
+	j    int // the texel row expanded into row, -1 none
+	row  []uint32
+}
+
+// maxCacheCols bounds the device columns a nearestCache spans.
+const maxCacheCols = 1 << 16
 
 // Setup chooses the mip level of t for drawing it with toDevice, which
 // maps its base pixel space to device space, and reports whether t can be
@@ -79,7 +105,101 @@ func (s *Sampler) setup(t *Texture, toDevice Matrix, smooth, wrap bool) bool {
 	}
 	s.levels = s.p.Kind == PlaneIndex && t.alpha
 	s.opaque = t.isOpaque()
+	s.cached = !wrap && !s.bilinear && inv[1] == 0 && inv[2] == 0 &&
+		!(s.unit && s.p.Kind != PlaneIndex) && s.p.W <= math.MaxInt32
+	s.rows = s.cached && math.Abs(inv[3]) < 1
+	s.nc.ok, s.nc.j = false, -1
 	return true
+}
+
+// origin returns the texture coordinates of the centre of pixel 0 of
+// device row y. It is the one place they are computed, so that cached and
+// sampled pixels round alike.
+func (s *Sampler) origin(y int) (u0, v0 float64) {
+	m := &s.m
+	fy := float64(y) + 0.5
+	return m[2]*fy + m[4] + m[0]*0.5, m[3]*fy + m[5] + m[1]*0.5
+}
+
+// nearestCol returns the texel column of device column x for a nearest
+// sampler whose row starts at u0.
+func (s *Sampler) nearestCol(u0 float64, x int) int {
+	return clampIndex(u0+s.m[0]*float64(x), s.p.W)
+}
+
+// colsFor returns the texel columns of device columns [x, x+n) for a row
+// starting at u0, from the cache, which it extends or rebuilds as needed;
+// or false if they span too many columns to cache.
+func (s *Sampler) colsFor(u0 float64, x, n int) ([]int32, bool) {
+	c := &s.nc
+	same := c.ok && u0 == c.u0
+	if same && x >= c.x0 && x+n <= c.x0+len(c.cols) {
+		return c.cols[x-c.x0:][:n], true
+	}
+	if n > maxCacheCols {
+		return nil, false
+	}
+	lo, hi := x, x+n
+	if same && min(lo, c.x0) >= max(hi, c.x0+len(c.cols))-maxCacheCols {
+		// Spans of one row usually adjoin: keep what is cached.
+		lo, hi = min(lo, c.x0), max(hi, c.x0+len(c.cols))
+	}
+	if cap(c.cols) < hi-lo {
+		c.cols = make([]int32, hi-lo, hi-lo+(hi-lo)/2)
+	}
+	c.cols = c.cols[:hi-lo]
+	for i := range c.cols {
+		c.cols[i] = int32(s.nearestCol(u0, lo+i))
+	}
+	c.ok, c.u0, c.x0, c.j = true, u0, lo, -1
+	return c.cols[x-lo:][:n], true
+}
+
+// nearestRow returns the colours of pixels [x, x+n) of a device row that
+// reads texel row j and starts at u0, from the row cache of a sampler
+// with rows set; or false.
+func (s *Sampler) nearestRow(j int, u0 float64, x, n int) ([]uint32, bool) {
+	if _, ok := s.colsFor(u0, x, n); !ok {
+		return nil, false
+	}
+	c := &s.nc
+	if c.j != j {
+		if cap(c.row) < len(c.cols) {
+			c.row = make([]uint32, len(c.cols), cap(c.cols))
+		}
+		c.row = c.row[:len(c.cols)]
+		s.expand(c.row, j, c.cols)
+		c.j = j
+	}
+	return c.row[x-c.x0:][:n], true
+}
+
+// expand sets dst[i] to texel (cols[i], j).
+func (s *Sampler) expand(dst []uint32, j int, cols []int32) {
+	p := s.p
+	dst = dst[:len(cols)]
+	switch p.Kind {
+	case PlaneRGBA:
+		row := p.Pix32[j*p.Stride:][:p.W]
+		for i, k := range cols {
+			dst[i] = row[k]
+		}
+	case PlaneIndex:
+		row, pal := p.Pix8[j*p.Stride:][:p.W], p.Pal
+		for i, k := range cols {
+			dst[i] = pal[row[k]]
+		}
+	default:
+		row, pal := p.Pix8[j*p.Stride:][:(p.W+7)/8], p.Pal
+		for i, k := range cols {
+			dst[i] = pal[row[k>>3]>>(7-uint(k)&7)&1]
+		}
+	}
+}
+
+// keep returns a zero sampler that holds the buffers of s.
+func (s *Sampler) keep() Sampler {
+	return Sampler{nc: nearestCache{cols: s.nc.cols[:0], row: s.nc.row[:0], j: -1}}
 }
 
 // Release drops the sampler's reference to its texture.
@@ -96,14 +216,25 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 		return
 	}
 	p, m := s.p, &s.m
-	fy := float64(y) + 0.5
-	u0 := m[2]*fy + m[4] + m[0]*0.5
-	v0 := m[3]*fy + m[5] + m[1]*0.5
+	u0, v0 := s.origin(y)
 	du, dv := m[0], m[1]
 	if !s.bilinear {
 		if dv == 0 {
 			// Axis-aligned: the row is the same for the whole span.
 			j := clampIndex(v0, p.H)
+			if s.cached {
+				// Columns found once for all rows, and magnified
+				// rows expanded once for all the device rows on them.
+				if s.rows {
+					if row, ok := s.nearestRow(j, u0, x, len(dst)); ok {
+						copy(dst, row)
+						return
+					}
+				} else if cols, ok := s.colsFor(u0, x, len(dst)); ok {
+					s.expand(dst, j, cols)
+					return
+				}
+			}
 			switch p.Kind {
 			case PlaneRGBA:
 				row := p.Pix32[j*p.Stride:][:p.W]
@@ -112,17 +243,21 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 					return
 				}
 				for i := range dst {
-					dst[i] = row[clampIndex(u0+du*float64(x+i), p.W)]
+					dst[i] = row[s.nearestCol(u0, x+i)]
 				}
 			case PlaneIndex:
 				row, pal := p.Pix8[j*p.Stride:][:p.W], p.Pal
 				for i := range dst {
-					dst[i] = pal[row[clampIndex(u0+du*float64(x+i), p.W)]]
+					dst[i] = pal[row[s.nearestCol(u0, x+i)]]
 				}
 			default:
 				row, pal := p.Pix8[j*p.Stride:][:(p.W+7)/8], p.Pal
+				if s.unit {
+					sampleUnitBits(dst, row, p.W, pal, x+int(m[4]))
+					return
+				}
 				for i := range dst {
-					k := clampIndex(u0+du*float64(x+i), p.W)
+					k := s.nearestCol(u0, x+i)
 					dst[i] = pal[row[k>>3]>>(7-uint(k)&7)&1]
 				}
 			}
@@ -130,7 +265,7 @@ func (s *Sampler) Sample(y, x int, dst []uint32) {
 		}
 		for i := range dst {
 			fx := float64(x + i)
-			dst[i] = p.At(clampIndex(u0+du*fx, p.W), clampIndex(v0+dv*fx, p.H))
+			dst[i] = p.At(s.nearestCol(u0, x+i), clampIndex(v0+dv*fx, p.H))
 		}
 		return
 	}
@@ -223,6 +358,49 @@ func sampleUnit(dst, row []uint32, off int) {
 	}
 }
 
+// sampleUnitBits is sampleUnit for a one-bit row of w pixels in the
+// colours pal[0] and pal[1]: dst[i] is the pixel off+i, clamped to the
+// row. Whole bytes of one colour are filled without reading their bits.
+func sampleUnitBits(dst []uint32, row []uint8, w int, pal *Palette, off int) {
+	bit := func(k int) uint32 { return pal[row[k>>3]>>(7-uint(k)&7)&1] }
+	i := 0
+	for ; i < len(dst) && off+i < 0; i++ {
+		dst[i] = bit(0)
+	}
+	end := len(dst)
+	if off < w {
+		end = min(end, w-off)
+	} else {
+		end = i
+	}
+	for ; i < end && (off+i)&7 != 0; i++ {
+		dst[i] = bit(off + i)
+	}
+	c0, c1 := pal[0], pal[1]
+	for ; i+8 <= end; i += 8 {
+		d := dst[i : i+8 : i+8]
+		switch b := row[(off+i)>>3]; b {
+		case 0:
+			d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7] = c0, c0, c0, c0, c0, c0, c0, c0
+		case 0xff:
+			d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7] = c1, c1, c1, c1, c1, c1, c1, c1
+		default:
+			for k := range d {
+				d[k] = pal[b>>(7-uint(k))&1]
+			}
+		}
+	}
+	for ; i < end; i++ {
+		dst[i] = bit(off + i)
+	}
+	if i < len(dst) {
+		c := bit(w - 1)
+		for ; i < len(dst); i++ {
+			dst[i] = c
+		}
+	}
+}
+
 // clampIndex returns the pixel of [0, n) that coordinate u falls in,
 // clamped to the edges (NaN gives 0).
 func clampIndex(u float64, n int) int {
@@ -279,7 +457,7 @@ type ImageShader struct {
 
 // Reset clears the shader, keeping its buffers, and drops its textures.
 func (s *ImageShader) Reset() {
-	*s = ImageShader{buf: s.buf, stencil: s.stencil}
+	*s = ImageShader{buf: s.buf, stencil: s.stencil, col: s.col.keep(), mask: s.mask.keep()}
 }
 
 // SetColor paints the premultiplied colour c (PackRGBA layout) instead of a
@@ -323,10 +501,19 @@ func (s *ImageShader) SetMaskWrap(t *Texture, toDevice Matrix, smooth bool) bool
 // srcRow implements rowSource: an RGBA texture moved by whole pixels,
 // without a mask, is its own pixels times alpha where the span lies within
 // the texture, or within one period of a repeating one (elsewhere, Sample
-// repeats the edge pixels or the period).
+// repeats the edge pixels or the period). A magnified texture sampled at
+// the nearest pixel along the device axes is its expanded row.
 func (s *ImageShader) srcRow(y, x, n int) ([]uint32, uint32, bool) {
 	c := &s.col
-	if !s.hasCol || s.hasMask || !c.unit || c.p.Kind != PlaneRGBA {
+	if !s.hasCol || s.hasMask {
+		return nil, 0, false
+	}
+	if c.rows {
+		u0, v0 := c.origin(y)
+		row, ok := c.nearestRow(clampIndex(v0, c.p.H), u0, x, n)
+		return row, s.alpha, ok
+	}
+	if !c.unit || c.p.Kind != PlaneRGBA {
 		return nil, 0, false
 	}
 	p, m := c.p, &c.m
