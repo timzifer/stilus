@@ -1,6 +1,7 @@
 package stilus
 
 import (
+	"math"
 	"math/bits"
 	"sync"
 	"sync/atomic"
@@ -183,13 +184,40 @@ func (t *Texture) Levels() int {
 	return min(bits.Len(uint(n)), maxMip)
 }
 
-// MipBytes estimates the memory all levels of t can take.
+// MipBytes returns the sample bytes all levels below the base can take
+// once made: those of Level and, for a texture sampled as repeating, the
+// levels of wrapLevel that are not those of Level. It leaves out the base
+// and the transient scratch of downsampling.
 func (t *Texture) MipBytes() int {
-	px := t.base.W * t.base.H / 3
+	w, h := t.base.W, t.base.H
+	px := 0
+	for k := 1; k <= t.Levels(); k++ {
+		f := 1<<k - 1
+		px = satAdd(px, satMul((w+f)>>k, (h+f)>>k))
+		if w&f != 0 || h&f != 0 {
+			px = satAdd(px, satMul(wrapSize(w, k), wrapSize(h, k)))
+		}
+	}
 	if t.gray || t.alpha {
 		return px
 	}
-	return 4 * px
+	return satMul(4, px)
+}
+
+// satAdd and satMul return a+b and a*b for non-negative a and b, or the
+// largest int if that overflows.
+func satAdd(a, b int) int {
+	if a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
+}
+
+func satMul(a, b int) int {
+	if a != 0 && b > math.MaxInt/a {
+		return math.MaxInt
+	}
+	return a * b
 }
 
 // Level returns mip level k (0 is the base), making it if needed.

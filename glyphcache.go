@@ -48,7 +48,11 @@ type glyphKey struct {
 // GlyphCache is a cache of glyph coverage masks. The zero value is ready
 // to use.
 type GlyphCache struct {
-	// MaxBytes bounds the masks kept; 0 means DefaultGlyphCacheBytes.
+	// MaxBytes bounds the masks kept, counted by their allocations plus
+	// 64 bytes an entry; 0 means DefaultGlyphCacheBytes. A mask larger
+	// than the budget is drawn but not kept. Evicted masks kept for reuse
+	// take at most an eighth more; the rasterizer's scratch, sized by the
+	// largest mask made, and the map are not counted.
 	MaxBytes int
 
 	masks map[glyphKey]int32 // index into ents
@@ -140,7 +144,10 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 		}
 		mask = gc.rasterize(outline, mm, bb)
 		gc.misses++
-		gc.store(key, mask)
+		if !gc.store(key, mask) {
+			// Larger than the whole budget: drawn, not kept.
+			defer gc.recycle(mask)
+		}
 	}
 	if mask == nil {
 		return
@@ -339,26 +346,32 @@ type glyphEnt struct {
 	used bool // drawn since the eviction scan last passed it
 }
 
-// size returns the bytes an entry counts against MaxBytes.
+// size returns the bytes an entry counts against MaxBytes: its mask's
+// whole allocation, which may be a larger evicted mask reused.
 func (e *glyphEnt) size() int {
 	n := 64 // key and map overhead
 	if e.mask != nil {
-		n += len(e.mask.Pix)
+		n += cap(e.mask.Pix)
 	}
 	return n
 }
 
-// store caches mask, evicting entries until it fits the budget.
+// store caches mask, evicting entries until it fits the budget, and
+// reports whether it did: an entry larger than the whole budget is not
+// kept, and evicts nothing.
 //
 // A full cache evicts entries chosen at random, sparing those drawn since
 // they were last considered: frequent glyphs stay, and a set of glyphs
 // drawn over and over that is a little larger than the budget keeps most
 // of its masks, where emptying the cache, or evicting the least recently
 // used mask, would have every glyph rasterized anew on each pass.
-func (gc *GlyphCache) store(key glyphKey, mask *image.Alpha) {
+func (gc *GlyphCache) store(key glyphKey, mask *image.Alpha) bool {
 	e := glyphEnt{key: key, mask: mask}
 	n := e.size()
 	limit := gc.budget()
+	if n > limit {
+		return false
+	}
 	if gc.masks == nil {
 		gc.masks = make(map[glyphKey]int32, 256)
 	}
@@ -368,6 +381,7 @@ func (gc *GlyphCache) store(key glyphKey, mask *image.Alpha) {
 	gc.masks[key] = int32(len(gc.ents))
 	gc.ents = append(gc.ents, e)
 	gc.bytes += n
+	return true
 }
 
 // evict removes one entry: the first not drawn since it was last

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // Shape is a path prepared for drawing under one transform: its device
@@ -30,7 +31,21 @@ import (
 // stroke's analytic rows (by a few levels of coverage) where the clip
 // cuts it. Drawn in bands, a shape stays within 3/255 of the shape drawn
 // whole; Stroke, per band, does not.
+//
+// The geometry a form records is bounded by MaxBytes, whatever the clip
+// of the canvas that makes it: recording stops at the budget, before the
+// records and their bins are allocated, and every FillShape and FillUnion
+// drawing the truncated form reports ErrEdgeBudget. The bound belongs to
+// the shape, so canvases with different clips and edge budgets draw the
+// same truncated form.
 type Shape struct {
+	// MaxBytes bounds the memory of each form a shape makes: its edges,
+	// its strips and their row bins. A fill makes one form, a stroke up
+	// to two. Zero means DefaultShapeBytes. It takes effect at the next
+	// SetFill or SetStroke.
+	MaxBytes int
+
+	limit  int // MaxBytes, as of SetFill or SetStroke
 	kind   shapeKind
 	rule   FillRule
 	bb     Rect    // device box of the path's points
@@ -58,6 +73,19 @@ type Shape struct {
 	forms [2]shapeForm
 }
 
+// DefaultShapeBytes is the default per-form budget of a Shape: enough
+// for DefaultMaxEdges edges.
+const DefaultShapeBytes = DefaultMaxEdges * shapeEdgeCost
+
+// What a record counts against a Shape's budget: its own size and its
+// share of the row bins (at most four ids, its two rows while binning,
+// and a bin start).
+const (
+	shapeBinCost   = 4*4 + 2*4 + 4
+	shapeEdgeCost  = int(unsafe.Sizeof(shapeEdge{})) + shapeBinCost
+	shapeStripCost = int(unsafe.Sizeof(shapeStrip{})) + shapeBinCost
+)
+
 type shapeKind uint8
 
 const (
@@ -75,6 +103,7 @@ type shapeForm struct {
 	strips    []shapeStrip
 	eb, sb    rowBins
 	truncated bool // the stroker exceeded its dash budget
+	overflow  bool // the records exceeded the shape's budget
 }
 
 // shapeEdge is a line as passed to Rasterizer.AddLine, limited to rows
@@ -95,7 +124,7 @@ type shapeStrip struct {
 
 func (f *shapeForm) reset() {
 	f.edges, f.strips = f.edges[:0], f.strips[:0]
-	f.truncated = false
+	f.truncated, f.overflow = false, false
 	f.made.Store(false)
 }
 
@@ -208,11 +237,25 @@ type shapeRec struct {
 	f      *shapeForm
 	lo, hi int32
 	neg    bool
+	left   int  // bytes of the budget left
+	full   bool // a record did not fit: recording has stopped
 }
 
-func (r *shapeRec) start(f *shapeForm) {
+func (r *shapeRec) start(f *shapeForm, budget int) {
 	r.f, r.neg = f, false
+	r.left, r.full = budget, false
 	r.unlimitRows()
+}
+
+// take charges n bytes to the budget, reporting false, and stopping the
+// recording, if they do not fit.
+func (r *shapeRec) take(n int) bool {
+	if r.full || r.left < n {
+		r.full = true
+		return false
+	}
+	r.left -= n
+	return true
 }
 
 // rowOf clamps a finite device y to the rows a shape records.
@@ -228,7 +271,7 @@ func (r *shapeRec) AddLine(x0, y0, x1, y1 float64) {
 	}
 	r0 := max(rowOf(math.Floor(min(y0, y1))), r.lo)
 	r1 := min(rowOf(math.Ceil(max(y0, y1))), r.hi)
-	if r0 >= r1 {
+	if r0 >= r1 || !r.take(shapeEdgeCost) {
 		return
 	}
 	r.f.edges = append(r.f.edges, shapeEdge{x0, y0, x1, y1, r0, r1, r.lo, r.hi})
@@ -239,7 +282,7 @@ func (r *shapeRec) middle(ax, ay, bx, by, dx, dy float64, y0, y1 int) {
 		return
 	}
 	s := shapeStrip{y0: int32(y0), y1: int32(y1), neg: r.neg}
-	if s.rc.set(ax, ay, bx, by, dx, dy) {
+	if s.rc.set(ax, ay, bx, by, dx, dy) && r.take(shapeStripCost) {
 		r.f.strips = append(r.f.strips, s)
 	}
 }
@@ -308,6 +351,9 @@ func (r *shapeRec) addPath(p *Path, m Matrix) {
 		if bad {
 			// AddPath ignores a path with a non-finite point.
 			r.f.edges = r.f.edges[:0]
+			return
+		}
+		if r.full {
 			return
 		}
 		pi += numPoints[v]
@@ -383,6 +429,7 @@ func (s *Shape) SetFill(p *Path, m Matrix, rule FillRule) bool {
 		return true // AddPath culls it
 	}
 	s.kind, s.rule, s.m = shapeFill, rule, m
+	s.setLimit()
 	s.copyPath(p)
 	s.bb = m.transformRect(p.Bounds())
 	if r, ok := p.asRect(); ok && m.axisAligned() {
@@ -392,6 +439,13 @@ func (s *Shape) SetFill(p *Path, m Matrix, rule FillRule) bool {
 	}
 	s.bounds = boxPixels(s.bb, 0)
 	return true
+}
+
+func (s *Shape) setLimit() {
+	s.limit = s.MaxBytes
+	if s.limit <= 0 {
+		s.limit = DefaultShapeBytes
+	}
 }
 
 // pixelRect returns r as integer pixels if its sides lie on pixel borders.
@@ -441,6 +495,7 @@ func (s *Shape) SetStroke(p *Path, m Matrix, st *StrokeStyle) bool {
 		return true // Stroke draws nothing
 	}
 	s.kind, s.m = shapeStroke, m
+	s.setLimit()
 	s.copyPath(p)
 	s.st = *st
 	s.dash = append(s.dash[:0], st.Dash...)
@@ -469,7 +524,8 @@ func (s *Shape) make(f *shapeForm, i int, c *Canvas) {
 		return
 	}
 	rec := &c.rec
-	rec.start(f)
+	rec.start(f, s.limit)
+	c.s.halt = &rec.full
 	switch {
 	case s.kind == shapeFill:
 		rec.addPath(&s.path, s.m)
@@ -480,6 +536,8 @@ func (s *Shape) make(f *shapeForm, i int, c *Canvas) {
 		c.s.stroke(rec, &s.path, s.m, &s.st, s.pr)
 		f.truncated = c.s.Truncated()
 	}
+	c.s.halt = nil
+	f.overflow = rec.full
 	f.bin(&c.ids)
 	rec.f = nil
 	f.made.Store(true)
@@ -512,7 +570,11 @@ func (c *Canvas) FillShape(s *Shape, paint *Paint) {
 			return
 		}
 		if !c.r.culledBox(s.bb) {
-			c.addEdges(s.form(0, c), cs.bounds)
+			f := s.form(0, c)
+			c.addEdges(f, cs.bounds)
+			if f.overflow {
+				c.setErr(ErrEdgeBudget)
+			}
 		}
 		c.checkBudget()
 		c.r.Rasterize(s.rule, c.chain(cs, c.paint(paint)))
@@ -545,6 +607,9 @@ func (c *Canvas) FillShape(s *Shape, paint *Paint) {
 // strokeDone rasterizes the edges of a stroke drawn from form f.
 func (c *Canvas) strokeDone(f *shapeForm, b Blitter) {
 	c.checkBudget()
+	if f.overflow {
+		c.setErr(ErrEdgeBudget)
+	}
 	if f.truncated {
 		c.setErr(ErrDashBudget)
 	}
