@@ -497,12 +497,13 @@ func (rc *rowCtx) span(j, cx0, cx1 int) (i0, i1 int, fy float64) {
 // a pixel gets must not. Loops over a row count the centres' x instead,
 // which is exact (see rowAt).
 func (rc *rowCtx) centre(i0 int, fy float64) float64 {
-	return rc.nx*(float64(i0)+0.5) + rc.ny*(fy+0.5)
+	return float64(rc.nx*(float64(i0)+0.5)) + float64(rc.ny*(fy+0.5))
 }
 
 // rowAt returns the x of the centre of pixel i0 and the part of n·c that
 // row fy adds: the centre of the pixel k further has n·c = nx·(x+k) + g,
-// which is centre(i0+k, fy) to the bit.
+// which is centre(i0+k, fy) to the bit (the products rounded before they
+// are added, on every machine).
 func (rc *rowCtx) rowAt(i0 int, fy float64) (x, g float64) {
 	return float64(i0) + 0.5, rc.ny * (fy + 0.5)
 }
@@ -557,7 +558,7 @@ func (f *segFast) solidRows(y0, y1 int, rc *rowCtx) {
 		row := solid.t.row(j, i0, i1)
 		x, g := rc.rowAt(i0, fy)
 		for i, dst := range row {
-			d := nx*x + g
+			d := float64(nx*x) + g
 			x++
 			a := quant(tr.area(k1-d) - tr.area(k2-d))
 			switch a {
@@ -604,7 +605,7 @@ func (f *segFast) blitRows(y0, y1 int, rc *rowCtx) {
 		cov := f.cov[:i1-i0]
 		x, g := rc.rowAt(i0, fy)
 		for i := range cov {
-			d := nx*x + g
+			d := float64(nx*x) + g
 			x++
 			cov[i] = quant(tr.area(k1-d) - tr.area(k2-d))
 		}
@@ -648,7 +649,7 @@ func (f *segFast) emitRow(j, i0, i1 int, fy float64, rc *rowCtx) {
 	cov := f.cov[:n]
 	x, g := rc.rowAt(i0, fy)
 	for i := 0; i < a; i++ {
-		cov[i] = quant(rc.cov(rc.nx*x + g))
+		cov[i] = quant(rc.cov(float64(rc.nx*x) + g))
 		x++
 	}
 	if a > 0 {
@@ -659,7 +660,7 @@ func (f *segFast) emitRow(j, i0, i1 int, fy float64, rc *rowCtx) {
 	}
 	x, _ = rc.rowAt(i0+b, fy)
 	for i := b; i < n; i++ {
-		cov[i] = quant(rc.cov(rc.nx*x + g))
+		cov[i] = quant(rc.cov(float64(rc.nx*x) + g))
 		x++
 	}
 	if n > b {
@@ -696,7 +697,7 @@ func (f *segFast) borderRow(j, i0, i1 int, fy float64, rc *rowCtx) {
 	inRun, runStart := false, 0
 	xc, g := rc.rowAt(i0, fy)
 	for x := i0; x < i1; x++ {
-		c := rc.cov(rc.nx*xc + g)
+		c := rc.cov(float64(rc.nx*xc) + g)
 		xc++
 		if c >= 1-1e-12 {
 			if !inRun {

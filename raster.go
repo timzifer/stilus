@@ -116,7 +116,7 @@ const (
 // sides of every band and row boundary, so adjacent pieces of an edge
 // always meet exactly.
 func (e *edge) xAt(y int32, bo, oy int64) int32 {
-	v := e.c + float64(int64(y)+oy)*e.dxdy
+	v := e.c + float64(float64(int64(y)+oy)*e.dxdy)
 	if !(v > 0) { // also NaN
 		return e.lo
 	}
@@ -134,8 +134,15 @@ func (e *edge) xAt(y int32, bo, oy int64) int32 {
 }
 
 // xPlain is xAt for a plain edge: its line as it is.
+//
+// The product is rounded before it is added, here and wherever a line is
+// evaluated (the conversion says so): a compiler may fuse a multiplication
+// and an addition into one operation with one rounding, and need not do
+// so alike everywhere. The x of an edge must be the same wherever it is
+// computed — AddLine keeps what it is at the ends, and the cells an edge
+// writes to are in range because it lies between them.
 func (e *edge) xPlain(y int32, bo, oy int64) int32 {
-	return int32(int64(e.c+float64(int64(y)+oy)*e.dxdy) - bo)
+	return int32(int64(e.c+float64(float64(int64(y)+oy)*e.dxdy)) - bo)
 }
 
 // Rasterizer converts paths into coverage spans. Its cost per path is the
@@ -564,8 +571,8 @@ func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 		// same arithmetic in every clip (but one it is too far from to
 		// be counted in fixed point: a conversion out of range gives a
 		// number out of range here, whatever it is).
-		a := int64(e.c+float64(int64(fy0)+r.oy)*dxdy) - r.bo
-		b := int64(e.c+float64(int64(fy1)+r.oy)*dxdy) - r.bo
+		a := int64(e.c+float64(float64(int64(fy0)+r.oy)*dxdy)) - r.bo
+		b := int64(e.c+float64(float64(int64(fy1)+r.oy)*dxdy)) - r.bo
 		if math.Abs(dxdy) <= plainSlope && uint64(a+xFar) < 2*xFar && uint64(b+xFar) < 2*xFar {
 			xa, xb = int32(a), int32(b)
 			e.lo, e.hi, e.plain = xa, xb, true
@@ -917,7 +924,7 @@ func (r *Rasterizer) rasterStrip(s *accStrip, bandRow int) uint64 {
 		x, g := rc.rowAt(i0, fy)
 		var prev int64
 		for i := 0; i < a; i++ {
-			d := nx*x + g
+			d := float64(nx*x) + g
 			x++
 			v := int64((tr.area(k1-d) - tr.area(k2-d)) * fullArea)
 			acc[i] += v - prev
@@ -929,7 +936,7 @@ func (r *Rasterizer) rasterStrip(s *accStrip, bandRow int) uint64 {
 		}
 		x, _ = rc.rowAt(i0+b, fy)
 		for i := b; i < n; i++ {
-			d := nx*x + g
+			d := float64(nx*x) + g
 			x++
 			v := int64((tr.area(k1-d) - tr.area(k2-d)) * fullArea)
 			acc[i] += v - prev
@@ -1191,9 +1198,9 @@ func (l *rowLine) crossing(x, ya, yb int32) int32 {
 		if d < 0 {
 			d = -d
 		}
-		return max(min(l.fy0+int32(float64(d)*l.dydx+0.5), yb), ya)
+		return max(min(l.fy0+int32(float64(float64(d)*l.dydx)+0.5), yb), ya)
 	}
-	t := (float64(x)+l.offx-l.c)*l.dydx - l.base
+	t := float64((float64(x)+l.offx-l.c)*l.dydx) - l.base
 	if !(t > float64(ya)) { // also NaN
 		return ya
 	}
@@ -1221,7 +1228,7 @@ func cellLine(acc []int64, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx flo
 		xa, ya := x0, fy0
 		for c := c0; c < c1; c++ {
 			bx := (c + 1) << 8
-			yb := min(fy0+int32(float64(bx-x0)*dydx+0.5), fy1)
+			yb := min(fy0+int32(float64(float64(bx-x0)*dydx)+0.5), fy1)
 			d := (yb - ya) * dir
 			s := (xa - c<<8) + 256
 			acc[c] += int64(d * (512 - s))
@@ -1238,7 +1245,7 @@ func cellLine(acc []int64, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx flo
 	xa, ya := x0, fy0
 	for c := c0; c > c1; c-- {
 		bx := c << 8
-		yb := min(fy0+int32(float64(x0-bx)*dydx+0.5), fy1)
+		yb := min(fy0+int32(float64(float64(x0-bx)*dydx)+0.5), fy1)
 		d := (yb - ya) * dir
 		s := xa - c<<8
 		acc[c] += int64(d * (512 - s))
