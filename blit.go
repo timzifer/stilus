@@ -157,8 +157,14 @@ func (b *SolidBlitter) SetColor(c color.RGBA) {
 
 func (b *SolidBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
 	d := b.t.row(y, x0, x1)
-	if alpha == 255 && b.opaque {
-		fill32(d, b.c)
+	if b.opaque {
+		if alpha == 255 {
+			fill32(d, b.c)
+		} else if alpha != 0 {
+			// As BlitCoverage blends it: how a row is cut into runs and
+			// coverage depends on the clip, the pixels must not.
+			runLerp(d, b.c, uint32(alpha))
+		}
 		return
 	}
 	s := b.c
@@ -190,6 +196,16 @@ func runOverScalar(d []uint32, s uint32) {
 	sx := expand(s)
 	for i, v := range d {
 		d[i] = compact(sx + div255x(expand(v)*inv))
+	}
+}
+
+// runLerpScalar blends the opaque color c into every pixel with coverage
+// a: the pixels of covOpaqueScalar for a constant coverage.
+func runLerpScalar(d []uint32, c, a uint32) {
+	ca := expand(c) * uint64(a)
+	inv := uint64(255 - a)
+	for i, v := range d {
+		d[i] = compact(div255x(expand(v)*inv + ca))
 	}
 }
 

@@ -491,9 +491,21 @@ func (rc *rowCtx) span(j, cx0, cx1 int) (i0, i1 int, fy float64) {
 	return max(ffloor(rc.xl+fy*rc.sl), cx0), min(ffloor(rc.xr+fy*rc.sl)+1, cx1), fy
 }
 
-// centre returns n·c of the centre of pixel (i0, fy).
+// centre returns n·c of the centre of pixel (i0, fy). Every pixel of a
+// row is measured this way, from its own place, and not by steps of nx
+// from the first one drawn: where a row starts depends on the clip, what
+// a pixel gets must not. Loops over a row count the centres' x instead,
+// which is exact (see rowAt).
 func (rc *rowCtx) centre(i0 int, fy float64) float64 {
-	return rc.nx*(float64(i0)+0.5) + rc.ny*(fy+0.5)
+	return float64(rc.nx*(float64(i0)+0.5)) + float64(rc.ny*(fy+0.5))
+}
+
+// rowAt returns the x of the centre of pixel i0 and the part of n·c that
+// row fy adds: the centre of the pixel k further has n·c = nx·(x+k) + g,
+// which is centre(i0+k, fy) to the bit (the products rounded before they
+// are added, on every machine).
+func (rc *rowCtx) rowAt(i0 int, fy float64) (x, g float64) {
+	return float64(i0) + 0.5, rc.ny * (fy + 0.5)
 }
 
 // borders returns the clip's partially covered border columns (the first
@@ -522,7 +534,7 @@ func (f *segFast) solidRows(y0, y1 int, rc *rowCtx) {
 	// last; they are taken out of the loop.
 	if y0 == clip.Min.Y && f.frac[1] != 255 {
 		if i0, i1, fy := rc.span(y0, cx0, cx1); i0 < i1 {
-			f.row(y0, i0, i1, rc.centre(i0, fy), rc)
+			f.row(y0, i0, i1, fy, rc)
 		}
 		y0++
 	}
@@ -539,15 +551,16 @@ func (f *segFast) solidRows(y0, y1 int, rc *rowCtx) {
 		if i0 >= i1 {
 			continue
 		}
-		d := rc.centre(i0, fy)
 		if i0 == rc.col0 || i1 == rc.col1 || (SIMD() && i1-i0 >= 16) {
-			f.row(j, i0, i1, d, rc)
+			f.row(j, i0, i1, fy, rc)
 			continue
 		}
 		row := solid.t.row(j, i0, i1)
+		x, g := rc.rowAt(i0, fy)
 		for i, dst := range row {
+			d := float64(nx*x) + g
+			x++
 			a := quant(tr.area(k1-d) - tr.area(k2-d))
-			d += nx
 			switch a {
 			case 0:
 			case 255:
@@ -559,7 +572,7 @@ func (f *segFast) solidRows(y0, y1 int, rc *rowCtx) {
 	}
 	if last >= 0 {
 		if i0, i1, fy := rc.span(last, cx0, cx1); i0 < i1 {
-			f.row(last, i0, i1, rc.centre(i0, fy), rc)
+			f.row(last, i0, i1, fy, rc)
 		}
 	}
 }
@@ -576,50 +589,50 @@ func (f *segFast) blitRows(y0, y1 int, rc *rowCtx) {
 		if i0 >= i1 {
 			continue
 		}
-		d0 := rc.centre(i0, fy)
 		if j == f.by0 || j == f.by1 {
-			f.borderRow(j, i0, i1, d0, rc)
+			f.borderRow(j, i0, i1, fy, rc)
 			continue
 		}
 		if (f.bx0 >= i0 && f.bx0 < i1) || (f.bx1 >= i0 && f.bx1 < i1) {
-			f.borderCols(j, i0, i1, d0, rc)
+			f.borderCols(j, i0, i1, fy, rc)
 			continue
 		}
 		if rc.runs {
-			f.emitRow(j, i0, i1, d0, rc)
+			f.emitRow(j, i0, i1, fy, rc)
 			continue
 		}
 		// A thin strip's row: one coverage span (emitRow, inline).
 		cov := f.cov[:i1-i0]
-		d := d0
+		x, g := rc.rowAt(i0, fy)
 		for i := range cov {
+			d := float64(nx*x) + g
+			x++
 			cov[i] = quant(tr.area(k1-d) - tr.area(k2-d))
-			d += nx
 		}
 		emitCoverage(f.b, j, i0, cov)
 	}
 }
 
-// row handles pixels [i0, i1) of row j (d0 = n·centre of pixel i0) that
+// row handles pixels [i0, i1) of row j (fy as rowCtx.span gives it) that
 // solidRows cannot take: rows in a partially covered clip border row or
 // crossing a border column go to the accumulator, the rest through the
 // blitter chain.
-func (f *segFast) row(j, i0, i1 int, d0 float64, rc *rowCtx) {
+func (f *segFast) row(j, i0, i1 int, fy float64, rc *rowCtx) {
 	if j == f.by0 || j == f.by1 {
-		f.borderRow(j, i0, i1, d0, rc)
+		f.borderRow(j, i0, i1, fy, rc)
 		return
 	}
 	if (f.bx0 >= i0 && f.bx0 < i1) || (f.bx1 >= i0 && f.bx1 < i1) {
-		f.borderCols(j, i0, i1, d0, rc)
+		f.borderCols(j, i0, i1, fy, rc)
 		return
 	}
-	f.emitRow(j, i0, i1, d0, rc)
+	f.emitRow(j, i0, i1, fy, rc)
 }
 
-// emitRow blits pixels [i0, i1) of row j (d0 = n·centre of pixel i0)
-// through the blitter chain: edge pixels as coverage, a fully covered
-// interior as a run.
-func (f *segFast) emitRow(j, i0, i1 int, d0 float64, rc *rowCtx) {
+// emitRow blits pixels [i0, i1) of row j through the blitter chain: edge
+// pixels as coverage, a fully covered interior as a run.
+func (f *segFast) emitRow(j, i0, i1 int, fy float64, rc *rowCtx) {
+	d0 := rc.centre(i0, fy)
 	n := i1 - i0
 	a, b := n, n // interior [a, b) relative to i0; none by default
 	if rc.runs {
@@ -634,10 +647,10 @@ func (f *segFast) emitRow(j, i0, i1 int, d0 float64, rc *rowCtx) {
 		}
 	}
 	cov := f.cov[:n]
-	d := d0
+	x, g := rc.rowAt(i0, fy)
 	for i := 0; i < a; i++ {
-		cov[i] = quant(rc.cov(d))
-		d += rc.nx
+		cov[i] = quant(rc.cov(float64(rc.nx*x) + g))
+		x++
 	}
 	if a > 0 {
 		emitCoverage(f.b, j, i0, cov[:a])
@@ -645,10 +658,10 @@ func (f *segFast) emitRow(j, i0, i1 int, d0 float64, rc *rowCtx) {
 	if b > a {
 		f.b.BlitRun(j, i0+a, i0+b, 255)
 	}
-	d = d0 + float64(b)*rc.nx
+	x, _ = rc.rowAt(i0+b, fy)
 	for i := b; i < n; i++ {
-		cov[i] = quant(rc.cov(d))
-		d += rc.nx
+		cov[i] = quant(rc.cov(float64(rc.nx*x) + g))
+		x++
 	}
 	if n > b {
 		emitCoverage(f.b, j, i0+b, cov[b:n])
@@ -658,33 +671,34 @@ func (f *segFast) emitRow(j, i0, i1 int, d0 float64, rc *rowCtx) {
 // borderCols handles a row crossing a partially covered clip border
 // column: the border pixels go to the accumulator, the pieces between them
 // are emitted like any other row.
-func (f *segFast) borderCols(j, i0, i1 int, d0 float64, rc *rowCtx) {
+func (f *segFast) borderCols(j, i0, i1 int, fy float64, rc *rowCtx) {
 	x := i0
 	for _, bx := range [2]int{min(f.bx0, f.bx1), max(f.bx0, f.bx1)} {
 		if bx < x || bx >= i1 {
 			continue
 		}
 		if bx > x {
-			f.emitRow(j, x, bx, d0+float64(x-i0)*rc.nx, rc)
+			f.emitRow(j, x, bx, fy, rc)
 		}
-		f.inject(bx, j, rc.cov(d0+float64(bx-i0)*rc.nx))
+		f.inject(bx, j, rc.cov(rc.centre(bx, fy)))
 		x = bx + 1
 	}
 	if x < i1 {
-		f.emitRow(j, x, i1, d0+float64(x-i0)*rc.nx, rc)
+		f.emitRow(j, x, i1, fy, rc)
 	}
 }
 
 // borderRow sends a row lying in a partially covered clip border row to
 // the accumulator: fully covered stretches as one rectangle each, edge
 // pixels one by one.
-func (f *segFast) borderRow(j, i0, i1 int, d float64, rc *rowCtx) {
+func (f *segFast) borderRow(j, i0, i1 int, fy float64, rc *rowCtx) {
 	// The current fully covered stretch starts at runStart while inRun;
 	// x can be negative, so no coordinate doubles as the marker.
 	inRun, runStart := false, 0
+	xc, g := rc.rowAt(i0, fy)
 	for x := i0; x < i1; x++ {
-		c := rc.cov(d)
-		d += rc.nx
+		c := rc.cov(float64(rc.nx*xc) + g)
+		xc++
 		if c >= 1-1e-12 {
 			if !inRun {
 				inRun, runStart = true, x
