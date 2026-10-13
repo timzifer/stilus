@@ -429,12 +429,27 @@ func beyond(v ...float64) bool {
 	return false
 }
 
+// notNumbers reports whether any of the coordinates is NaN. A curve with
+// such a point draws nothing, and clamping does not bring it within
+// maxCoord: it must not be flattened between clamped points again.
+func notNumbers(v ...float64) bool {
+	for _, c := range v {
+		if c != c {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Rasterizer) addQuad(x0, y0, x1, y1, x2, y2 float64) {
 	if r.boxMisses(x0, x1, x2, x2, y0, y1, y2, y2) {
 		r.AddLine(x0, y0, x2, y2)
 		return
 	}
 	if beyond(x0, y0, x1, y1, x2, y2) {
+		if notNumbers(x0, y0, x1, y1, x2, y2) {
+			return
+		}
 		// The gap between an exact end and its clamped counterpart needs
 		// no edge: it is horizontal or lies above or below the clip.
 		r.addQuad(clampCoord(x0), clampCoord(y0), clampCoord(x1), clampCoord(y1), clampCoord(x2), clampCoord(y2))
@@ -463,6 +478,9 @@ func (r *Rasterizer) addCubic(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
 		return
 	}
 	if beyond(x0, y0, x1, y1, x2, y2, x3, y3) {
+		if notNumbers(x0, y0, x1, y1, x2, y2, x3, y3) {
+			return
+		}
 		// As in addQuad.
 		r.addCubic(clampCoord(x0), clampCoord(y0), clampCoord(x1), clampCoord(y1),
 			clampCoord(x2), clampCoord(y2), clampCoord(x3), clampCoord(y3))

@@ -366,6 +366,9 @@ func (r *shapeRec) addPath(p *Path, m Matrix) {
 // addQuad is Rasterizer.addQuad without the clip.
 func (r *shapeRec) addQuad(x0, y0, x1, y1, x2, y2 float64) {
 	if beyond(x0, y0, x1, y1, x2, y2) {
+		if notNumbers(x0, y0, x1, y1, x2, y2) {
+			return
+		}
 		r.addQuad(clampCoord(x0), clampCoord(y0), clampCoord(x1), clampCoord(y1), clampCoord(x2), clampCoord(y2))
 		return
 	}
@@ -389,6 +392,9 @@ func (r *shapeRec) addQuad(x0, y0, x1, y1, x2, y2 float64) {
 // addCubic is Rasterizer.addCubic without the clip.
 func (r *shapeRec) addCubic(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
 	if beyond(x0, y0, x1, y1, x2, y2, x3, y3) {
+		if notNumbers(x0, y0, x1, y1, x2, y2, x3, y3) {
+			return
+		}
 		r.addCubic(clampCoord(x0), clampCoord(y0), clampCoord(x1), clampCoord(y1),
 			clampCoord(x2), clampCoord(y2), clampCoord(x3), clampCoord(y3))
 		return
