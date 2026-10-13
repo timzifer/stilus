@@ -131,6 +131,13 @@ stroked text painted with a shader.
   reach it. They are made by the first band that draws the shape, so the
   work stays in the workers. Byte-identical to `Fill`/`Stroke`; 2 000
   hatch lines drawn as 64 bands on one core: 87 → 54 ms (one band: 46 ms).
+- **Bands and tiles**: a pixel gets the same value in whatever region it
+  is drawn (`Canvas.Reset`). An edge is the line of its segment in device
+  space, not the segment cut at the clip and rounded there; a run blends
+  as coverage does; an analytic row measures every pixel from its own
+  place. A scene drawn in tiles is byte-identical to the scene drawn at
+  once (`TestCanvasTiles`), so neither the number of workers nor the
+  tiling of a viewer shows in a page.
 - **Rectangle clips** (91 % of real PDF clips) cost nothing per pixel;
   other clips are rasterized once into a mask that is never cleared as a
   whole and keeps fully opaque runs as runs.

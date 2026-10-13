@@ -171,6 +171,31 @@ func runOver(d []uint32, s uint32) {
 	runOverScalar(d[i:], s)
 }
 
+func runLerp(d []uint32, c, a uint32) {
+	if !useSIMD || len(d) < 4 {
+		runLerpScalar(d, c, a)
+		return
+	}
+	if use512 && len(d) >= 8 {
+		runLerp512(d, c, a)
+		return
+	}
+	db := bytesOf(d)
+	k128 := archsimd.BroadcastUint16x16(128)
+	k257 := archsimd.BroadcastUint16x16(257)
+	pk := loadInt8x32(&packIdx)
+	ca := archsimd.BroadcastUint32x4(c).AsUint8x16().ExtendToUint16().Mul(archsimd.BroadcastUint16x16(uint16(a)))
+	inv := archsimd.BroadcastUint16x16(uint16(255 - a))
+	i := 0
+	for ; i+4 <= len(d); i += 4 {
+		px := db[i*4 : i*4+16]
+		d16 := loadUint8x16(px).ExtendToUint16()
+		storeUint8x16(packLanes(div255v(d16.Mul(inv).Add(ca), k128, k257), pk), px)
+	}
+	archsimd.ClearAVXUpperBits()
+	runLerpScalar(d[i:], c, a)
+}
+
 // AVX-512 kernels: eight pixels in 16-bit lanes of one ZMM register.
 
 func div255w(x, k128, k257 archsimd.Uint16x32) archsimd.Uint16x32 {
@@ -246,6 +271,22 @@ func runOver512(d []uint32, s uint32) {
 	}
 	archsimd.ClearAVXUpperBits()
 	runOverScalar(d[i:], s)
+}
+
+func runLerp512(d []uint32, c, a uint32) {
+	db := bytesOf(d)
+	k128 := archsimd.BroadcastUint16x32(128)
+	k257 := archsimd.BroadcastUint16x32(257)
+	ca := archsimd.BroadcastUint32x8(c).AsUint8x32().ExtendToUint16().Mul(archsimd.BroadcastUint16x32(uint16(a)))
+	inv := archsimd.BroadcastUint16x32(uint16(255 - a))
+	i := 0
+	for ; i+8 <= len(d); i += 8 {
+		px := db[i*4 : i*4+32]
+		d16 := loadUint8x32(px).ExtendToUint16()
+		storeUint8x32(truncToUint8(div255w(d16.Mul(inv).Add(ca), k128, k257)), px)
+	}
+	archsimd.ClearAVXUpperBits()
+	runLerpScalar(d[i:], c, a)
 }
 
 // spanOver and spanOverCov composite varying source pixels: a shader's

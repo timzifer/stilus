@@ -254,8 +254,11 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 	}
 
 	// A chord changes the outline only outside the clip, but it shortens
-	// the path a dash pattern walks.
-	s.cullCurves = s.cull && !dashed
+	// the path a dash pattern walks. On the analytic path it also moves
+	// the rows that are filled analytically, which the vertices of the
+	// polyline set, those outside the clip too: the pixels inside would
+	// depend on the clip.
+	s.cullCurves = s.cull && !dashed && s.seg == nil
 	pts := p.Points
 	pi := 0
 	closed := false

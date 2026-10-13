@@ -7,6 +7,7 @@ package stilus
 func SIMD() bool { return false }
 
 func runOver(d []uint32, s uint32)                           { runOverScalar(d, s) }
+func runLerp(d []uint32, c, a uint32)                        { runLerpScalar(d, c, a) }
 func covOpaque(d []uint32, cov []uint8, c uint32, cx uint64) { covOpaqueScalar(d, cov, c, cx) }
 func covOver(d []uint32, cov []uint8, cx uint64)             { covOverScalar(d, cov, cx) }
 func spanOver(d, s []uint32, k, a uint32)                    { spanOverScalar(d, s, k, a) }

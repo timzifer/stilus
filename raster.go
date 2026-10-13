@@ -52,23 +52,90 @@ const (
 	maxSegs    = 1024
 )
 
-// edge is a line segment in fixed point 24.8, x relative to the clip's left
-// edge and y relative to its top edge, oriented so that y0 < y1.
+// edge is a line segment of a path, oriented downward, as the line it
+// lies on and the rows of it that are drawn. Coordinates are fixed point
+// 24.8, x relative to the clip's left edge and y to its top edge.
+//
+// The line is that of the segment as the path gives it, not of its end
+// points rounded to fixed point, and it is measured in device space, not
+// from the clip: where it passes a row depends neither on where the
+// segment ends nor on the clip. A segment the clip cuts, or one a caller
+// shortened outside the clip, is thereby drawn like the whole one, and a
+// path covers a pixel the same whether it is drawn at once, in bands or
+// in tiles.
 type edge struct {
-	x0, y0, x1, y1 int32
-	dir            int32   // +1 downward in the original path, -1 upward
-	dxdy           float64 // (x1-x0)/(y1-y0)
-	dydx           float64 // |(y1-y0)/(x1-x0)|; 0 until first needed (vertical edges never need it)
+	// In device fixed point, x at y is c + y·dxdy - xAbs, rounded down
+	// (see xAt): c holds the half that rounds and the bias that makes
+	// the conversion a floor.
+	c    float64
+	dxdy float64
+	dydx float64 // 1/dxdy; 0 until first needed (vertical edges never need it)
+	// For a plain edge, lo and hi are its x at y0 and at y1. For any
+	// other they bound x: the x of the segment's ends, xSlack beyond
+	// them. They are equal for an edge whose x is the same in all its
+	// rows, a vertical one above all: it is drawn as that.
+	lo, hi int32
+	y0, y1 int32 // the rows drawn, y0 < y1
+	dir    int32 // +1 downward in the original path, -1 upward
+	// wide says that the edge leaves the clip at its left or right within
+	// its rows: its x is then not a cell of the accumulator everywhere
+	// (see rasterWide). The x of any other edge is in [0, w·256].
+	wide bool
+	// plain says that the edge is not nearly level (see plainSlope): its
+	// line stays near the segment in all its rows, whatever the clip, and
+	// its x needs no bounding (xPlain).
+	plain bool
 }
 
-// xAt returns the edge's x at fixed-point y (y0 <= y <= y1). The same formula
-// is used on both sides of every band and row boundary, so adjacent pieces of
-// an edge always meet exactly.
-func (e *edge) xAt(y int32) int32 {
-	if y >= e.y1 {
-		return e.x1
+const (
+	// xFar bounds the x of an edge, in fixed point from the clip's left.
+	xFar = 1 << 29
+	// xAbs bounds the device x of a line, in fixed point, where it is
+	// rounded; what lies beyond is at an end of its edge.
+	xAbs = 1 << 36
+	// xSlack is how far beyond the ends of its segment the x of an edge
+	// may lie, in fixed point. The rows of an edge start and end on
+	// 1/256 pixel, up to half of that beside the segment's ends, where
+	// the line of a nearly level segment is far beyond them.
+	xSlack = 256
+	// plainSlope is the dx/dy up to which an edge is plain: half a step
+	// of y moves its line by half of xSlack at most, so it never leaves
+	// the slack. Only edges within a quarter of a degree of level are
+	// steeper in x.
+	plainSlope = 256
+	// nearCoord bounds the device coordinates up to which a line is
+	// measured from the segment's own point, alike for every clip.
+	nearCoord = 1 << 26
+)
+
+// xAt returns the x at fixed-point y (y0 <= y <= y1) of an edge that is
+// not plain, both relative to the clip, whose top is oy in device fixed
+// point and whose left, with xAbs added, bo. The line is evaluated in
+// device space and the result moved to the clip in integers: it is the
+// same pixel position for every clip. The same formula is used on both
+// sides of every band and row boundary, so adjacent pieces of an edge
+// always meet exactly.
+func (e *edge) xAt(y int32, bo, oy int64) int32 {
+	v := e.c + float64(int64(y)+oy)*e.dxdy
+	if !(v > 0) { // also NaN
+		return e.lo
 	}
-	return e.x0 + int32(float64(y-e.y0)*e.dxdy+0.5+float64(1<<20)) - (1 << 20)
+	if v > 2*xAbs {
+		return e.hi
+	}
+	x := int64(v) - bo
+	if x < int64(e.lo) {
+		return e.lo
+	}
+	if x > int64(e.hi) {
+		return e.hi
+	}
+	return int32(x)
+}
+
+// xPlain is xAt for a plain edge: its line as it is.
+func (e *edge) xPlain(y int32, bo, oy int64) int32 {
+	return int32(int64(e.c+float64(int64(y)+oy)*e.dxdy) - bo)
 }
 
 // Rasterizer converts paths into coverage spans. Its cost per path is the
@@ -86,6 +153,9 @@ type Rasterizer struct {
 	cy0    float64
 	cx1    float64
 	cy1    float64
+	ox, oy int64 // the clip's corner in device fixed point
+	bo, yo int64 // ox and oy with xAbs added
+	near   bool  // the clip lies within nearCoord: its rows convert without checks
 	w, h   int
 	stride int // cells per accumulation row: w + 2
 	nw     int // dirty words per row
@@ -140,6 +210,9 @@ func (r *Rasterizer) SetClip(clip image.Rectangle) {
 	r.cx0, r.cy0 = float64(clip.Min.X), float64(clip.Min.Y)
 	r.cx1, r.cy1 = float64(clip.Max.X), float64(clip.Max.Y)
 	r.ry0, r.ry1 = r.cy0, r.cy1
+	r.ox, r.oy = int64(clip.Min.X)<<8, int64(clip.Min.Y)<<8
+	r.bo, r.yo = r.ox+xAbs, r.oy+xAbs
+	r.near = clip.Min.X > -nearCoord && clip.Min.Y > -nearCoord && clip.Max.X < nearCoord && clip.Max.Y < nearCoord
 	r.w, r.h = clip.Dx(), clip.Dy()
 	r.stride = r.w + 2
 	r.nw = (r.stride>>blkShift)/64 + 1
@@ -437,10 +510,10 @@ func segCount(v float64) int {
 	return int(math.Ceil(math.Sqrt(v)))
 }
 
-// AddLine adds a device-space line segment. Segments are clipped
-// analytically: parts above or below the clip are dropped, parts right of it
-// are dropped, and parts left of it become vertical edges on the clip's left
-// border, which preserves the winding of everything inside.
+// AddLine adds a device-space line segment. Of a segment the rows inside
+// the clip are kept; where it lies right of the clip it adds nothing, and
+// where it lies left of it it counts as an edge on the clip's left border,
+// which preserves the winding of everything inside.
 func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 	r.begin()
 	if y0 == y1 || !(math.Abs(x0) <= math.MaxFloat64 && math.Abs(x1) <= math.MaxFloat64 &&
@@ -456,41 +529,79 @@ func (r *Rasterizer) AddLine(x0, y0, x1, y1 float64) {
 	if y1 <= cy0 || y0 >= cy1 {
 		return
 	}
-	if y0 < cy0 {
-		x0 = lineAt(cy0, y0, y1, x0, x1)
-		y0 = cy0
-	}
-	if y1 > cy1 {
-		x1 = lineAt(cy1, y0, y1, x0, x1)
-		y1 = cy1
-	}
-	cx0, cx1 := r.cx0, r.cx1
-	if x0 >= cx1 && x1 >= cx1 {
+	fy0 := r.fixedY(max(y0, cy0))
+	fy1 := r.fixedY(min(y1, cy1))
+	if fy0 >= fy1 {
 		return
 	}
-	if x0 <= cx0 && x1 <= cx0 {
-		r.emit(cx0, y0, cx0, y1, dir)
+	right := int32(r.w << 8)
+	var e edge
+	var xa, xb int32
+	if x0 == x1 {
+		x := r.fixedFar(x0)
+		if x >= right {
+			return
+		}
+		x = max(x, 0)
+		e = edge{lo: x, hi: x, y0: fy0, y1: fy1, dir: dir}
+		xa, xb = x, x
+	} else {
+		dy := y1 - y0
+		dxdy := (x1 - x0) / dy
+		if dy > math.MaxFloat64 {
+			dxdy = (x1*0.5 - x0*0.5) / (y1*0.5 - y0*0.5)
+		}
+		// The line is measured from the segment's upper end: from the
+		// same point for every clip. A segment that comes from very far
+		// away is measured from where it enters the clip, which keeps
+		// the numbers small.
+		ax, ay := x0, y0
+		if y0 < cy0 && !(math.Abs(x0) < nearCoord && math.Abs(y0) < nearCoord && math.Abs(x1) < nearCoord && math.Abs(y1) < nearCoord) {
+			ax, ay = lineAt(cy0, y0, y1, x0, x1), cy0
+		}
+		e = edge{c: (ax-ay*dxdy)*256 + (0.5 + xAbs), dxdy: dxdy, y0: fy0, y1: fy1, dir: dir}
+		// Plain by its slope, not by this clip: an edge is drawn by the
+		// same arithmetic in every clip (but one it is too far from to
+		// be counted in fixed point: a conversion out of range gives a
+		// number out of range here, whatever it is).
+		a := int64(e.c+float64(int64(fy0)+r.oy)*dxdy) - r.bo
+		b := int64(e.c+float64(int64(fy1)+r.oy)*dxdy) - r.bo
+		if math.Abs(dxdy) <= plainSlope && uint64(a+xFar) < 2*xFar && uint64(b+xFar) < 2*xFar {
+			xa, xb = int32(a), int32(b)
+			e.lo, e.hi, e.plain = xa, xb, true
+		} else {
+			e.lo = r.fixedFar(min(x0, x1)) - xSlack
+			e.hi = r.fixedFar(max(x0, x1)) + xSlack
+			xa, xb = e.xAt(fy0, r.bo, r.oy), e.xAt(fy1, r.bo, r.oy)
+		}
+		switch {
+		case xa >= right && xb >= right:
+			return
+		case xa <= 0 && xb <= 0:
+			e = edge{y0: fy0, y1: fy1, dir: dir}
+			xa, xb = 0, 0
+		case xa < 0 || xb < 0 || xa > right || xb > right:
+			e.wide = true
+			xa, xb = min(max(xa, 0), right), min(max(xb, 0), right)
+		}
+	}
+	limit := r.MaxEdges
+	if limit == 0 {
+		limit = DefaultMaxEdges
+	}
+	if len(r.edges) >= limit {
+		r.truncated = true
 		return
 	}
-	if x0 < cx0 || x1 < cx0 {
-		yc := lineAt(cx0, x0, x1, y0, y1)
-		if x0 < cx0 {
-			r.emit(cx0, y0, cx0, yc, dir)
-			x0, y0 = cx0, yc
-		} else {
-			r.emit(cx0, yc, cx0, y1, dir)
-			x1, y1 = cx0, yc
-		}
+	r.edges = append(r.edges, e)
+	r.minX = min(r.minX, xa, xb)
+	r.maxX = max(r.maxX, xa, xb)
+	if fy0 < r.minY {
+		r.minY = fy0
 	}
-	if x0 > cx1 || x1 > cx1 {
-		yc := lineAt(cx1, x0, x1, y0, y1)
-		if x0 > cx1 {
-			x0, y0 = cx1, yc
-		} else {
-			x1, y1 = cx1, yc
-		}
+	if fy1 > r.maxY {
+		r.maxY = fy1
 	}
-	r.emit(x0, y0, x1, y1, dir)
 }
 
 // lineAt returns the value at v of the line through (a, fa) and (b, fb),
@@ -518,37 +629,35 @@ func fixed(v, o float64, n int) int32 {
 	return int32(f)
 }
 
-// emit stores a clipped segment (y0 <= y1) as a fixed-point edge.
-func (r *Rasterizer) emit(x0, y0, x1, y1 float64, dir int32) {
-	fy0 := fixed(y0, r.cy0, r.h)
-	fy1 := fixed(y1, r.cy0, r.h)
-	if fy0 >= fy1 {
-		return
+// fixedY converts a device y inside the clip's rows into 24.8 fixed point
+// relative to the clip's top. It is rounded in device space and moved to
+// the clip then: the same y lands on the same place for every clip.
+func (r *Rasterizer) fixedY(v float64) int32 {
+	if r.near {
+		// v is a y of the clip: the sum is positive, and its floor lies
+		// in the clip's rows.
+		return int32(int64(v*256+(0.5+xAbs)) - r.yo)
 	}
-	limit := r.MaxEdges
-	if limit == 0 {
-		limit = DefaultMaxEdges
+	var y int64
+	if f := v*256 + (0.5 + xAbs); f > 0 && f < 2*xAbs {
+		y = int64(f) - xAbs - r.oy
+	} else if g := math.Floor(v*256+0.5) - float64(r.oy); g > 0 { // not NaN
+		y = int64(min(g, float64(r.h<<8)))
 	}
-	if len(r.edges) >= limit {
-		r.truncated = true
-		return
+	return int32(min(max(y, 0), int64(r.h<<8)))
+}
+
+// fixedFar converts a device x into 24.8 fixed point relative to the
+// clip's left, clamped to ±xFar: an x that may lie outside the clip.
+func (r *Rasterizer) fixedFar(v float64) int32 {
+	f := v*256 + (0.5 + xAbs)
+	if !(f > 0) { // also NaN
+		return -xFar
 	}
-	fx0 := fixed(x0, r.cx0, r.w)
-	fx1 := fixed(x1, r.cx0, r.w)
-	// dydx is computed when a row of the edge first crosses a cell border
-	// (rasterEdge); most edges of small shapes never do.
-	r.edges = append(r.edges, edge{
-		x0: fx0, y0: fy0, x1: fx1, y1: fy1, dir: dir,
-		dxdy: float64(fx1-fx0) / float64(fy1-fy0),
-	})
-	r.minX = min(r.minX, fx0, fx1)
-	r.maxX = max(r.maxX, fx0, fx1)
-	if fy0 < r.minY {
-		r.minY = fy0
+	if f > 2*xAbs {
+		return xFar
 	}
-	if fy1 > r.maxY {
-		r.maxY = fy1
-	}
+	return int32(min(max(int64(f)-r.bo, -xFar), xFar))
 }
 
 // reverse reverses the orientation of the edges added since there were n.
@@ -804,23 +913,27 @@ func (r *Rasterizer) rasterStrip(s *accStrip, bandRow int) uint64 {
 				a, b = ia, ib
 			}
 		}
+		// Each pixel from its own place (see rowCtx.centre).
+		x, g := rc.rowAt(i0, fy)
 		var prev int64
 		for i := 0; i < a; i++ {
+			d := nx*x + g
+			x++
 			v := int64((tr.area(k1-d) - tr.area(k2-d)) * fullArea)
 			acc[i] += v - prev
 			prev = v
-			d += nx
 		}
 		if b > a {
 			acc[a] += fullArea - prev
 			prev = fullArea
-			d += float64(b-a) * nx
 		}
+		x, _ = rc.rowAt(i0+b, fy)
 		for i := b; i < n; i++ {
+			d := nx*x + g
+			x++
 			v := int64((tr.area(k1-d) - tr.area(k2-d)) * fullArea)
 			acc[i] += v - prev
 			prev = v
-			d += nx
 		}
 		acc[n] -= prev
 		if !r.narrow {
@@ -847,6 +960,9 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 	if yA >= yB {
 		return 0
 	}
+	if e.wide {
+		return r.rasterWide(e, bandRow, yA, yB)
+	}
 	stride := r.stride
 	acc := r.acc
 	dirty := r.dirty
@@ -854,10 +970,10 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 	dir := e.dir
 	var mask uint64
 
-	if e.x0 == e.x1 {
-		// Vertical edge: one cell per row.
-		c := int(e.x0 >> 8)
-		fx2 := (e.x0 & 255) * 2
+	if e.lo == e.hi {
+		// Vertical edge, or one that stays at its x: one cell per row.
+		c := int(e.lo >> 8)
+		fx2 := (e.lo & 255) * 2
 		wA := dir * (512 - fx2)
 		wB := dir * fx2
 		bw, bb := c>>(blkShift+6), uint64(1)<<(uint(c>>blkShift)&63)
@@ -889,7 +1005,19 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 		return mask
 	}
 
-	x := e.xAt(yA)
+	bo, oy := r.bo, r.oy
+	// The ends of a plain edge are known; most edges of small shapes
+	// have no rows between them.
+	plain := e.plain
+	var x int32
+	switch {
+	case !plain:
+		x = e.xAt(yA, bo, oy)
+	case yA == e.y0:
+		x = e.lo
+	default:
+		x = e.xPlain(yA, bo, oy)
+	}
 	// Indices below are in range by construction: x ∈ [0, w·256], so a cell
 	// and its right neighbour are < stride, and ri < bandH. The single-cell
 	// case, by far the most common, is written without bounds checks.
@@ -900,7 +1028,15 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 		if rowEnd > yB {
 			rowEnd = yB
 		}
-		xn := e.xAt(rowEnd)
+		var xn int32
+		switch {
+		case !plain:
+			xn = e.xAt(rowEnd, bo, oy)
+		case rowEnd == e.y1:
+			xn = e.hi
+		default:
+			xn = e.xPlain(rowEnd, bo, oy)
+		}
 		ri := int(y>>8) - bandRow
 		c0, c1 := x>>8, xn>>8
 		var lo, hi int32
@@ -925,9 +1061,14 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 				dr = dirty[ri*nw : (ri+1)*nw]
 			}
 			if e.dydx == 0 {
-				e.dydx = math.Abs(float64(e.y1-e.y0) / float64(e.x1-e.x0))
+				e.dydx = 1 / e.dxdy
 			}
-			lo, hi = cellLine(acc[ri*stride:(ri+1)*stride], dr, x, y-base, xn, rowEnd-base, dir, e.dydx)
+			if plain {
+				lo, hi = cellLine(acc[ri*stride:(ri+1)*stride], dr, x, y-base, xn, rowEnd-base, dir, math.Abs(e.dydx))
+			} else {
+				l := e.at(x, y-base, base, r.ox, oy)
+				lo, hi = cellLineFlat(acc[ri*stride:(ri+1)*stride], dr, x, y-base, xn, rowEnd-base, dir, &l)
+			}
 		}
 		if lo < r.rmin[ri] {
 			r.rmin[ri] = lo
@@ -941,9 +1082,130 @@ func (r *Rasterizer) rasterEdge(e *edge, bandRow int) uint64 {
 	return mask
 }
 
-// cellLine accumulates a segment that lies within one pixel row, from
-// (x0, fy0) to (x1, fy1), with 0 <= fy0 < fy1 <= 256, and returns the range
-// of touched cells [lo, hi].
+// rasterWide is rasterEdge for an edge that leaves the clip at its left
+// or right, rows yA to yB of it. It accumulates what the edge would in a
+// clip wide enough for it and keeps the part of the clip's cells: what
+// lies left of the clip is summed into its first cell, as an edge on the
+// border would be, and what lies right of it is dropped. The cells
+// inside are thereby the same for every clip.
+func (r *Rasterizer) rasterWide(e *edge, bandRow int, yA, yB int32) uint64 {
+	stride := r.stride
+	nw := r.nw
+	dir := e.dir
+	last := int32(r.w) // the cell after the clip's; it and its neighbour exist
+	var mask uint64
+	if e.dydx == 0 && e.dxdy != 0 {
+		e.dydx = 1 / e.dxdy
+	}
+	// A plain edge has the x of a plain one here too: in a clip that
+	// holds it, it is drawn by rasterEdge.
+	bo, oy := r.bo, r.oy
+	plain := e.plain
+	at := func(y int32) int32 {
+		if plain {
+			return e.xPlain(y, bo, oy)
+		}
+		return e.xAt(y, bo, oy)
+	}
+	x := at(yA)
+	for y := yA; y < yB; {
+		rowEnd := (y | 255) + 1
+		if rowEnd > yB {
+			rowEnd = yB
+		}
+		xn := at(rowEnd)
+		ri := int(y>>8) - bandRow
+		c0, c1 := x>>8, xn>>8
+		if c0 > last && c1 > last {
+			x, y = xn, rowEnd
+			continue
+		}
+		acc := r.acc[ri*stride : (ri+1)*stride]
+		var dr []uint64
+		if !r.narrow {
+			dr = r.dirty[ri*nw : (ri+1)*nw]
+		}
+		var lo, hi int32
+		switch {
+		case c0 < 0 && c1 < 0:
+			acc[0] += int64((rowEnd - y) * dir * 512)
+			markRange(dr, 0, 1)
+			lo, hi = 0, 1
+		case c0 == c1:
+			d := (rowEnd - y) * dir
+			sx := (x & 255) + (xn & 255)
+			acc[c0] += int64(d * (512 - sx))
+			acc[c0+1] += int64(d * sx)
+			markRange(dr, int(c0), int(c0)+1)
+			lo, hi = c0, c0+1
+		default:
+			base := y &^ 255
+			l := e.at(x, y-base, base, r.ox, oy)
+			lo, hi = cellLineWide(acc, dr, x, y-base, xn, rowEnd-base, dir, &l, last)
+		}
+		if lo < r.rmin[ri] {
+			r.rmin[ri] = lo
+		}
+		if hi > r.rmax[ri] {
+			r.rmax[ri] = hi
+		}
+		mask |= 1 << uint(ri)
+		x, y = xn, rowEnd
+	}
+	return mask
+}
+
+// rowLine says where an edge crosses the borders of the cells in a pixel
+// row.
+//
+// A plain edge crosses them as the straight piece from where it enters
+// the row, (x0, fy0), with its slope: both are the same for every clip.
+//
+// Any other edge may enter the row at an end of its bounds, off its line,
+// and that end depends on where a caller cut the segment outside the
+// clip. Its crossings are taken from the line itself: in the row that
+// starts at fixed-point y base of a clip whose corner is (ox, oy), it
+// reaches the clip's x at (x + ox - c)·dydx - base, counted from the
+// row's top, with c and base in device fixed point.
+type rowLine struct {
+	plain         bool
+	x0, fy0       int32
+	dydx          float64 // plain: |dy/dx|
+	c, base, offx float64 // base less the half that rounds
+}
+
+// at returns the crossings of e, whose dydx is set, in the row at base,
+// which it enters at (x0, fy0).
+func (e *edge) at(x0, fy0, base int32, ox, oy int64) rowLine {
+	if e.plain {
+		return rowLine{plain: true, x0: x0, fy0: fy0, dydx: math.Abs(e.dydx)}
+	}
+	return rowLine{dydx: e.dydx, c: e.c - (0.5 + xAbs), base: float64(int64(base)+oy) - 0.5, offx: float64(ox)}
+}
+
+// crossing returns the y in the row at which the edge reaches x, no less
+// than ya and no more than yb.
+func (l *rowLine) crossing(x, ya, yb int32) int32 {
+	if l.plain {
+		d := x - l.x0
+		if d < 0 {
+			d = -d
+		}
+		return max(min(l.fy0+int32(float64(d)*l.dydx+0.5), yb), ya)
+	}
+	t := (float64(x)+l.offx-l.c)*l.dydx - l.base
+	if !(t > float64(ya)) { // also NaN
+		return ya
+	}
+	if t >= float64(yb) {
+		return yb
+	}
+	return int32(t)
+}
+
+// cellLine accumulates a segment of a plain edge that lies within one
+// pixel row, from (x0, fy0) to (x1, fy1), with 0 <= fy0 < fy1 <= 256, and
+// returns the range of touched cells [lo, hi]. dydx is |dy/dx|.
 func cellLine(acc []int64, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx float64) (lo, hi int32) {
 	c0 := x0 >> 8
 	c1 := x1 >> 8
@@ -989,6 +1251,125 @@ func cellLine(acc []int64, dirty []uint64, x0, fy0, x1, fy1, dir int32, dydx flo
 	acc[c1+1] += int64(d * s)
 	markRange(dirty, int(c1), int(c0)+1)
 	return c1, c0 + 1
+}
+
+// cellLineFlat is cellLine for an edge that is not plain: it crosses the
+// borders of the cells where l says.
+func cellLineFlat(acc []int64, dirty []uint64, x0, fy0, x1, fy1, dir int32, l *rowLine) (lo, hi int32) {
+	c0 := x0 >> 8
+	c1 := x1 >> 8
+	if c0 == c1 {
+		d := (fy1 - fy0) * dir
+		s := (x0 & 255) + (x1 & 255)
+		acc[c0] += int64(d * (512 - s))
+		acc[c0+1] += int64(d * s)
+		markRange(dirty, int(c0), int(c0)+1)
+		return c0, c0 + 1
+	}
+	if x1 > x0 {
+		xa, ya := x0, fy0
+		for c := c0; c < c1; c++ {
+			bx := (c + 1) << 8
+			yb := l.crossing(bx, ya, fy1)
+			d := (yb - ya) * dir
+			s := (xa - c<<8) + 256
+			acc[c] += int64(d * (512 - s))
+			acc[c+1] += int64(d * s)
+			xa, ya = bx, yb
+		}
+		d := (fy1 - ya) * dir
+		s := x1 - c1<<8
+		acc[c1] += int64(d * (512 - s))
+		acc[c1+1] += int64(d * s)
+		markRange(dirty, int(c0), int(c1)+1)
+		return c0, c1 + 1
+	}
+	xa, ya := x0, fy0
+	for c := c0; c > c1; c-- {
+		bx := c << 8
+		yb := l.crossing(bx, ya, fy1)
+		d := (yb - ya) * dir
+		s := xa - c<<8
+		acc[c] += int64(d * (512 - s))
+		acc[c+1] += int64(d * s)
+		xa, ya = bx, yb
+	}
+	d := (fy1 - ya) * dir
+	s := 256 + (x1 - c1<<8)
+	acc[c1] += int64(d * (512 - s))
+	acc[c1+1] += int64(d * s)
+	markRange(dirty, int(c1), int(c0)+1)
+	return c1, c0 + 1
+}
+
+// cellLineWide is cellLine for a segment whose cells are not all the
+// clip's, of which last is the one after them: cells left of the first
+// are summed into it, cells after last are left out. Each cell gets what
+// cellLine or cellLineFlat gives it.
+func cellLineWide(acc []int64, dirty []uint64, x0, fy0, x1, fy1, dir int32, l *rowLine, last int32) (lo, hi int32) {
+	c0 := x0 >> 8
+	c1 := x1 >> 8
+	put := func(c int32, a, b int32) {
+		switch {
+		case c < 0:
+			acc[0] += int64(a) + int64(b)
+		case c <= last:
+			acc[c] += int64(a)
+			acc[c+1] += int64(b)
+		}
+	}
+	if x1 > x0 {
+		xa, ya := x0, fy0
+		c := c0
+		if c < -1 {
+			// The cells before the one left of the clip, at once.
+			c = -1
+			xa, ya = -256, l.crossing(-256, fy0, fy1)
+			acc[0] += int64((ya - fy0) * dir * 512)
+		}
+		for ; c < c1 && c <= last; c++ {
+			bx := (c + 1) << 8
+			yb := l.crossing(bx, ya, fy1)
+			d := (yb - ya) * dir
+			s := (xa - c<<8) + 256
+			put(c, d*(512-s), d*s)
+			xa, ya = bx, yb
+		}
+		if c == c1 {
+			d := (fy1 - ya) * dir
+			s := x1 - c1<<8
+			put(c1, d*(512-s), d*s)
+		}
+		lo, hi = max(c0, 0), min(c1, last)+1
+		markRange(dirty, int(lo), int(hi))
+		return lo, hi
+	}
+	xa, ya := x0, fy0
+	c := c0
+	if c > last {
+		// The cells after last add nothing.
+		c = last
+		xa, ya = (last+1)<<8, l.crossing((last+1)<<8, fy0, fy1)
+	}
+	for ; c > c1 && c >= 0; c-- {
+		bx := c << 8
+		yb := l.crossing(bx, ya, fy1)
+		d := (yb - ya) * dir
+		s := xa - c<<8
+		put(c, d*(512-s), d*s)
+		xa, ya = bx, yb
+	}
+	if c == c1 {
+		d := (fy1 - ya) * dir
+		s := 256 + (x1 - c1<<8)
+		put(c1, d*(512-s), d*s)
+	} else {
+		// The rest lies left of the clip.
+		acc[0] += int64((fy1 - ya) * dir * 512)
+	}
+	lo, hi = max(c1, 0), min(c0, last)+1
+	markRange(dirty, int(lo), int(hi))
+	return lo, hi
 }
 
 // markRange sets the dirty bits covering cells [lo, hi].

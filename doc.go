@@ -54,6 +54,11 @@
 // concurrent use; use one per worker and give each worker its own band or
 // tile of the destination (Canvas.Reset takes a region).
 //
+// A pixel gets the same value in whatever region it is drawn: a scene
+// drawn in bands or tiles is, byte for byte, the scene drawn at once. How
+// many workers draw a page, and how a viewer cuts it into tiles, does not
+// show in it.
+//
 // # Robustness
 //
 // NaN and infinite coordinates are rejected, huge ones are clipped
