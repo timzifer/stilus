@@ -191,7 +191,7 @@ func signedArea(p *Path) float64 {
 func (c *Canvas) FillUnion(u *Union, paint *Paint) {
 	defer c.guard()
 	cs := c.top()
-	if cs.bounds.Empty() || len(u.ops) == 0 || (paint.Shader == nil && paint.Color.A == 0) {
+	if cs.bounds.Empty() || len(u.ops) == 0 || c.invisible(paint) {
 		return
 	}
 	c.setClip(cs.bounds)

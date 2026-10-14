@@ -82,6 +82,34 @@ type LayerShader struct {
 	// and Alone the same group drawn onto a transparent image, of which
 	// only the alpha is read. Both cover Src's rectangle.
 	Initial, Alone *image.RGBA
+
+	// Subtractive says that Src and Dst hold amounts of ink, 0 for none,
+	// as the images of a CMYK canvas do (Canvas.ResetPair): blend modes
+	// other than Normal blend the complements, 1 − c, and the result is
+	// complemented again (PDF 2.0, 11.3.5). In premultiplied colours the
+	// complement of c is α − c. The non-separable modes then blend
+	// (C, M, Y) as they blend (R, G, B).
+	Subtractive bool
+	// Black says that the layer is the black image of such a pair,
+	// (K, K, K, A): the non-separable modes take K from the backdrop
+	// (Hue, Saturation, Color) or from the source (Luminosity), as PDF
+	// 2.0, 11.3.5.3 has it; the separable ones blend K on its own.
+	Black bool
+}
+
+// blendBackdrop is the blend function B(cb, cs) = cb, what the black
+// image of a CMYK pair blends with in Hue, Saturation and Color.
+const blendBackdrop BlendMode = 255
+
+// mode returns the blend mode the shader blends with.
+func (c *LayerShader) mode() BlendMode {
+	if c.Black && c.Blend >= BlendHue {
+		if c.Blend == BlendLuminosity {
+			return BlendNormal
+		}
+		return blendBackdrop
+	}
+	return c.Blend
 }
 
 // ShadeSpan implements Shader.
@@ -97,7 +125,8 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		c.removeBackdrop(y, x, sp, out)
 		sp = unsafe.Slice((*byte)(unsafe.Pointer(&out[0])), 4*n)
 	}
-	if c.Blend == BlendNormal && c.Mask == nil {
+	bm := c.mode()
+	if bm == BlendNormal && c.Mask == nil {
 		// The layer's pixels are in the layout of out already.
 		src := unsafe.Slice((*uint32)(unsafe.Pointer(&sp[0])), n)
 		if c.Alpha == 255 {
@@ -111,7 +140,7 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		return
 	}
 	var dp []byte
-	if c.Blend != BlendNormal {
+	if bm != BlendNormal {
 		dp = c.Dst.Pix[c.Dst.PixOffset(x, y):][: 4*n : 4*n]
 	}
 	var mrow []uint8
@@ -123,7 +152,7 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		}
 		mx = mr.Min.X
 	}
-	if c.Blend == BlendNormal {
+	if bm == BlendNormal {
 		// Masked Normal: scale the packed pixels by the combined alpha.
 		src := unsafe.Slice((*uint32)(unsafe.Pointer(&sp[0])), n)
 		k0 := uint32(c.Alpha)
@@ -140,15 +169,15 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		}
 		return
 	}
-	if c.Blend == BlendMultiply || c.Blend == BlendScreen {
+	if (bm == BlendMultiply || bm == BlendScreen) && !c.Subtractive {
 		c.shadeSeparable(x, out, sp, dp, mrow, mx)
 		return
 	}
 	// The separable modes look opaque pixels up in a table, taken once
 	// per span.
 	var tab *[1 << 16]uint8
-	if c.Blend < BlendHue {
-		tab = blendTable(c.Blend)
+	if bm < BlendHue {
+		tab = blendTable(bm)
 	}
 	for i := range out {
 		p := sp[4*i : 4*i+4 : 4*i+4]
@@ -170,10 +199,24 @@ func (c *LayerShader) ShadeSpan(y, x int, out []uint32) {
 		}
 		if dp != nil && dp[4*i+3] != 0 {
 			q := dp[4*i : 4*i+4 : 4*i+4]
-			if a == 255 && q[3] == 255 && tab != nil {
-				r, g, b = tab[int(q[0])<<8|int(r)], tab[int(q[1])<<8|int(g)], tab[int(q[2])<<8|int(b)]
+			qr, qg, qb, qa := q[0], q[1], q[2], q[3]
+			switch {
+			case bm == blendBackdrop:
+				// s·(1−αb) + αs·αb·cb = s·(1−αb) + αs·d.
+				r, g, b = backdropInt(r, a, qr, qa), backdropInt(g, a, qg, qa), backdropInt(b, a, qb, qa)
+				out[i] = pack(r, g, b, a)
+				continue
+			case c.Subtractive:
+				r, g, b = sub8(a, r), sub8(a, g), sub8(a, b)
+				qr, qg, qb = sub8(qa, qr), sub8(qa, qg), sub8(qa, qb)
+			}
+			if a == 255 && qa == 255 && tab != nil {
+				r, g, b = tab[int(qr)<<8|int(r)], tab[int(qg)<<8|int(g)], tab[int(qb)<<8|int(b)]
 			} else {
-				r, g, b = blendPixel(c.Blend, r, g, b, a, q[0], q[1], q[2], q[3])
+				r, g, b = blendPixel(bm, r, g, b, a, qr, qg, qb, qa)
+			}
+			if c.Subtractive {
+				r, g, b = sub8(a, r), sub8(a, g), sub8(a, b)
 			}
 		}
 		out[i] = pack(r, g, b, a)
@@ -285,6 +328,22 @@ func (c *LayerShader) shadeSeparable(x int, out []uint32, sp, dp, mrow []uint8, 
 		}
 		out[i] = pack(sr, sg, sb, sa)
 	}
+}
+
+// sub8 returns a − c, the complement of a premultiplied colour channel c
+// of alpha a, 0 where c exceeds a.
+func sub8(a, c uint8) uint8 {
+	if c > a {
+		return 0
+	}
+	return a - c
+}
+
+// backdropInt is one channel of s·(1−αb) + αs·d, the colour a source s
+// of alpha sa takes the backdrop d of alpha da with.
+func backdropInt(s, sa, d, da uint8) uint8 {
+	v := div255(uint32(s)*(255-uint32(da)) + uint32(sa)*uint32(d))
+	return uint8(min(v, uint32(sa)))
 }
 
 // overAlpha is negative if a colour channel exceeds alpha. It does not

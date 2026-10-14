@@ -13,7 +13,25 @@ import (
 type Paint struct {
 	Color  color.RGBA // premultiplied
 	Shader Shader
+	// Second is what is painted into the second image of a canvas that
+	// draws into two (Canvas.ResetPair); nil paints Color or Shader there
+	// too.
+	Second *Paint
 }
+
+// second returns what p paints into a second image.
+func (p *Paint) second() *Paint {
+	if p.Second != nil {
+		return p.Second
+	}
+	return p
+}
+
+// invisible reports that p paints nothing.
+func (p *Paint) invisible() bool { return p.Shader == nil && p.Color.A == 0 }
+
+// opaque reports that p is an opaque solid colour.
+func (p *Paint) opaque() bool { return p.Shader == nil && p.Color.A == 255 }
 
 // Errors reported by Canvas.Err.
 var (
@@ -35,6 +53,13 @@ const DefaultMaxClipDepth = 256
 // band is rendered by passing an image whose Rect is that tile, or by
 // restricting Reset's region. A Canvas is not safe for concurrent use; use
 // one per worker. After warm-up a Canvas does not allocate.
+//
+// A canvas reset with ResetPair draws into two images at once: what it
+// paints is rasterized once and composited into both, each with its paint
+// (Paint.Second). Two images of premultiplied ink amounts, (C, M, Y, A) and
+// (K, K, K, A), make a CMYK destination with alpha: compositing treats
+// the channels alike, and gradients and images interpolate each on its
+// own, so that a shader per image paints a CMYK one.
 type Canvas struct {
 	// MaxClipDepth overrides DefaultMaxClipDepth when non-zero.
 	MaxClipDepth int
@@ -46,6 +71,14 @@ type Canvas struct {
 	s      Stroker
 	solid  SolidBlitter
 	shader ShaderBlitter
+
+	// second is the second image of ResetPair, nil for none, and what
+	// paints into it.
+	second  *image.RGBA
+	solid2  SolidBlitter
+	shader2 ShaderBlitter
+	pair    pairBlitter
+
 	mread  maskBlitter
 	frac   fracBlitter
 	scale  scaleBlitter
@@ -73,12 +106,45 @@ func NewCanvas(dst *image.RGBA) *Canvas {
 // Reset retargets the canvas to dst, limited to region (in dst's
 // coordinates), clears the clip stack and the error.
 func (c *Canvas) Reset(dst *image.RGBA, region image.Rectangle) {
-	c.dst = dst
+	c.dst, c.second = dst, nil
 	c.solid.t.set(dst)
 	c.shader.t.set(dst)
 	c.stack = append(c.stack[:0], newClipState(region.Intersect(dst.Bounds())))
 	c.overflow = 0
 	c.err = nil
+}
+
+// ResetPair is Reset with a second image that everything is drawn into
+// as well, with the second paint of each Paint; region is limited to both
+// images.
+func (c *Canvas) ResetPair(dst, second *image.RGBA, region image.Rectangle) {
+	c.Reset(dst, region.Intersect(second.Bounds()))
+	c.second = second
+	c.solid2.t.set(second)
+	c.shader2.t.set(second)
+}
+
+// pairBlitter blits the same coverage through two blitters.
+type pairBlitter struct{ a, b Blitter }
+
+func (p *pairBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
+	p.a.BlitRun(y, x0, x1, alpha)
+	p.b.BlitRun(y, x0, x1, alpha)
+}
+
+func (p *pairBlitter) BlitCoverage(y, x int, cov []uint8) {
+	p.a.BlitCoverage(y, x, cov)
+	p.b.BlitCoverage(y, x, cov)
+}
+
+// invisible reports that p paints nothing into the canvas's images.
+func (c *Canvas) invisible(p *Paint) bool {
+	return p.invisible() && (c.second == nil || p.second().invisible())
+}
+
+// opaque reports that p is an opaque solid colour in every image.
+func (c *Canvas) opaque(p *Paint) bool {
+	return p.opaque() && (c.second == nil || p.second().opaque())
 }
 
 // Err returns the first error since Reset, if any. Drawing continues after
@@ -136,12 +202,22 @@ func (c *Canvas) chain(st *clipState, b Blitter) Blitter {
 }
 
 func (c *Canvas) paint(p *Paint) Blitter {
-	if p.Shader != nil {
-		c.shader.setShader(p.Shader)
-		return &c.shader
+	b := paintWith(p, &c.solid, &c.shader)
+	if c.second == nil {
+		return b
 	}
-	c.solid.SetColor(p.Color)
-	return &c.solid
+	c.pair.a, c.pair.b = b, paintWith(p.second(), &c.solid2, &c.shader2)
+	return &c.pair
+}
+
+// paintWith returns the blitter of p, of the two given.
+func paintWith(p *Paint, solid *SolidBlitter, shader *ShaderBlitter) Blitter {
+	if p.Shader != nil {
+		shader.setShader(p.Shader)
+		return shader
+	}
+	solid.SetColor(p.Color)
+	return solid
 }
 
 func (c *Canvas) setClip(b image.Rectangle) {
@@ -160,7 +236,7 @@ func (c *Canvas) checkBudget() {
 func (c *Canvas) Fill(p *Path, m Matrix, rule FillRule, paint *Paint) {
 	defer c.guard()
 	st := c.top()
-	if st.bounds.Empty() || (paint.Shader == nil && paint.Color.A == 0) {
+	if st.bounds.Empty() || c.invisible(paint) {
 		return
 	}
 	c.setClip(st.bounds)
@@ -201,7 +277,7 @@ func (c *Canvas) fillRect(p *Path, m Matrix, st *clipState, paint *Paint) bool {
 func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	defer c.guard()
 	cs := c.top()
-	if cs.bounds.Empty() || (paint.Shader == nil && paint.Color.A == 0) || len(p.Points) == 0 {
+	if cs.bounds.Empty() || c.invisible(paint) || len(p.Points) == 0 {
 		return
 	}
 	pr := prepStroke(m, st)
@@ -266,7 +342,7 @@ func (c *Canvas) strokePaint(cs *clipState, paint *Paint, pr strokePrep) (Blitte
 // sets c.seg up for it: b is the stroke's blitter chain, overlap and single
 // are mayOverlap and singleSegment of its path and style.
 func (c *Canvas) strokeFast(cs *clipState, b Blitter, paint *Paint, pr strokePrep, overlap, single bool) bool {
-	opaque := paint.Shader == nil && paint.Color.A == 255
+	opaque := c.opaque(paint)
 	if pr.dense || !(opaque && (cs.mask == nil || !overlap) || single) {
 		return false
 	}
@@ -282,7 +358,7 @@ func (c *Canvas) strokeFast(cs *clipState, b Blitter, paint *Paint, pr strokePre
 	c.seg.r, c.seg.b = &c.r, b
 	c.seg.solid = nil
 	c.seg.frac = cs.frac
-	if cs.mask == nil && opaque {
+	if cs.mask == nil && opaque && c.second == nil {
 		c.seg.solid = &c.solid
 	}
 	c.seg.setBorder(cs, overlap)
