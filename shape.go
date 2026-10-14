@@ -558,7 +558,7 @@ func (s *Shape) Bounds() image.Rectangle { return s.bounds }
 func (c *Canvas) FillShape(s *Shape, paint *Paint) {
 	defer c.guard()
 	cs := c.top()
-	if cs.bounds.Empty() || (paint.Shader == nil && paint.Color.A == 0) {
+	if cs.bounds.Empty() || c.invisible(paint) {
 		return
 	}
 	switch s.kind {

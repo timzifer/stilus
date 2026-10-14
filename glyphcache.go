@@ -75,6 +75,10 @@ type GlyphCache struct {
 	shader  MaskShader
 	rect    Path
 	paint   Paint
+	// shader2 and paint2 paint the second image of a canvas that draws
+	// into two.
+	shader2 MaskShader
+	paint2  Paint
 }
 
 // FillGlyph fills outline (nonzero), transformed by m into device space,
@@ -95,7 +99,7 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 		return
 	}
 	ox, oy := math.Floor(m[4]), math.Floor(m[5])
-	if paint.Shader != nil || !(sigmaMax(m) <= MaxCachedEm) ||
+	if paint.Shader != nil || c.second != nil && paint.second().Shader != nil || !(sigmaMax(m) <= MaxCachedEm) ||
 		!(math.Abs(ox) < 1<<24 && math.Abs(oy) < 1<<24) {
 		c.Fill(outline, m, NonZero, paint)
 		return
@@ -164,24 +168,33 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 	const lim = 1 << 23
 	if st := c.top(); st.mask == nil && st.clearOfFrac(r.Intersect(clip)) && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
 		r.Min.X >= -lim && r.Min.Y >= -lim && r.Max.X <= lim && r.Max.Y <= lim {
-		c.blitMask(mask, origin, PackRGBA(paint.Color), r.Intersect(clip))
+		c.blitMask(&c.solid.t, mask, origin, PackRGBA(paint.Color), r.Intersect(clip))
+		if c.second != nil {
+			c.blitMask(&c.solid2.t, mask, origin, PackRGBA(paint.second().Color), r.Intersect(clip))
+		}
 		return
 	}
 	gc.shader = MaskShader{Mask: mask, X: origin.X, Y: origin.Y, Color: PackRGBA(paint.Color)}
 	gc.paint.Shader = &gc.shader
+	gc.paint.Second = nil
+	if c.second != nil {
+		gc.shader2 = MaskShader{Mask: mask, X: origin.X, Y: origin.Y, Color: PackRGBA(paint.second().Color)}
+		gc.paint2.Shader = &gc.shader2
+		gc.paint.Second = &gc.paint2
+	}
 	gc.rect.Reset()
 	gc.rect.Rect(float32(r.Min.X), float32(r.Min.Y), float32(r.Dx()), float32(r.Dy()))
 	c.Fill(&gc.rect, Identity, NonZero, &gc.paint)
-	gc.shader.Mask = nil
+	gc.shader.Mask, gc.shader2.Mask = nil, nil
 }
 
 // blitMask composites the premultiplied colour col through mask, moved by
-// origin, over the pixels of r, which must lie within the clip bounds and
-// the moved mask. It rounds as the MaskShader path does (the colour scaled
+// origin, over the pixels of r of t, which must lie within the clip bounds
+// and the moved mask. It rounds as the MaskShader path does (the colour scaled
 // by coverage, then composited over), so an opaque colour does not go
 // through covOpaque, whose single blend can round differently: only full
 // coverage, where both agree, stores the colour.
-func (c *Canvas) blitMask(mask *image.Alpha, origin image.Point, col uint32, r image.Rectangle) {
+func (c *Canvas) blitMask(t *target, mask *image.Alpha, origin image.Point, col uint32, r image.Rectangle) {
 	defer c.guard()
 	if col == 0 {
 		return
@@ -191,7 +204,7 @@ func (c *Canvas) blitMask(mask *image.Alpha, origin image.Point, col uint32, r i
 	for y := r.Min.Y; y < r.Max.Y; y++ {
 		o := mask.PixOffset(r.Min.X-origin.X, y-origin.Y)
 		cov := mask.Pix[o : o+r.Dx()]
-		d := c.solid.t.row(y, r.Min.X, r.Max.X)
+		d := t.row(y, r.Min.X, r.Max.X)
 		if !opaque {
 			covOver(d, cov, cx)
 			continue

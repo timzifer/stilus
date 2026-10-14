@@ -102,6 +102,15 @@ gc.FillGlyph(c, fontID, glyphID, outline, m, paint)
 `Canvas.ClipStroke` clips to the area a stroke paints, for strokes and
 stroked text painted with a shader.
 
+**CMYK.** `Canvas.ResetPair(cmy, k, region)` draws into two images at
+once, rasterizing once: (C, M, Y, A) and (K, K, K, A), premultiplied ink
+amounts, make a CMYK destination with alpha; `Paint.Second` is what goes
+into the second. Compositing treats channels alike and shaders interpolate
+each on its own, so one shader per image paints CMYK. `LayerShader` blends
+such layers with `Subtractive` (on the complements of the inks, PDF 2.0,
+11.3.5) and, for the K image, `Black` (K of the backdrop for Hue,
+Saturation and Color, of the source for Luminosity).
+
 ## How it is fast
 
 - **Band accumulation**: edges are accumulated as area/cover into a
