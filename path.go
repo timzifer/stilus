@@ -24,7 +24,9 @@ type Path struct {
 	Points []Point
 }
 
-// Reset empties the path, keeping its storage.
+// Reset empties the path, keeping its storage. A Union holds the paths it
+// is given by reference: a path added to one must not be reset until the
+// union is drawn.
 func (p *Path) Reset() {
 	p.Verbs = p.Verbs[:0]
 	p.Points = p.Points[:0]
