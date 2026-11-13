@@ -83,6 +83,21 @@ t.Flush()                                         // then sample t.Texture(), or
 t.ReadRGBA(img)
 ```
 
+In a window, a `Presenter` draws targets into a render pass the toolkit
+owns (with gogpu: `Context.SurfaceView()` and `Context.CommandEncoder()`),
+sampling the target's texture without a copy
+([ADR 0010](docs/adr/0010-gpu-present.md)):
+
+```go
+dev, _ := gpu.NewDevice(app.DeviceProvider().Device())
+p, _ := dev.NewPresenter(app.DeviceProvider().SurfaceFormat(), nil)
+// per frame: begin a pass over the surface view, then
+p.Begin(w, h)
+p.Draw(pass, t, &gpu.DrawOptions{X: x, Y: y})     // flushes t; W, H, Src, Fade optional
+pass.End()
+p.Commit()                                        // before the encoder is submitted
+```
+
 Within 1/255 of the CPU canvas on the scenes (Metal and wgpu's software
 adapter). The thin strips of strokes go to the GPU whole, two parallel
 lines, a row range and the clip's mask if any
@@ -91,7 +106,7 @@ fragment shader computes their coverage: hatching 24 → 8 ms, short strokes
 and contours about half, readback included (Apple M4, A3 at 150 dpi).
 Linear and radial gradients are computed on the GPU too
 ([ADR 0009](docs/adr/0009-gradient-forms.md)): 25 → 6 ms, and images
-and pattern tiles are sampled there ([ADR 0010](docs/adr/0010-image-forms.md)):
+and pattern tiles are sampled there ([ADR 0011](docs/adr/0011-image-forms.md)):
 images 20 → 6 ms, patterns 25 → 8 ms. Meshes and cached glyph masks are
 still shaded on the CPU. `LayerShader` blend modes that read
 the backdrop (`Dst`) and CMYK pairs need the CPU canvas.

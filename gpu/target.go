@@ -50,7 +50,8 @@ type Target struct {
 	spanBuf *wgpu.Buffer
 	dataBuf *wgpu.Buffer
 	bind    *wgpu.BindGroup
-	read    *wgpu.Buffer // readback, made on first ReadRGBA
+	read    *wgpu.Buffer    // readback, made on first ReadRGBA
+	pbind   *wgpu.BindGroup // texture group of presenters, made on first Draw
 
 	spans   []byte // recorded spans, spanBytes each
 	data    []byte // coverage bytes and colours
@@ -356,6 +357,10 @@ func (t *Target) Close() {
 	if t.bind != nil {
 		t.bind.Release()
 		t.bind = nil
+	}
+	if t.pbind != nil {
+		t.pbind.Release()
+		t.pbind = nil
 	}
 	if t.view != nil {
 		t.view.Release()

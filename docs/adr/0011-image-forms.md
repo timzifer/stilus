@@ -1,4 +1,4 @@
-# 0010. Images and patterns sampled by a compositor
+# 0011. Images and patterns sampled by a compositor
 
 - Status: accepted (implemented: `SamplerForm`, `Sampler.Form`,
   `ImageForm`, `ImageShader.Form`, gpu image records)
