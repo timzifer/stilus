@@ -3,6 +3,7 @@ package stilus
 import (
 	"image"
 	"math"
+	"sync/atomic"
 )
 
 // div255 returns round(v/255) for v <= 255*255.
@@ -21,9 +22,17 @@ type clipMask struct {
 	pix      []uint8
 	lo, hi   []int32
 	olo, ohi []int32
+	gen      uint64   // maskGen when last reset
+	view     ClipMask // what a StripBlitter sees
 }
 
+// maskGen numbers the masks made by all canvases, so that a mask's
+// generation names its content.
+var maskGen atomic.Uint64
+
 func (m *clipMask) reset(b image.Rectangle) {
+	m.gen = maskGen.Add(1)
+	m.view.m = m
 	m.bounds = b
 	m.stride = b.Dx()
 	if n := b.Dx() * b.Dy(); cap(m.pix) < n {
@@ -43,6 +52,62 @@ func (m *clipMask) reset(b image.Rectangle) {
 	clear(m.hi)
 	clear(m.olo)
 	clear(m.ohi)
+}
+
+// ClipMask is a canvas's clip mask as a StripBlitter sees it (Strip.Mask):
+// coverage bytes over Bounds that multiply what is drawn, 0 outside. It
+// belongs to the canvas, which reuses it for later clips; Gen tells its
+// contents apart, so that a compositor can keep a copy of it.
+type ClipMask struct{ m *clipMask }
+
+// Bounds returns the pixels the mask can be non-zero on.
+func (m *ClipMask) Bounds() image.Rectangle { return m.m.bounds }
+
+// Gen returns the mask's generation: two masks with the same Gen have the
+// same content, at any time and across canvases.
+func (m *ClipMask) Gen() uint64 { return m.m.gen }
+
+// Row returns row y of the mask over Bounds' columns, written into dst
+// (grown when too short): zero outside the mask and outside Bounds.
+func (m *ClipMask) Row(y int, dst []uint8) []uint8 {
+	k := m.m
+	w := k.bounds.Dx()
+	if cap(dst) < w {
+		dst = make([]uint8, w)
+	}
+	dst = dst[:w]
+	clear(dst)
+	r := y - k.bounds.Min.Y
+	if r < 0 || r >= len(k.lo) {
+		return dst
+	}
+	lo, hi := int(k.lo[r])-k.bounds.Min.X, int(k.hi[r])-k.bounds.Min.X
+	if lo < hi {
+		copy(dst[lo:hi], k.pix[r*k.stride+lo:r*k.stride+hi])
+	}
+	return dst
+}
+
+// apply multiplies the coverage cov of the pixels from x on row y by the
+// mask, as maskBlitter does, and returns the pixels that remain.
+func (m *clipMask) apply(y, x int, cov []uint8) (int, []uint8) {
+	r := y - m.bounds.Min.Y
+	if r < 0 || r >= len(m.lo) {
+		return x, cov[:0]
+	}
+	x0, x1 := max(x, int(m.lo[r])), min(x+len(cov), int(m.hi[r]))
+	if x0 >= x1 {
+		return x0, cov[:0]
+	}
+	cov = cov[x0-x : x1-x]
+	if int(m.olo[r]) <= x0 && x1 <= int(m.ohi[r]) {
+		return x0, cov
+	}
+	row := m.pix[r*m.stride+x0-m.bounds.Min.X:]
+	for i := range cov {
+		cov[i] = uint8(div255(uint32(cov[i]) * uint32(row[i])))
+	}
+	return x0, cov
 }
 
 // maskWriter records coverage into a clipMask.

@@ -393,13 +393,15 @@ func (c *Canvas) strokeFast(cs *clipState, b Blitter, paint *Paint, pr strokePre
 	// disjoint rows, so every pixel is composited once, with the coverage
 	// of one of them.
 	c.seg.r, c.seg.b = &c.r, b
-	c.seg.solid, c.seg.strips = nil, nil
+	c.seg.solid, c.seg.strips, c.seg.mask = nil, nil, nil
 	c.seg.frac = cs.frac
-	if cs.mask == nil && c.comp != nil {
+	if c.comp != nil {
 		// The strip's rows would reach the compositor's blitter through
-		// the chain, which without a mask only scales the clip's
-		// fractional borders; stripRows leaves those to the chain.
+		// the chain, which multiplies them by the mask, handed over with
+		// the strip, and scales the clip's fractional borders, which
+		// stripRows leaves to the chain.
 		c.seg.strips, _ = c.compB.(StripBlitter)
+		c.seg.mask = cs.mask
 	}
 	if cs.mask == nil && opaque && c.second == nil && c.comp == nil {
 		c.seg.solid = &c.solid

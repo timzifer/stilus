@@ -25,7 +25,10 @@ const (
 	modeCov   = 1 << 30
 	modeCols  = 2 << 30
 	modeStrip = 3 << 30
-	dataMask  = 1<<30 - 1
+	// stripWords is the size of a strip's parameters (spans.wgsl, Strip).
+	stripWords = 13
+	noMask     = 1<<32 - 1
+	dataMask   = 1<<30 - 1
 	// lookBack is how many spans of the current operation a run looks
 	// back at for one on the row above that it can extend.
 	lookBack = 8
@@ -56,6 +59,11 @@ type Target struct {
 
 	solid  solidBlitter
 	shaded shadedBlitter
+
+	// masks maps the generation of each clip mask uploaded since the last
+	// Flush to the byte offset of its copy in data.
+	masks   map[uint64]int
+	maskRow []uint8
 }
 
 // NewTarget makes a w × h target, cleared to transparent.
@@ -63,7 +71,7 @@ func (d *Device) NewTarget(w, h int) (*Target, error) {
 	if w <= 0 || h <= 0 || w > MaxSize || h > MaxSize {
 		return nil, fmt.Errorf("gpu: target size %d×%d", w, h)
 	}
-	t := &Target{d: d, w: w, h: h, clear: true}
+	t := &Target{d: d, w: w, h: h, clear: true, masks: map[uint64]int{}}
 	t.limit = int(min(d.maxBind, 64<<20))
 	t.solid.t, t.shaded.t = t, t
 	var err error
@@ -119,6 +127,7 @@ func (t *Target) View() *wgpu.TextureView { return t.view }
 // (premultiplied) at the next Flush.
 func (t *Target) Clear(c color.RGBA) {
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
+	clear(t.masks)
 	t.clear = true
 	t.clearCol = gputypes.Color{R: float64(c.R) / 255, G: float64(c.G) / 255, B: float64(c.B) / 255, A: float64(c.A) / 255}
 }
@@ -238,6 +247,7 @@ func (t *Target) Flush() error {
 		return fmt.Errorf("gpu: submit: %w", err)
 	}
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
+	clear(t.masks)
 	t.clear = false
 	return nil
 }
@@ -406,6 +416,7 @@ func (t *Target) run(y, x0, x1 int, alpha uint8, col uint32) {
 type solidBlitter struct {
 	t   *Target
 	col uint32
+	cov []uint8
 }
 
 func (b *solidBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
@@ -440,25 +451,62 @@ func (b *solidBlitter) BlitStrip(s *stilus.Strip) {
 	if x0 >= x1 || y0 >= y1 {
 		return
 	}
-	if !t.reserve(1, 3+8*4) {
-		return
-	}
-	t.data = pad4(t.data)
-	off := len(t.data) / 4
-	if off > dataMask {
-		return
-	}
 	fy := float64(y0)
 	ox := math.Floor(s.XL + fy*s.SL)
 	if !(math.Abs(ox) < 1<<30) {
+		return
+	}
+	var mb image.Rectangle
+	need := 3 + stripWords*4
+	if s.Mask != nil {
+		mb = s.Mask.Bounds()
+		if _, ok := t.masks[s.Mask.Gen()]; !ok {
+			need += mb.Dx()*mb.Dy() + 3
+		}
+	}
+	if !t.reserve(1, need) {
+		// Larger than a binding (a page-sized mask on a small device):
+		// the rows instead.
+		b.stripRows(s)
+		return
+	}
+	moff := uint32(noMask)
+	if s.Mask != nil {
+		off, ok := t.masks[s.Mask.Gen()]
+		if !ok {
+			off = len(t.data)
+			for y := mb.Min.Y; y < mb.Max.Y; y++ {
+				t.maskRow = s.Mask.Row(y, t.maskRow)
+				t.data = append(t.data, t.maskRow...)
+			}
+			t.masks[s.Mask.Gen()] = off
+		}
+		moff = uint32(off)
+	}
+	t.data = pad4(t.data)
+	off := len(t.data) / 4
+	if off > dataMask || moff != noMask && moff > dataMask {
 		return
 	}
 	k := s.NX*ox + s.NY*fy
 	for _, v := range [7]float64{s.NX, s.NY, s.K1 - k, s.K2 - k, s.XL + fy*s.SL - ox, s.XR + fy*s.SL - ox, s.SL} {
 		t.data = binary.LittleEndian.AppendUint32(t.data, math.Float32bits(float32(v)))
 	}
-	t.data = binary.LittleEndian.AppendUint32(t.data, uint32(int32(ox)))
+	for _, v := range [6]uint32{uint32(int32(ox)), moff, uint32(int32(mb.Min.X)), uint32(int32(mb.Min.Y)), uint32(mb.Dx()), uint32(mb.Dy())} {
+		t.data = binary.LittleEndian.AppendUint32(t.data, v)
+	}
 	t.span(x0, y0, x1-x0, y1-y0, b.col, modeStrip|uint32(off))
+}
+
+// stripRows blits a strip's rows as the canvas would have.
+func (b *solidBlitter) stripRows(s *stilus.Strip) {
+	for j := s.Y0; j < s.Y1; j++ {
+		var x int
+		x, b.cov = s.Row(j, b.cov[:0])
+		if len(b.cov) > 0 {
+			b.BlitCoverage(j, x, b.cov)
+		}
+	}
 }
 
 // shadedBlitter evaluates a shader on the CPU and records its colours,

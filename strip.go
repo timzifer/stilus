@@ -334,7 +334,8 @@ type segFast struct {
 	// StripBlitter); rows on fractional clip borders still go through b.
 	strips StripBlitter
 	strip1 Strip
-	frac   [4]uint8 // fractional clip borders bypassing solid is forbidden
+	mask   *clipMask // the clip's mask under strips, nil for none
+	frac   [4]uint8  // fractional clip borders bypassing solid is forbidden
 	// Border columns and rows of a rectangle clip with partial coverage
 	// (-1 when none). Pixels there are not composited directly: two parts
 	// of the stroke covering the same pixel would be reduced by the clip
@@ -525,6 +526,9 @@ func (f *segFast) blitStrip(rc *rowCtx, y0, y1 int) {
 		NX: rc.nx, NY: rc.ny, K1: rc.k1, K2: rc.k2,
 		XL: rc.xl, XR: rc.xr, SL: rc.sl,
 		Y0: y0, Y1: y1, X0: clip.Min.X, X1: clip.Max.X,
+	}
+	if f.mask != nil {
+		f.strip1.Mask = &f.mask.view
 	}
 	f.strips.BlitStrip(&f.strip1)
 }
@@ -900,6 +904,9 @@ type Strip struct {
 	XL, XR, SL     float64
 	// Rows [Y0, Y1) and columns [X0, X1), within the clip.
 	Y0, Y1, X0, X1 int
+	// Mask, when non-nil, is the clip's mask: a pixel's coverage is
+	// multiplied by it, round(cov·mask/255), and is 0 where it is.
+	Mask *ClipMask
 }
 
 // Area returns the area of the unit pixel centred at c on the side
@@ -940,13 +947,16 @@ func (s *Strip) Row(j int, cov []uint8) (int, []uint8) {
 		x++
 		cov[i] = quant(tr.area(s.K1-d) - tr.area(s.K2-d))
 	}
+	if s.Mask != nil {
+		return s.Mask.m.apply(j, i0, cov)
+	}
 	return i0, cov
 }
 
 // StripBlitter is a Blitter that also draws strips whole, such as a GPU
 // compositor computing their coverage itself. A canvas drawing through a
-// Compositor hands it the thin strips of strokes (unmasked clips, rows on
-// fractional clip borders excepted) instead of their rows. BlitStrip must
+// Compositor hands it the thin strips of strokes (rows on fractional clip
+// borders excepted) instead of their rows, with the clip's mask if any. BlitStrip must
 // paint what blitting each row's Row coverage would, and must not retain
 // s.
 type StripBlitter interface {
