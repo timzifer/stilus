@@ -463,3 +463,63 @@ func (g *RadialGradient) quadParam(u, v float64) float64 {
 	}
 	return math.NaN()
 }
+
+// GradientForm describes how a gradient computes its parameter t at a
+// device pixel, for a renderer that computes it itself, such as a GPU
+// shader. The colour at t is the gradient's: Ramp, Knots, Extend, Outside
+// and Alpha of its Gradient, with the knots as Knots below.
+//
+// A linear gradient has t = A·x + B·y + C at the pixel centre (x, y).
+//
+// A radial one maps the centre to (u, v) = (Inv[0]·x + Inv[2]·y + Inv[4]
+// − X0, Inv[1]·x + Inv[3]·y + Inv[5] − Y0), relative to the first circle,
+// and t solves QA·t² − 2·b·t + c = 0 with b = u·DX + v·DY + R0·DR and
+// c = u² + v² − R0² (with LinearEq set, the equation is linear:
+// t = c / (2·b), none where b = 0). Of the two roots the larger is taken
+// if its radius R0 + t·DR is not negative and it lies in the range drawn
+// (t < 0 only with Extend[0], t > 1 only with Extend[1]), else the
+// smaller under the same conditions; with neither, and where the
+// discriminant is negative, the pixel takes Outside.
+type GradientForm struct {
+	Radial bool
+	// Linear gradients.
+	A, B, C float64
+	// Radial gradients.
+	Inv                        Matrix
+	X0, Y0, R0, DX, DY, DR, QA float64
+	LinearEq                   bool
+	// Knots are the parameters of the ramp's entries that the colours are
+	// interpolated between (Gradient.Knots, as Set read them), nil for
+	// evenly spaced entries looked up nearest. The slice is the
+	// gradient's: it must not be changed, and Set may reuse it.
+	Knots []float64
+}
+
+func (g *Gradient) formKnots() []float64 {
+	if g.knotted() {
+		return g.kt
+	}
+	return nil
+}
+
+// Form returns how the gradient computes its parameter, and false when it
+// paints nothing (not set, an empty ramp or zero Alpha).
+func (g *LinearGradient) Form() (GradientForm, bool) {
+	if !g.ok || len(g.Ramp) == 0 || g.Alpha == 0 {
+		return GradientForm{}, false
+	}
+	return GradientForm{A: g.a, B: g.b, C: g.c, Knots: g.formKnots()}, true
+}
+
+// Form returns how the gradient computes its parameter, and false when it
+// paints nothing (not set, an empty ramp or zero Alpha).
+func (g *RadialGradient) Form() (GradientForm, bool) {
+	if !g.ok || len(g.Ramp) == 0 || g.Alpha == 0 {
+		return GradientForm{}, false
+	}
+	return GradientForm{
+		Radial: true, Inv: g.inv,
+		X0: g.x0, Y0: g.y0, R0: g.r0, DX: g.dx, DY: g.dy, DR: g.dr, QA: g.qa,
+		LinearEq: g.linear, Knots: g.formKnots(),
+	}, true
+}

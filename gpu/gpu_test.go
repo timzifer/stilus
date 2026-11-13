@@ -310,3 +310,101 @@ func testStrips(t *testing.T, masked bool) {
 		t.Errorf("deviation max %d/255, mean %.4f/255", mx, mean)
 	}
 }
+
+// TestGradients draws linear and radial gradients the GPU computes, with
+// and without knots, extended or not, translucent, as fills, as strokes
+// (strips) and within a mask, against the canvas's bytes.
+func TestGradients(t *testing.T) {
+	d := device(t)
+	const w, h = 180, 140
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	ramp := make(stilus.Ramp, 32)
+	for i := range ramp {
+		ramp[i] = stilus.PackRGBA(color.RGBA{uint8(i * 8), uint8(200 - i*5), 90, 255})
+	}
+	knots := make([]float32, len(ramp))
+	for i := range knots {
+		knots[i] = float32(i*i) / float32((len(knots)-1)*(len(knots)-1))
+	}
+	knots[11] = knots[10]
+	var shaders []stilus.Shader
+	for i := 0; i < 8; i++ {
+		var g stilus.Gradient
+		g.Ramp, g.Alpha = ramp, []uint8{255, 170}[i%2]
+		g.Extend = [2]bool{i%4 != 3, i%4 != 2}
+		g.Outside = stilus.PackRGBA(color.RGBA{0, 0, 60, 60})
+		if i%3 == 0 {
+			g.Knots = knots
+		}
+		m := stilus.Matrix{1.3, 0.4, -0.3, 1.1, 5, 3}
+		if i < 4 {
+			lg := &stilus.LinearGradient{Gradient: g}
+			lg.Set(10, 10, 60+float64(i)*10, 40, m)
+			shaders = append(shaders, lg)
+		} else {
+			rg := &stilus.RadialGradient{Gradient: g}
+			rg.Set(40+float64(i)*3, 40, float64(i%2)*5, 60, 50, 30+float64(i)*4, m)
+			shaders = append(shaders, rg)
+		}
+	}
+	ops := func(c *stilus.Canvas) {
+		for i, sh := range shaders {
+			p := &stilus.Paint{Shader: sh}
+			var e stilus.Path
+			x, y := float32(10+(i%4)*42), float32(10+(i/4)*62)
+			e.Ellipse(x+20, y+25, 21, 26)
+			c.Fill(&e, stilus.Identity, stilus.NonZero, p)
+			var l stilus.Path
+			l.MoveTo(x, y+55)
+			l.LineTo(x+40, y)
+			c.Stroke(&l, stilus.Identity, &stilus.StrokeStyle{Width: 2.5}, p)
+		}
+		var mask stilus.Path
+		mask.Ellipse(90, 70, 70, 50)
+		c.ClipPath(&mask, stilus.Identity, stilus.NonZero)
+		var r stilus.Path
+		r.Rect(0, 0, w, h)
+		c.Fill(&r, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: shaders[5]})
+		c.PopClip()
+	}
+	fill(want, white)
+	c := stilus.NewCanvas(want)
+	ops(c)
+	tg.Clear(white)
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(c)
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	t.Logf("max %d/255, mean %.4f/255", mx, mean)
+	// float32 puts a pixel whose parameter lies at the boundary of two
+	// ramp entries now and then on the other entry: one ramp step (8/255
+	// here) on a few pixels, at most 2/255 elsewhere.
+	steps := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			a, b := want.RGBAAt(x, y), got.RGBAAt(x, y)
+			if max(absd(a.R, b.R), absd(a.G, b.G), absd(a.B, b.B), absd(a.A, b.A)) > 2 {
+				steps++
+			}
+		}
+	}
+	t.Logf("%d pixels a ramp step off", steps)
+	if mx > 8 || steps > w*h/1000 || mean > 0.05 {
+		t.Errorf("deviation max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, steps)
+	}
+}
+
+func absd(a, b uint8) int {
+	if a > b {
+		return int(a - b)
+	}
+	return int(b - a)
+}
