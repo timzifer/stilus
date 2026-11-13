@@ -507,3 +507,94 @@ func TestImages(t *testing.T) {
 		t.Errorf("deviation max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, off)
 	}
 }
+
+// TestMeshes draws Gouraud meshes the GPU shades: vertex colours and ramp
+// parameters, overlapping, flat and thin triangles, translucent, as fills,
+// as strokes and within a mask, against the canvas's bytes.
+func TestMeshes(t *testing.T) {
+	d := device(t)
+	const w, h = 200, 150
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	ramp := make(stilus.Ramp, 64)
+	for i := range ramp {
+		ramp[i] = stilus.PackRGBA(color.RGBA{uint8(i * 4), 60, uint8(255 - i*4), 255})
+	}
+	shaders := make([]*stilus.MeshShader, 4)
+	for i := range shaders {
+		var tris []stilus.MeshTriangle
+		ox, oy := float32(10+(i%2)*95), float32(8+(i/2)*72)
+		for k := 0; k < 40; k++ {
+			var tri stilus.MeshTriangle
+			cx, cy := ox+float32((k*37)%80), oy+float32((k*23)%60)
+			for v := range tri {
+				a := uint8(150 + (k*v*13)%106)
+				tri[v] = stilus.MeshVertex{
+					X: cx + float32((k*7+v*19)%30) - 15, Y: cy + float32((k*11+v*29)%26) - 13,
+					C: stilus.PackRGBA(color.RGBA{uint8(int(a) * v / 2), uint8(int(a) * (2 - v) / 2), a / 3, a}),
+					T: float32(v) / 2,
+				}
+			}
+			if k%9 == 0 {
+				tri[1].C, tri[2].C = tri[0].C, tri[0].C
+			}
+			tris = append(tris, tri)
+		}
+		var rp stilus.Ramp
+		if i%2 == 1 {
+			rp = ramp
+		}
+		sh := &stilus.MeshShader{Alpha: []uint8{255, 255, 190, 120}[i]}
+		sh.Set(tris, stilus.Matrix{1.05, 0.1, -0.08, 0.98, 0, 0}, rp)
+		shaders[i] = sh
+	}
+	ops := func(c *stilus.Canvas) {
+		for i, sh := range shaders {
+			p := &stilus.Paint{Shader: sh}
+			var r stilus.Path
+			x, y := float32(5+(i%2)*95), float32(3+(i/2)*72)
+			r.Rect(x, y, 92, 70)
+			if i == 3 {
+				var e stilus.Path
+				e.Ellipse(x+46, y+35, 40, 30)
+				c.ClipPath(&e, stilus.Identity, stilus.NonZero)
+			}
+			c.Fill(&r, stilus.Identity, stilus.NonZero, p)
+			if i == 3 {
+				c.PopClip()
+			}
+			var l stilus.Path
+			l.MoveTo(x, y+70)
+			l.LineTo(x+92, y)
+			c.Stroke(&l, stilus.Identity, &stilus.StrokeStyle{Width: 4}, &stilus.Paint{Shader: shaders[(i+1)%4]})
+		}
+	}
+	fill(want, white)
+	c := stilus.NewCanvas(want)
+	ops(c)
+	tg.Clear(white)
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(c)
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	off := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			a, b := want.RGBAAt(x, y), got.RGBAAt(x, y)
+			if max(absd(a.R, b.R), absd(a.G, b.G), absd(a.B, b.B), absd(a.A, b.A)) > 2 {
+				off++
+			}
+		}
+	}
+	t.Logf("max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, off)
+	if off > w*h/500 || mean > 0.1 {
+		t.Errorf("deviation max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, off)
+	}
+}

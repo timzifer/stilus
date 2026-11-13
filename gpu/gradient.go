@@ -43,6 +43,8 @@ func (t *Target) gradient(sh stilus.Shader) stilus.Blitter {
 		f, ok = s.Form()
 	case *stilus.ImageShader:
 		return t.imageBlitter(s)
+	case *stilus.MeshShader:
+		return t.meshBlitter(s)
 	default:
 		return nil
 	}

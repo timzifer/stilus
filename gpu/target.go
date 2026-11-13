@@ -77,6 +77,8 @@ type Target struct {
 	image   stilus.ImageForm // the current operation's, for grad.img
 	words   []uint32         // a plane's row, converted
 	maskRow []uint8
+
+	meshStart, meshIDs, meshFill []int32 // a mesh's grid, while recorded
 }
 
 // NewTarget makes a w × h target, cleared to transparent.

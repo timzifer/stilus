@@ -84,8 +84,8 @@ on the CPU as before.
   texels of the level sampled, about the device pixels the image
   covers). Keeping planes in GPU memory across flushes, keyed by plane,
   is the next lever if that shows.
-- `MaskShader` (cached glyph masks) and `MeshShader` still go through
-  `ShadeSpan`. Glyph masks are recycled by the cache within a frame, so
+- `MaskShader` (cached glyph masks) still goes through `ShadeSpan`;
+  `MeshShader` followed ([ADR 0012](0012-mesh-forms.md)). Glyph masks are recycled by the cache within a frame, so
   they would need a generation, as clip masks have (ADR 0008).
 
 ## Alternatives considered

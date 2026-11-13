@@ -14,8 +14,8 @@
 //
 // With bit 29 of data set, the colour of modes 0, 1 and 3 is a paint's,
 // computed per pixel from the record at the word offset color: a
-// gradient's (gradient.go) or, with bit 31 of its first word, an image's
-// (image.go).
+// gradient's (gradient.go), with bit 31 of its first word an image's
+// (image.go), with bit 30 a mesh's (mesh.go).
 
 struct Span {
     pos: u32,   // x0 | y0 << 16
@@ -389,10 +389,80 @@ fn imageColor(r: u32, p: vec2<f32>) -> vec4<f32> {
     return unpack4x8unorm(c);
 }
 
+fn meshEdge(e: u32, yc: f32) -> f32 {
+    return wf(e) + (yc - wf(e + 1u)) * wf(e + 2u);
+}
+
+// meshColor is a MeshShader's colour at pixel centre p: the values of the
+// last triangle in the pixel's cell that contains it, times Alpha, or
+// transparent.
+fn meshColor(r: u32, p: vec2<f32>) -> vec4<f32> {
+    let x = i32(floor(p.x)) - bitcast<i32>(words[r + 2u]);
+    let y = i32(floor(p.y)) - bitcast<i32>(words[r + 3u]);
+    if (x < 0 || y < 0) {
+        return vec4<f32>(0.0);
+    }
+    let shift = words[r + 4u];
+    let cx = u32(x) >> shift;
+    let cy = u32(y) >> shift;
+    let gw = words[r + 5u];
+    if (cx >= gw || cy >= words[r + 6u]) {
+        return vec4<f32>(0.0);
+    }
+    let starts = r + words[r + 7u];
+    let ids = r + words[r + 8u];
+    let tris = r + words[r + 9u];
+    let cell = cy * gw + cx;
+    let s0 = words[starts + cell];
+    var k = words[starts + cell + 1u];
+    let yc = f32(y) + 0.5;
+    let xc = f32(x) + 0.5;
+    loop {
+        if (k <= s0) {
+            break;
+        }
+        k = k - 1u;
+        let t = tris + words[ids + k] * 30u;
+        if (y < bitcast<i32>(words[t]) || y >= bitcast<i32>(words[t + 1u])) {
+            continue;
+        }
+        let lo = max(f32(bitcast<i32>(words[t + 2u])), max(meshEdge(t + 4u, yc), meshEdge(t + 7u, yc)));
+        let hi = min(f32(bitcast<i32>(words[t + 3u])), min(meshEdge(t + 10u, yc), meshEdge(t + 13u, yc)));
+        if (x < i32(ceil(lo - 0.5)) || x >= i32(ceil(hi - 0.5))) {
+            continue;
+        }
+        let dx = xc - wf(t + 16u);
+        let dy = yc - wf(t + 17u);
+        var c: u32;
+        if ((words[r] & 1u) != 0u) {
+            let n = i32(words[r + 11u]);
+            let i = i32(floor(wf(t + 18u) + wf(t + 22u) * dx + wf(t + 26u) * dy + 0.5));
+            c = words[r + words[r + 10u] + u32(clamp(i, 0, n - 1))];
+        } else {
+            var v: array<i32, 4>;
+            for (var ch = 0u; ch < 4u; ch = ch + 1u) {
+                v[ch] = clamp(i32(floor(wf(t + 18u + ch) + wf(t + 22u + ch) * dx + wf(t + 26u + ch) * dy + 0.5)), 0, 255);
+            }
+            let a = v[3];
+            c = u32(min(v[0], a)) | (u32(min(v[1], a)) << 8u) | (u32(min(v[2], a)) << 16u) | (u32(a) << 24u);
+        }
+        let alpha = words[r + 1u];
+        if (alpha != 255u) {
+            c = mul8(c, alpha);
+        }
+        return unpack4x8unorm(c);
+    }
+    return vec4<f32>(0.0);
+}
+
 fn base(s: Span, p: vec2<f32>) -> vec4<f32> {
     if ((s.data & 0x20000000u) != 0u) {
-        if ((words[s.color] & 0x80000000u) != 0u) {
+        let kind = words[s.color];
+        if ((kind & 0x80000000u) != 0u) {
             return imageColor(s.color, p);
+        }
+        if ((kind & 0x40000000u) != 0u) {
+            return meshColor(s.color, p);
         }
         return gradColor(s.color, p);
     }
