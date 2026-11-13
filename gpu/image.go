@@ -53,7 +53,7 @@ func (t *Target) imageBlitter(s *stilus.ImageShader) stilus.Blitter {
 	}
 	t.image = f
 	b := &t.grad
-	b.recOK, b.img = false, &t.image
+	b.recOK, b.img, b.gform = false, &t.image, nil
 	return b
 }
 

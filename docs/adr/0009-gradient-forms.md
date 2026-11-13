@@ -73,7 +73,18 @@ nothing.
   max 2/255, mean 0.003/255; `gpu.TestGradients` (steps of 8/255,
   knots, outside colour, strokes, a mask) 3 pixels of 25 200 one step
   off, the rest within 2/255.
-- Records cost 17 words plus one or two per ramp entry per operation;
+- Measured for #65: the pixels one ramp step off lie on exact ties, t
+  at the boundary of two entries to the last bit of float64 (q = 12.0,
+  14.0 in `TestGradients`, whose geometry is rational); which side wins
+  there depends on the order of the roundings, not on precision. On
+  random geometry (`TestGradientsRandom`, 24 linear and radial
+  gradients) no pixel differs from the CPU canvas. Far from the page's
+  origin the parameter lost bits to cancellation (A·x + B·y + C with x
+  about 3000): it is now computed from the operation's first pixel,
+  t₀ + A·dx + B·dy, as images are (ADR 0011); `TestGradientsFar` 3000
+  pixels out, 2 pixels a step off before, none after. Exact equality on
+  ties would need float64 order of operations on the GPU; not pursued.
+- Records cost 19 words plus one or two per ramp entry per operation;
   1 KB for a 256-entry ramp.
 - `Form` exposes `Set`'s derived numbers as API: changing how a gradient
   computes t now means changing `GradientForm` and the gpu shader with

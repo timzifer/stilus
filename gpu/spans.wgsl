@@ -191,11 +191,13 @@ fn div255(v: u32) -> u32 {
 fn gradT(r: u32, p: vec2<f32>) -> vec2<f32> {
     let flags = words[r];
     let q = r + 6u;
+    let dx = f32(i32(floor(p.x)) - bitcast<i32>(words[r + 17u]));
+    let dy = f32(i32(floor(p.y)) - bitcast<i32>(words[r + 18u]));
     if ((flags & 1u) == 0u) {
-        return vec2<f32>(wf(q) * p.x + wf(q + 1u) * p.y + wf(q + 2u), 1.0);
+        return vec2<f32>(wf(q + 2u) + wf(q) * dx + wf(q + 1u) * dy, 1.0);
     }
-    let u = wf(q) * p.x + (wf(q + 2u) * p.y + wf(q + 4u));
-    let v = wf(q + 1u) * p.x + (wf(q + 3u) * p.y + wf(q + 5u));
+    let u = wf(q + 4u) + wf(q) * dx + wf(q + 2u) * dy;
+    let v = wf(q + 5u) + wf(q + 1u) * dx + wf(q + 3u) * dy;
     let r0 = wf(q + 6u);
     let dr = wf(q + 9u);
     let qa = wf(q + 10u);
