@@ -76,6 +76,10 @@ type Canvas struct {
 	// compB is the blitter it returned last.
 	comp  Compositor
 	compB Blitter
+	// comp2 is the second compositor of ResetCompositorPair, nil for
+	// none; spair joins the blitters of both.
+	comp2 Compositor
+	spair stripPair
 
 	// second is the second image of ResetPair, nil for none, and what
 	// paints into it.
@@ -111,7 +115,7 @@ func NewCanvas(dst *image.RGBA) *Canvas {
 // Reset retargets the canvas to dst, limited to region (in dst's
 // coordinates), clears the clip stack and the error.
 func (c *Canvas) Reset(dst *image.RGBA, region image.Rectangle) {
-	c.dst, c.second, c.comp = dst, nil, nil
+	c.dst, c.second, c.comp, c.comp2 = dst, nil, nil, nil
 	c.solid.t.set(dst)
 	c.shader.t.set(dst)
 	c.stack = append(c.stack[:0], newClipState(region.Intersect(dst.Bounds())))
@@ -135,14 +139,37 @@ type Compositor interface {
 // device pixels), clears the clip stack and the error. The canvas then
 // touches no pixels itself: every span goes through dst's blitters, with
 // the clip applied, so the coverage is that of a canvas drawing onto an
-// image. A canvas with a compositor draws into one destination;
-// ResetPair does not combine with it.
+// image. ResetCompositorPair draws into two.
 func (c *Canvas) ResetCompositor(dst Compositor, region image.Rectangle) {
-	c.dst, c.second, c.comp = nil, nil, dst
+	c.dst, c.second, c.comp, c.comp2 = nil, nil, dst, nil
 	c.solid.t, c.shader.t = target{}, target{}
 	c.stack = append(c.stack[:0], newClipState(region))
 	c.overflow = 0
 	c.err = nil
+}
+
+// ResetCompositorPair is ResetCompositor with a second compositor that
+// everything is drawn through as well, with the second paint of each
+// Paint, as ResetPair does with images: the CMYK destination of two GPU
+// targets, (C, M, Y, A) and (K, K, K, A). The coverage is rasterized once.
+func (c *Canvas) ResetCompositorPair(dst, second Compositor, region image.Rectangle) {
+	c.ResetCompositor(dst, region)
+	c.comp2 = second
+}
+
+// paired reports whether the canvas draws into two destinations.
+func (c *Canvas) paired() bool { return c.second != nil || c.comp2 != nil }
+
+// stripPair blits the same coverage through two blitters, and the same
+// strips through both when both take strips.
+type stripPair struct {
+	pairBlitter
+	sa, sb StripBlitter
+}
+
+func (p *stripPair) BlitStrip(s *Strip) {
+	p.sa.BlitStrip(s)
+	p.sb.BlitStrip(s)
 }
 
 // ResetPair is Reset with a second image that everything is drawn into
@@ -170,12 +197,12 @@ func (p *pairBlitter) BlitCoverage(y, x int, cov []uint8) {
 
 // invisible reports that p paints nothing into the canvas's images.
 func (c *Canvas) invisible(p *Paint) bool {
-	return p.invisible() && (c.second == nil || p.second().invisible())
+	return p.invisible() && (!c.paired() || p.second().invisible())
 }
 
 // opaque reports that p is an opaque solid colour in every image.
 func (c *Canvas) opaque(p *Paint) bool {
-	return p.opaque() && (c.second == nil || p.second().opaque())
+	return p.opaque() && (!c.paired() || p.second().opaque())
 }
 
 // Err returns the first error since Reset, if any. Drawing continues after
@@ -235,6 +262,18 @@ func (c *Canvas) chain(st *clipState, b Blitter) Blitter {
 func (c *Canvas) paint(p *Paint) Blitter {
 	if c.comp != nil {
 		c.compB = c.comp.Blitter(p)
+		if c.comp2 == nil {
+			return c.compB
+		}
+		b2 := c.comp2.Blitter(p.second())
+		c.spair.a, c.spair.b = c.compB, b2
+		c.spair.sa, _ = c.compB.(StripBlitter)
+		c.spair.sb, _ = b2.(StripBlitter)
+		if c.spair.sa != nil && c.spair.sb != nil {
+			c.compB = &c.spair
+		} else {
+			c.compB = &c.spair.pairBlitter
+		}
 		return c.compB
 	}
 	b := paintWith(p, &c.solid, &c.shader)

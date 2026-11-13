@@ -35,6 +35,8 @@ struct Globals {
 @group(0) @binding(2) var<storage, read> words: array<u32>;
 // What a layer operation reads, copied before it (layer.go).
 @group(0) @binding(3) var<storage, read> layer: array<u32>;
+// Texture planes, kept across flushes (image.go).
+@group(0) @binding(4) var<storage, read> store: array<u32>;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -358,14 +360,14 @@ fn sampleAt(q: u32, p: vec2<f32>) -> u32 {
     var v = wf(q + 11u) + wf(q + 5u) * dx + wf(q + 7u) * dy;
     let wrap = (fl & 2u) != 0u;
     if ((fl & 1u) == 0u) {
-        return words[off + texIndex(v, h, wrap) * w + texIndex(u, w, wrap)];
+        return store[off + texIndex(v, h, wrap) * w + texIndex(u, w, wrap)];
     }
     let sx = texSplit(u - 0.5, w, wrap);
     let sy = texSplit(v - 0.5, h, wrap);
     let r0 = off + sy.x * w;
     let r1 = off + sy.y * w;
-    let a = lerp8(words[r0 + sx.x], words[r0 + sx.y], sx.z);
-    let b = lerp8(words[r1 + sx.x], words[r1 + sx.y], sx.z);
+    let a = lerp8(store[r0 + sx.x], store[r0 + sx.y], sx.z);
+    let b = lerp8(store[r1 + sx.x], store[r1 + sx.y], sx.z);
     return lerp8(a, b, sy.z);
 }
 

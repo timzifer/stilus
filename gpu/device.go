@@ -26,7 +26,12 @@
 // The GPU blends in floating point and rounds once, so a pixel may differ
 // from the CPU canvas by 1/255 per operation composited onto it; float32
 // moves a gradient's or an image's sample to its neighbour now and then.
-// CMYK pairs (Canvas.ResetPair) need the CPU canvas.
+// A CMYK destination is two targets drawn through one canvas
+// (Canvas.ResetCompositorPair, ADR 0015).
+//
+// Texture planes stay in a target's store from flush to flush (ADR 0016).
+// Several canvases draw onto one target at once through its recorders,
+// one per band and goroutine (NewRecorder, ADR 0017).
 package gpu
 
 import (
@@ -136,6 +141,7 @@ func NewDevice(dev *wgpu.Device) (*Device, error) {
 			{Binding: 1, Visibility: vf, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
 			{Binding: 2, Visibility: vf, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
 			{Binding: 3, Visibility: gputypes.ShaderStageFragment, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
+			{Binding: 4, Visibility: gputypes.ShaderStageFragment, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
 		},
 	})
 	if err != nil {

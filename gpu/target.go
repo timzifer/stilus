@@ -53,6 +53,11 @@ type Target struct {
 	// least layerNeed bytes.
 	layerBuf  *wgpu.Buffer
 	layerNeed int
+	// store keeps texture planes across flushes (image.go): storeUsed
+	// bytes of it hold the planes of planes, storeNeed is its size.
+	store     *wgpu.Buffer
+	storeUsed int
+	storeNeed int
 	bind      *wgpu.BindGroup
 	read      *wgpu.Buffer    // readback, made on first ReadRGBA
 	pbind     *wgpu.BindGroup // texture group of presenters, made on first Draw
@@ -75,8 +80,8 @@ type Target struct {
 	// masks maps the generation of each clip mask uploaded since the last
 	// Flush to the byte offset of its copy in data.
 	masks map[uint64]int
-	// planes maps the texture planes uploaded since the last Flush to
-	// the word offset of their RGBA copy in data.
+	// planes maps the texture planes in the store to the word offset of
+	// their RGBA copy; it keeps them alive until the store is reset.
 	planes  map[*stilus.Plane]int
 	image   stilus.ImageForm // the current operation's, for grad.img
 	words   []uint32         // a plane's row, converted
@@ -84,7 +89,16 @@ type Target struct {
 
 	meshStart, meshIDs, meshFill []int32 // a mesh's grid, while recorded
 
+	// parent is the target of a recorder, nil for a target; recorders are
+	// the recorders of a target, drawn after it.
+	parent    *Target
+	recorders []*Target
+	// pending are a recorder's writes into the store, made by its
+	// target's Flush.
+	pending []storeWrite
+
 	layerTmp []byte // an image's copy for the layer buffer
+	planeTmp []byte // a plane's copy for the store
 	err      error  // the first layer operation that failed (Err)
 }
 
@@ -115,25 +129,29 @@ func (d *Device) NewTarget(w, h int) (*Target, error) {
 		t.Close()
 		return nil, fmt.Errorf("gpu: texture view: %w", err)
 	}
-	if t.uniform, err = d.dev.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: "stilus-globals", Size: 16,
-		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
-	}); err != nil {
-		t.Close()
-		return nil, fmt.Errorf("gpu: buffer: %w", err)
-	}
-	var g [16]byte
-	binary.LittleEndian.PutUint32(g[0:], math.Float32bits(float32(w)))
-	binary.LittleEndian.PutUint32(g[4:], math.Float32bits(float32(h)))
-	if err := d.queue.WriteBuffer(t.uniform, 0, g[:]); err != nil {
-		t.Close()
-		return nil, fmt.Errorf("gpu: write globals: %w", err)
-	}
-	if err := t.grow(1<<12, 1<<12); err != nil {
+	if err := t.initBuffers(); err != nil {
 		t.Close()
 		return nil, err
 	}
 	return t, nil
+}
+
+// initBuffers makes the target's buffers and bind group.
+func (t *Target) initBuffers() error {
+	var err error
+	if t.uniform, err = t.d.dev.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: "stilus-globals", Size: 16,
+		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
+	}); err != nil {
+		return fmt.Errorf("gpu: buffer: %w", err)
+	}
+	var g [16]byte
+	binary.LittleEndian.PutUint32(g[0:], math.Float32bits(float32(t.w)))
+	binary.LittleEndian.PutUint32(g[4:], math.Float32bits(float32(t.h)))
+	if err := t.d.queue.WriteBuffer(t.uniform, 0, g[:]); err != nil {
+		return fmt.Errorf("gpu: write globals: %w", err)
+	}
+	return t.grow(1<<12, 1<<12)
 }
 
 // Bounds is the target's rectangle in device pixels, the region to pass to
@@ -151,7 +169,6 @@ func (t *Target) View() *wgpu.TextureView { return t.view }
 func (t *Target) Clear(c color.RGBA) {
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
-	clear(t.planes)
 	t.flushes++
 	t.clear = true
 	t.clearCol = gputypes.Color{R: float64(c.R) / 255, G: float64(c.G) / 255, B: float64(c.B) / 255, A: float64(c.A) / 255}
@@ -175,7 +192,7 @@ func (t *Target) Blitter(p *stilus.Paint) stilus.Blitter {
 // grow makes the GPU buffers hold at least spans and data bytes.
 func (t *Target) grow(spans, data int) error {
 	if t.spanBuf != nil && int(t.spanBuf.Size()) >= spans && int(t.dataBuf.Size()) >= data &&
-		int(t.layerBuf.Size()) >= t.layerNeed {
+		int(t.layerBuf.Size()) >= t.layerNeed && int(t.store.Size()) >= t.storeNeed {
 		return nil
 	}
 	newBuf := func(old *wgpu.Buffer, n int, label string) (*wgpu.Buffer, error) {
@@ -211,6 +228,9 @@ func (t *Target) grow(spans, data int) error {
 	if t.layerBuf, err = newBuf(t.layerBuf, t.layerNeed, "stilus-layer"); err != nil {
 		return err
 	}
+	if t.store, err = newBuf(t.store, t.storeNeed, "stilus-store"); err != nil {
+		return err
+	}
 	if t.bind != nil {
 		t.bind.Release()
 	}
@@ -222,6 +242,7 @@ func (t *Target) grow(spans, data int) error {
 			{Binding: 1, Buffer: t.spanBuf},
 			{Binding: 2, Buffer: t.dataBuf},
 			{Binding: 3, Buffer: t.layerBuf},
+			{Binding: 4, Buffer: t.store},
 		},
 	})
 	if err != nil {
@@ -230,24 +251,27 @@ func (t *Target) grow(spans, data int) error {
 	return nil
 }
 
-// Flush draws what was recorded since the last Flush onto the texture.
+// Flush draws what was recorded since the last Flush onto the texture,
+// the target's own spans and then those of its recorders, in one render
+// pass.
 func (t *Target) Flush() error {
+	if t.parent != nil {
+		return errors.New("gpu: a recorder is flushed by its target")
+	}
 	n := len(t.spans) / spanBytes
-	if n == 0 && !t.clear {
+	draw := n > 0 || t.clear
+	for _, r := range t.recorders {
+		draw = draw || len(r.spans) > 0
+	}
+	if !draw {
 		return nil
 	}
-	if err := t.grow(len(t.spans), len(t.data)); err != nil {
+	if err := t.upload(); err != nil {
 		return err
 	}
-	q := t.d.queue
-	if n > 0 {
-		if err := q.WriteBuffer(t.spanBuf, 0, t.spans); err != nil {
-			return fmt.Errorf("gpu: write spans: %w", err)
-		}
-		if len(t.data) > 0 {
-			if err := q.WriteBuffer(t.dataBuf, 0, pad4(t.data)); err != nil {
-				return fmt.Errorf("gpu: write data: %w", err)
-			}
+	for _, r := range t.recorders {
+		if err := r.upload(); err != nil {
+			return err
 		}
 	}
 	enc, err := t.d.dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{Label: "stilus-flush"})
@@ -263,10 +287,10 @@ func (t *Target) Flush() error {
 		enc.DiscardEncoding()
 		return fmt.Errorf("gpu: render pass: %w", err)
 	}
-	if n > 0 {
-		pass.SetPipeline(t.d.pipeline)
-		pass.SetBindGroup(0, t.bind, nil)
-		pass.Draw(gputypes.DrawArgs{VertexCount: 6, InstanceCount: uint32(n)})
+	pass.SetPipeline(t.d.pipeline)
+	t.drawSpans(pass)
+	for _, r := range t.recorders {
+		r.drawSpans(pass)
 	}
 	if err := pass.End(); err != nil {
 		enc.DiscardEncoding()
@@ -276,15 +300,53 @@ func (t *Target) Flush() error {
 	if err != nil {
 		return fmt.Errorf("gpu: finish: %w", err)
 	}
-	if _, err := q.Submit(cmd); err != nil {
+	if _, err := t.d.queue.Submit(cmd); err != nil {
 		return fmt.Errorf("gpu: submit: %w", err)
 	}
-	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
-	clear(t.masks)
-	clear(t.planes)
-	t.flushes++
+	t.reset()
+	for _, r := range t.recorders {
+		r.reset()
+	}
 	t.clear = false
 	return nil
+}
+
+// upload makes the buffers hold what was recorded and writes it.
+func (t *Target) upload() error {
+	store := t.store
+	if err := t.grow(len(t.spans), len(t.data)); err != nil {
+		return err
+	}
+	if err := t.uploadStore(t.store != store); err != nil {
+		return err
+	}
+	q := t.d.queue
+	if len(t.spans) > 0 {
+		if err := q.WriteBuffer(t.spanBuf, 0, t.spans); err != nil {
+			return fmt.Errorf("gpu: write spans: %w", err)
+		}
+		if len(t.data) > 0 {
+			if err := q.WriteBuffer(t.dataBuf, 0, pad4(t.data)); err != nil {
+				return fmt.Errorf("gpu: write data: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// drawSpans draws the recorded spans into pass.
+func (t *Target) drawSpans(pass *wgpu.RenderPassEncoder) {
+	if n := len(t.spans) / spanBytes; n > 0 {
+		pass.SetBindGroup(0, t.bind, nil)
+		pass.Draw(gputypes.DrawArgs{VertexCount: 6, InstanceCount: uint32(n)})
+	}
+}
+
+// reset drops what was recorded, once drawn.
+func (t *Target) reset() {
+	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
+	clear(t.masks)
+	t.flushes++
 }
 
 // pad4 extends b to a multiple of four bytes, as buffer writes need.
@@ -362,7 +424,7 @@ func (t *Target) ReadRGBA(dst *image.RGBA) error {
 
 // Close releases the target's GPU resources.
 func (t *Target) Close() {
-	for _, b := range []**wgpu.Buffer{&t.uniform, &t.spanBuf, &t.dataBuf, &t.layerBuf, &t.read} {
+	for _, b := range []**wgpu.Buffer{&t.uniform, &t.spanBuf, &t.dataBuf, &t.layerBuf, &t.store, &t.read} {
 		if *b != nil {
 			(*b).Release()
 			*b = nil
@@ -375,6 +437,13 @@ func (t *Target) Close() {
 	if t.pbind != nil {
 		t.pbind.Release()
 		t.pbind = nil
+	}
+	for len(t.recorders) > 0 {
+		(&Recorder{t.recorders[0]}).Close()
+	}
+	if t.parent != nil {
+		// The texture is the target's.
+		t.view, t.tex = nil, nil
 	}
 	if t.view != nil {
 		t.view.Release()
@@ -392,8 +461,12 @@ func (t *Target) reserve(spans, data int) bool {
 	if len(t.spans)+spans*spanBytes <= t.limit && len(t.data)+data+3 <= t.limit {
 		return true
 	}
-	if spans*spanBytes > t.limit || data+3 > t.limit {
-		return false // a single span larger than a binding: dropped
+	if spans*spanBytes > t.limit || data+3 > t.limit || t.parent != nil {
+		// A single span larger than a binding, or a recorder full: dropped.
+		if t.parent != nil {
+			t.setErr(ErrRecorderFull)
+		}
+		return false
 	}
 	if err := t.Flush(); err != nil {
 		return false
@@ -476,8 +549,7 @@ func (b *solidBlitter) ready(x, y, spans, data int) bool {
 	}
 	need := data + len(b.rec) + 3
 	if b.img != nil {
-		// All its planes: a flush in reserve drops those uploaded.
-		need = data + imageWords*4 + 3 + planeBytes(b.img)
+		need = data + imageWords*4 + 3
 	}
 	if !t.reserve(spans, need) {
 		return false
