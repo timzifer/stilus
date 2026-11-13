@@ -80,9 +80,11 @@ t.ReadRGBA(img)
 ```
 
 Within 1/255 of the CPU canvas on the scenes (Metal and wgpu's software
-adapter); faster on fills
-with transparency, slower on long hairline hatching and on shader paints,
-which are still evaluated on the CPU. `LayerShader` blend modes that read
+adapter). The thin strips of strokes go to the GPU whole, two parallel
+lines and a row range ([ADR 0008](docs/adr/0008-gpu-strips.md)), and the
+fragment shader computes their coverage: hatching 24 → 8 ms, short strokes
+and contours about half, readback included (Apple M4, A3 at 150 dpi).
+Shader paints are still evaluated on the CPU and are slower there. `LayerShader` blend modes that read
 the backdrop (`Dst`) and CMYK pairs need the CPU canvas.
 
 ## Shaders

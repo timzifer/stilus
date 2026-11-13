@@ -330,7 +330,11 @@ type segFast struct {
 	b     Blitter
 	cov   []uint8
 	solid *SolidBlitter // optional fused compositing for thin opaque strips
-	frac  [4]uint8      // fractional clip borders bypassing solid is forbidden
+	// strips, when non-nil, takes thin strips whole (a compositor's
+	// StripBlitter); rows on fractional clip borders still go through b.
+	strips StripBlitter
+	strip1 Strip
+	frac   [4]uint8 // fractional clip borders bypassing solid is forbidden
 	// Border columns and rows of a rectangle clip with partial coverage
 	// (-1 when none). Pixels there are not composited directly: two parts
 	// of the stroke covering the same pixel would be reduced by the clip
@@ -464,11 +468,65 @@ func (f *segFast) strip(rc *rowCtx, y0, y1 int) {
 	if cap(f.cov) < clip.Dx() {
 		f.cov = make([]uint8, clip.Dx())
 	}
-	if f.solid != nil && !rc.runs {
+	switch {
+	case f.strips != nil && !rc.runs:
+		f.stripRows(y0, y1, rc)
+	case f.solid != nil && !rc.runs:
 		f.solidRows(y0, y1, rc)
-	} else {
+	default:
 		f.blitRows(y0, y1, rc)
 	}
+}
+
+// stripRows hands rows [y0, y1) of a thin strip to the StripBlitter, in
+// runs of rows; rows on a clip border with fractional coverage take the
+// general path, as in solidRows.
+func (f *segFast) stripRows(y0, y1 int, rc *rowCtx) {
+	clip := f.r.clip
+	cx0, cx1 := clip.Min.X, clip.Max.X
+	if y0 == clip.Min.Y && f.frac[1] != 255 {
+		if i0, i1, fy := rc.span(y0, cx0, cx1); i0 < i1 {
+			f.row(y0, i0, i1, fy, rc)
+		}
+		y0++
+	}
+	last := -1
+	if y1 == clip.Max.Y && f.frac[3] != 255 && y1 > y0 {
+		y1--
+		last = y1
+	}
+	col0, col1 := f.borders()
+	start := y0
+	if col0 != math.MinInt || col1 != math.MinInt {
+		for j := y0; j < y1; j++ {
+			i0, i1, fy := rc.span(j, cx0, cx1)
+			if i0 < i1 && (i0 == col0 || i1 == col1) {
+				f.blitStrip(rc, start, j)
+				f.row(j, i0, i1, fy, rc)
+				start = j + 1
+			}
+		}
+	}
+	f.blitStrip(rc, start, y1)
+	if last >= 0 {
+		if i0, i1, fy := rc.span(last, cx0, cx1); i0 < i1 {
+			f.row(last, i0, i1, fy, rc)
+		}
+	}
+}
+
+// blitStrip hands rows [y0, y1) of rc to the StripBlitter.
+func (f *segFast) blitStrip(rc *rowCtx, y0, y1 int) {
+	if y0 >= y1 {
+		return
+	}
+	clip := f.r.clip
+	f.strip1 = Strip{
+		NX: rc.nx, NY: rc.ny, K1: rc.k1, K2: rc.k2,
+		XL: rc.xl, XR: rc.xr, SL: rc.sl,
+		Y0: y0, Y1: y1, X0: clip.Min.X, X1: clip.Max.X,
+	}
+	f.strips.BlitStrip(&f.strip1)
 }
 
 // rowCtx holds what the rows of one strip share.
@@ -827,4 +885,71 @@ func (s *Stroker) fastLine(v, seg []float64) bool {
 	fill.middle(ax, ay, bx, by, dx, dy, int(y0), int(y1))
 	s.fastHits++
 	return true
+}
+
+// Strip is a band of rows of the area between two parallel lines: the
+// middle of a stroke segment, as the analytic stroke path draws it. A
+// StripBlitter receives strips whole instead of their rows.
+//
+// Row j covers at most the pixels [floor(XL + j·SL), floor(XR + j·SL)],
+// limited to [X0, X1). Pixel (i, j) has the coverage quantized from the
+// area of the pixel between the lines K2 <= NX·x + NY·y <= K1, (NX, NY)
+// being their unit normal; Row computes it as the canvas does.
+type Strip struct {
+	NX, NY, K1, K2 float64
+	XL, XR, SL     float64
+	// Rows [Y0, Y1) and columns [X0, X1), within the clip.
+	Y0, Y1, X0, X1 int
+}
+
+// Area returns the area of the unit pixel centred at c on the side
+// NX·(p − c.x) + NY·(q − c.y) <= u of a line with s's normal. A pixel's
+// coverage is Area(K1 − d) − Area(K2 − d), d = NX·c.x + NY·c.y.
+func (s *Strip) Area(u float64) float64 { return s.trapezoid().area(u) }
+
+func (s *Strip) trapezoid() trapezoid {
+	a, b := math.Abs(s.NX), math.Abs(s.NY)
+	if a < b {
+		a, b = b, a
+	}
+	tr := trapezoid{h: (a + b) / 2, mt: (a - b) / 2, inva: 1 / a}
+	if b > 1e-9 {
+		tr.inv2ab = 1 / (2 * a * b)
+	}
+	return tr
+}
+
+// Row returns the first column of row j's pixels and their coverage,
+// written into cov (grown when too short): the bytes the canvas would
+// blit for the row.
+func (s *Strip) Row(j int, cov []uint8) (int, []uint8) {
+	fy := float64(j)
+	i0 := max(ffloor(s.XL+fy*s.SL), s.X0)
+	i1 := min(ffloor(s.XR+fy*s.SL)+1, s.X1)
+	if i0 >= i1 {
+		return i0, cov[:0]
+	}
+	if cap(cov) < i1-i0 {
+		cov = make([]uint8, i1-i0)
+	}
+	cov = cov[:i1-i0]
+	tr := s.trapezoid()
+	x, g := float64(i0)+0.5, s.NY*(fy+0.5)
+	for i := range cov {
+		d := float64(s.NX*x) + g
+		x++
+		cov[i] = quant(tr.area(s.K1-d) - tr.area(s.K2-d))
+	}
+	return i0, cov
+}
+
+// StripBlitter is a Blitter that also draws strips whole, such as a GPU
+// compositor computing their coverage itself. A canvas drawing through a
+// Compositor hands it the thin strips of strokes (unmasked clips, rows on
+// fractional clip borders excepted) instead of their rows. BlitStrip must
+// paint what blitting each row's Row coverage would, and must not retain
+// s.
+type StripBlitter interface {
+	Blitter
+	BlitStrip(s *Strip)
 }

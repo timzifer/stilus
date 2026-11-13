@@ -3,6 +3,7 @@ package gpu_test
 import (
 	"image"
 	"image/color"
+	"math"
 	"os"
 	"sync"
 	"testing"
@@ -245,5 +246,52 @@ func BenchmarkScenes(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// TestStrips draws lines at many angles and widths, opaque and
+// translucent, under a clip with fractional borders: the strips whose
+// coverage the GPU computes against the canvas's bytes.
+func TestStrips(t *testing.T) {
+	d := device(t)
+	const w, h = 160, 120
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	paints := []*stilus.Paint{
+		{Color: color.RGBA{0, 0, 0, 255}},
+		{Color: color.RGBA{0, 40, 140, 255}},
+		{Color: color.RGBA{90, 0, 0, 160}},
+	}
+	ops := func(c *stilus.Canvas) {
+		c.ClipRect(stilus.Rect{X0: 3.4, Y0: 2.7, X1: 151.6, Y1: 113.3}, stilus.Identity)
+		for i := 0; i < 48; i++ {
+			a := float64(i) * math.Pi / 48
+			cx, cy := 80+float64(i%7)*3, 60+float64(i%5)*2
+			var p stilus.Path
+			p.MoveTo(float32(cx-90*math.Cos(a)), float32(cy-90*math.Sin(a)))
+			p.LineTo(float32(cx+90*math.Cos(a)), float32(cy+90*math.Sin(a)))
+			st := &stilus.StrokeStyle{Width: 0.3 + float64(i%6)*0.7}
+			c.Stroke(&p, stilus.Identity, st, paints[i%len(paints)])
+		}
+		c.PopClip()
+	}
+	fill(want, white)
+	c := stilus.NewCanvas(want)
+	ops(c)
+	tg.Clear(white)
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(c)
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	t.Logf("max %d/255, mean %.4f/255", mx, mean)
+	if mx > 2 || mean > 0.05 {
+		t.Errorf("deviation max %d/255, mean %.4f/255", mx, mean)
 	}
 }
