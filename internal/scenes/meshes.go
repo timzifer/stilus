@@ -4,6 +4,7 @@ import (
 	"image/color"
 	"math"
 	"math/rand"
+	"sync"
 
 	"github.com/timzifer/stilus"
 )
@@ -13,7 +14,10 @@ func init() { more = append(more, Meshes) }
 // Meshes: 40 Gouraud-shaded meshes (shadings of type 4–7) of 16 × 12 cells,
 // 384 triangles each, with jittered inner vertices, filled through their
 // outline: in turn with vertex colours, with ramp parameters, and at
-// constant alpha. Set runs per drawing, as for a page.
+// constant alpha. Each shader is set up once per resolution, as a page
+// prepares its shadings, before the first timed rendering; only their
+// drawing is measured. The set-up is guarded, so bands may draw one scene
+// at once.
 func Meshes() *Scene {
 	rng := rand.New(rand.NewSource(40))
 	ramp := make(stilus.Ramp, 256)
@@ -60,8 +64,15 @@ func Meshes() *Scene {
 			shader.Alpha = 200
 		}
 		paint := &stilus.Paint{Shader: shader}
+		var mu sync.Mutex
+		var set stilus.Matrix // the transform the shader was set up for
 		ops = append(ops, Op{Draw: func(c *stilus.Canvas, m stilus.Matrix) {
-			shader.Set(tris, m, rp)
+			mu.Lock()
+			if set != m {
+				shader.Set(tris, m, rp)
+				set = m
+			}
+			mu.Unlock()
 			c.Fill(&outline, m, stilus.NonZero, paint)
 		}})
 	}

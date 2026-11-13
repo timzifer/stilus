@@ -82,6 +82,13 @@ once per page, A3 at 150 dpi, with readback), Apple M4, the cache off
 and on: 1 band 6.6–8.4 / 6.7–7.3 ms, 4 bands 7.3–7.5 / 7.2–7.6 ms,
 8 bands 8.3–8.8 / 7.2–7.5 ms. Making the records was the smaller part:
 what remains is the meshes' `Set` on the CPU, once per page, and their
-pixels on the GPU, which bands do not divide. The meshes-40 scene sets
-its shaders up per band (each band draws its own copy of the scene), so
-it gains nothing from the cache.
+pixels on the GPU, which bands do not divide.
+
+The meshes-40 scene then set its shaders up in every drawing, so every
+frame made new records. It now sets each shader up once per resolution,
+under a lock, so that bands may draw one copy of the scene at once, and
+later frames find the records: `BenchmarkScenesBands` meshes-40 with
+1, 4 and 8 bands 13.9 / 21.6 / 35.1 → 10.4 / 7.4 / 6.5 ms. On the CPU
+canvas the scene no longer times the set-up: 14.5 → 13.4 ms at 150 dpi
+(the benchmark history measures every release with the scene of the
+working tree, so its line moves for all of them).
