@@ -123,6 +123,10 @@ once through recorders, one canvas and goroutine each
 fast at four bands; layers in bands are drawn in rounds, each band
 copying its part of the layer.
 
+Tested on Metal (Apple M4), on Vulkan through Mesa's lavapipe and on
+wgpu's software adapter (both in CI); the module builds for js/wasm
+(the browser's WebGPU). DX12 and GLES are untested.
+
 ## Shaders
 
 Paints beyond a solid colour, each a `Shader` for `Paint.Shader`; they
