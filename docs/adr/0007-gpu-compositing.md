@@ -17,10 +17,8 @@ everything in layers) runs on the CPU.
 [gogpu/wgpu](https://github.com/gogpu/wgpu) is WebGPU in Go without cgo
 (Metal, Vulkan, DX12, GLES, a software adapter, and the browser under
 `js/wasm`), with WGSL compiled by gogpu/naga. It runs headless: render to
-a texture, copy to a buffer, read back. Measured here (v0.32.1, Apple M4,
-Metal): a render pass and a copy of its target recorded in one command
-encoder fail with a usage conflict; two encoders, submitted one after the
-other, work.
+a texture, copy to a buffer, read back. Its software adapter interprets
+SPIR-V on the CPU, which lets CI without a GPU run the shaders.
 
 The constraints of stilus stand: the core module has no dependencies,
 builds on every GOOS/GOARCH, does not allocate after warm-up, and its cost
@@ -156,27 +154,27 @@ and the direct glyph blit changes no coverage. `gpu.TestScenes` on Metal
 byte-identical. The layers scene blends Normal and reads only its layers,
 so it runs on a target too.
 
-`gpu.BenchmarkScenes`, A3 at 150 dpi, Apple M4, one core recording,
-`gpu` = record and submit, `gpu+read` = with the readback a caller
-without a GPU surface would need:
+`gpu.BenchmarkScenes`, A3 at 150 dpi, Apple M4, wgpu v0.34.14, one core
+recording, `gpu` = record and submit, `gpu+read` = with the readback a
+caller without a GPU surface would need:
 
 | scene | CPU canvas | gpu | gpu+read |
 |---|---:|---:|---:|
-| mixed drawing | 28.0 ms | 17.3 ms | 21.7 ms |
-| short-20000-0.35mm | 21.6 ms | 18.3 ms | 24.2 ms |
-| short-20000-hairline | 18.2 ms | 16.3 ms | 22.3 ms |
-| glyphs-30000-uncached | 34.7 ms | 31.4 ms | 35.0 ms |
-| contours-3000 | 44.4 ms | 39.8 ms | 49.5 ms |
-| hatch-2000-maskclip | 30.8 ms | 29.0 ms | 44.7 ms |
-| hatch-2000-hairline | 25.2 ms | 40.5 ms | 85.4 ms |
-| hatch-2000-0.35mm | 36.0 ms | 47.5 ms | 62.9 ms |
-| text-30000-cached | 8.8 ms | 10.1 ms | 15.0 ms |
-| gradients-200 | 30.0 ms | 42.9 ms | 44.5 ms |
-| images-60 | 22.7 ms | 35.0 ms | 39.0 ms |
-| patterns-200 | 27.1 ms | 37.4 ms | 42.0 ms |
-| layers-24 | 15.4 ms | 18.5 ms | 22.2 ms |
+| mixed drawing | 23.4 ms | 15.9 ms | 21.1 ms |
+| short-20000-0.35mm | 19.4 ms | 17.1 ms | 23.0 ms |
+| short-20000-hairline | 17.2 ms | 15.7 ms | 21.1 ms |
+| glyphs-30000-uncached | 31.9 ms | 28.6 ms | 33.7 ms |
+| contours-3000 | 39.1 ms | 37.8 ms | 47.3 ms |
+| hatch-2000-maskclip | 28.7 ms | 27.1 ms | 39.1 ms |
+| hatch-2000-hairline | 23.7 ms | 36.9 ms | 56.2 ms |
+| hatch-2000-0.35mm | 28.5 ms | 40.5 ms | 61.3 ms |
+| text-30000-cached | 8.2 ms | 9.4 ms | 14.5 ms |
+| gradients-200 | 28.1 ms | 37.6 ms | 42.3 ms |
+| images-60 | 20.5 ms | 32.7 ms | 36.8 ms |
+| patterns-200 | 24.1 ms | 34.5 ms | 39.7 ms |
+| layers-24 | 14.3 ms | 17.6 ms | 20.9 ms |
 
-Fills with transparency gain most (−38 %); scattered strokes and glyphs
+Fills with transparency gain most (−32 %); scattered strokes and glyphs
 gain a little. Two kinds of scene lose:
 
 - *Hatching*: a long thin line is a coverage span of three pixels on
@@ -191,12 +189,14 @@ gain a little. Two kinds of scene lose:
   WGSL counterparts for gradients and textures remove both; they need the
   shaders' set-up readable from the gpu package (a later ADR).
 
-The software adapter of wgpu v0.32.1 (`Options.Fallback`) does not run
-the span shader correctly: storage buffers read in the fragment stage
-read as zero, and pixels on the shared diagonal of a quad's two
-triangles are shaded twice. `Open` therefore refuses a software adapter
-unless asked for one, and the tests skip without a hardware adapter, as
-on the CI runners, where the module is vetted and built.
+The software adapter (`Options.Fallback`) draws the scenes as Metal
+does, max 1/255, in 82 s at 72 dpi: it interprets SPIR-V. An earlier
+wgpu (v0.32.1) read storage buffers in the fragment stage as zero and
+shaded the shared diagonal of a quad twice; v0.34 fixed both, and the
+render pass and the copy of its target no longer conflict in one encoder.
+`Open` takes a software adapter only when asked for one, since it is too
+slow to be chosen silently. CI, without a GPU, runs the primitives on it;
+the scene tests skip without a hardware adapter.
 
 ## Alternatives considered
 

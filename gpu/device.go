@@ -123,7 +123,7 @@ func NewDevice(dev *wgpu.Device) (*Device, error) {
 	vf := gputypes.ShaderStageVertex | gputypes.ShaderStageFragment
 	d.layout, err = dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
 		Label: "stilus-spans",
-		Entries: []wgpu.BindGroupLayoutEntry{
+		Entries: []gputypes.BindGroupLayoutEntry{
 			{Binding: 0, Visibility: gputypes.ShaderStageVertex, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeUniform}},
 			{Binding: 1, Visibility: vf, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
 			{Binding: 2, Visibility: gputypes.ShaderStageFragment, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},

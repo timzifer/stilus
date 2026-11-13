@@ -223,7 +223,7 @@ func (t *Target) Flush() error {
 	if n > 0 {
 		pass.SetPipeline(t.d.pipeline)
 		pass.SetBindGroup(0, t.bind, nil)
-		pass.Draw(6, uint32(n), 0, 0)
+		pass.Draw(gputypes.DrawArgs{VertexCount: 6, InstanceCount: uint32(n)})
 	}
 	if err := pass.End(); err != nil {
 		enc.DiscardEncoding()
@@ -278,9 +278,6 @@ func (t *Target) ReadRGBA(dst *image.RGBA) error {
 			return fmt.Errorf("gpu: readback buffer: %w", err)
 		}
 	}
-	// A copy recorded in the encoder of the render pass that wrote the
-	// texture fails (wgpu v0.32: usage conflict), so it has an encoder of
-	// its own.
 	enc, err := t.d.dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{Label: "stilus-readback"})
 	if err != nil {
 		return fmt.Errorf("gpu: encoder: %w", err)

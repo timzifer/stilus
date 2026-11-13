@@ -79,7 +79,8 @@ t.Flush()                                         // then sample t.Texture(), or
 t.ReadRGBA(img)
 ```
 
-Within 1/255 of the CPU canvas on the scenes (Metal); faster on fills
+Within 1/255 of the CPU canvas on the scenes (Metal and wgpu's software
+adapter); faster on fills
 with transparency, slower on long hairline hatching and on shader paints,
 which are still evaluated on the CPU. `LayerShader` blend modes that read
 the backdrop (`Dst`) and CMYK pairs need the CPU canvas.

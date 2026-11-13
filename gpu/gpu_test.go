@@ -20,9 +20,9 @@ var (
 )
 
 // device opens one device for the tests and skips the test when there is
-// none. STILUS_GPU_FALLBACK=1 requests the software adapter, which wgpu
-// v0.32.1 does not run these shaders on correctly (storage reads in the
-// fragment stage are zero, shared triangle edges are shaded twice).
+// none. STILUS_GPU_FALLBACK=1 requests wgpu's software adapter, which
+// runs the shaders by interpreting SPIR-V: the scenes take minutes there,
+// the primitives a fraction of a second (CI runs those).
 func device(t testing.TB) *gpu.Device {
 	devOnce.Do(func() {
 		dev, devErr = gpu.Open(&gpu.Options{Fallback: os.Getenv("STILUS_GPU_FALLBACK") == "1"})
