@@ -45,6 +45,13 @@ struct Strip {
     xr: f32,
     sl: f32,
     ox: i32,
+    // The clip's mask, if moff is not 0xffffffff: bytes from moff in
+    // words, mw × mh from (mx, my), row-major.
+    moff: u32,
+    mx: i32,
+    my: i32,
+    mw: u32,
+    mh: u32,
 }
 
 fn strip(d: u32) -> Strip {
@@ -57,6 +64,11 @@ fn strip(d: u32) -> Strip {
     s.xr = bitcast<f32>(words[d + 5u]);
     s.sl = bitcast<f32>(words[d + 6u]);
     s.ox = bitcast<i32>(words[d + 7u]);
+    s.moff = words[d + 8u];
+    s.mx = bitcast<i32>(words[d + 9u]);
+    s.my = bitcast<i32>(words[d + 10u]);
+    s.mw = words[d + 11u];
+    s.mh = words[d + 12u];
     return s;
 }
 
@@ -139,7 +151,20 @@ fn stripCoverage(s: Span, px: vec2<f32>) -> f32 {
     let inva = 1.0 / a;
     let d = st.nx * (f32(lx) + 0.5) + st.ny * (r + 0.5);
     let c = area(st.k1 - d, h, mt, inv2ab, inva) - area(st.k2 - d, h, mt, inv2ab, inva);
-    return clamp(floor(c * 256.0), 0.0, 255.0);
+    let cov = u32(clamp(floor(c * 256.0), 0.0, 255.0));
+    if (st.moff == 0xffffffffu) {
+        return f32(cov);
+    }
+    let mx = x - st.mx;
+    let my = y - st.my;
+    if (mx < 0 || my < 0 || u32(mx) >= st.mw || u32(my) >= st.mh) {
+        return 0.0;
+    }
+    let b = st.moff + u32(my) * st.mw + u32(mx);
+    let m = (words[b >> 2u] >> ((b & 3u) * 8u)) & 255u;
+    // round(cov·m/255) as stilus's div255
+    let v = cov * m + 128u;
+    return f32((v + (v >> 8u)) >> 8u);
 }
 
 @fragment

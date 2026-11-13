@@ -108,10 +108,14 @@ type stripBlitter struct {
 	stilus.Blitter
 	cov    []uint8
 	strips *int
+	masked *int
 }
 
 func (b *stripBlitter) BlitStrip(s *stilus.Strip) {
 	*b.strips++
+	if s.Mask != nil {
+		*b.masked++
+	}
 	for j := s.Y0; j < s.Y1; j++ {
 		var x int
 		x, b.cov = s.Row(j, b.cov[:0])
@@ -125,30 +129,46 @@ type stripCompositor struct {
 	imageCompositor
 	sb     stripBlitter
 	strips int
+	masked int
 }
 
 func (c *stripCompositor) Blitter(p *stilus.Paint) stilus.Blitter {
-	c.sb.Blitter, c.sb.strips = c.imageCompositor.Blitter(p), &c.strips
+	c.sb.Blitter, c.sb.strips, c.sb.masked = c.imageCompositor.Blitter(p), &c.strips, &c.masked
 	return &c.sb
 }
 
 // TestStripBlitterScenes: strips handed to a StripBlitter and drawn row
 // by row with Strip.Row give the bytes of the canvas, on the scenes and
-// under a rectangle clip with fractional borders.
+// under a rectangle clip with fractional borders, also within an elliptic
+// mask.
 func TestStripBlitterScenes(t *testing.T) {
 	const dpi = 72
 	size := scenes.Size(dpi)
-	clips := map[string]*stilus.Rect{"": nil, "frac": {X0: 40.3, Y0: 30.6, X1: 1100.45, Y1: 800.2}}
-	total := 0
+	frac := &stilus.Rect{X0: 40.3, Y0: 30.6, X1: 1100.45, Y1: 800.2}
+	var ell stilus.Path
+	ell.Ellipse(600, 420, 520, 330)
+	type clip struct {
+		rect *stilus.Rect
+		mask *stilus.Path
+	}
+	clips := map[string]clip{"": {}, "frac": {rect: frac}, "mask": {rect: frac, mask: &ell}}
+	total, masked := 0, 0
 	for _, s := range scenes.All() {
 		for cn, clip := range clips {
 			t.Run(s.Name+"/"+cn, func(t *testing.T) {
+				m := scenes.Matrix(dpi)
 				draw := func(c *stilus.Canvas) {
-					if clip != nil {
-						c.ClipRect(*clip, scenes.Matrix(dpi))
+					if clip.rect != nil {
+						c.ClipRect(*clip.rect, m)
+					}
+					if clip.mask != nil {
+						c.ClipPath(clip.mask, m, stilus.NonZero)
 					}
 					s.Draw(c, dpi)
-					if clip != nil {
+					if clip.mask != nil {
+						c.PopClip()
+					}
+					if clip.rect != nil {
 						c.PopClip()
 					}
 				}
@@ -162,13 +182,14 @@ func TestStripBlitterScenes(t *testing.T) {
 					t.Fatal(c.Err())
 				}
 				total += comp.strips
+				masked += comp.masked
 				if !bytes.Equal(want.Pix, got.Pix) {
 					t.Fatalf("%d bytes differ (%d strips)", diffBytes(want.Pix, got.Pix), comp.strips)
 				}
 			})
 		}
 	}
-	if total == 0 {
-		t.Fatal("no strips handed over")
+	if total == 0 || masked == 0 {
+		t.Fatalf("%d strips handed over, %d masked", total, masked)
 	}
 }

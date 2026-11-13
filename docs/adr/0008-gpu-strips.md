@@ -81,9 +81,8 @@ line's x there), so that the magnitudes stay small.
 - Stroke scenes are now 2–6× faster than the CPU canvas, readback
   included. What remains on the CPU is the stroker, the corners through
   the accumulator and the strips' set-up.
-- Under a mask clip the strips still go row by row: the mask multiplies
-  each row on the CPU. A mask as a texture the fragment shader reads
-  would lift that (hatch-2000-maskclip).
+- Under a mask clip the strips went row by row at first: the mask
+  multiplied each row on the CPU. See *Masks* below.
 - Accuracy: float32 instead of float64 moves a pixel's coverage across a
   quantization step at times; the scenes stay within 1/255 (most pixels
   identical), `gpu.TestStrips` (48 lines at every angle and six widths,
@@ -95,6 +94,33 @@ line's x there), so that the magnitudes stay small.
 - The software adapter computes the strips too, correctly and more
   slowly than rows (its interpreter shades the parallelogram's spare
   pixels): hatching 48 s at 72 dpi. CI runs `TestStrips` on it.
+
+## Masks
+
+Added after the first measurements. A strip under a mask clip carries the
+mask, `Strip.Mask`, a view of the canvas's clip mask:
+
+```go
+type ClipMask struct{ … }
+func (m *ClipMask) Bounds() image.Rectangle
+func (m *ClipMask) Gen() uint64               // same Gen, same content
+func (m *ClipMask) Row(y int, dst []uint8) []uint8
+```
+
+A pixel's coverage is then round(cov·mask/255), as `maskBlitter` has it,
+and `Strip.Row` applies the mask too, so the contract stays the canvas's
+bytes (`TestStripBlitterScenes` adds an elliptic mask within the
+fractional clip). The canvas reuses its masks for later clips; `Gen`, a
+counter shared by all canvases, names a mask's content, so that a
+compositor can keep a copy. The gpu target copies each mask it meets
+into the data buffer once per flush (cleared outside each row's valid
+range, which the canvas never clears as a whole) and the strip's
+parameters say where; a mask too large for a binding sends the strip's
+rows instead.
+
+hatch-2000-maskclip, Apple M4, 150 dpi: CPU canvas 27.7 ms, gpu 2.9 ms,
+with readback 5.7 ms (27.4 ms before). Within 1/255 on the scene,
+`gpu.TestStrips/mask` within 2/255 as without the mask.
 
 ## Alternatives considered
 

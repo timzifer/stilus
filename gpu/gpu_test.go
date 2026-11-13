@@ -250,9 +250,16 @@ func BenchmarkScenes(b *testing.B) {
 }
 
 // TestStrips draws lines at many angles and widths, opaque and
-// translucent, under a clip with fractional borders: the strips whose
-// coverage the GPU computes against the canvas's bytes.
+// translucent, under a clip with fractional borders and within an
+// elliptic mask: the strips whose coverage the GPU computes against the
+// canvas's bytes.
 func TestStrips(t *testing.T) {
+	for _, masked := range []bool{false, true} {
+		t.Run(map[bool]string{false: "rect", true: "mask"}[masked], func(t *testing.T) { testStrips(t, masked) })
+	}
+}
+
+func testStrips(t *testing.T, masked bool) {
 	d := device(t)
 	const w, h = 160, 120
 	tg, err := d.NewTarget(w, h)
@@ -269,6 +276,11 @@ func TestStrips(t *testing.T) {
 	}
 	ops := func(c *stilus.Canvas) {
 		c.ClipRect(stilus.Rect{X0: 3.4, Y0: 2.7, X1: 151.6, Y1: 113.3}, stilus.Identity)
+		if masked {
+			var e stilus.Path
+			e.Ellipse(82, 58, 70, 47)
+			c.ClipPath(&e, stilus.Identity, stilus.NonZero)
+		}
 		for i := 0; i < 48; i++ {
 			a := float64(i) * math.Pi / 48
 			cx, cy := 80+float64(i%7)*3, 60+float64(i%5)*2
@@ -277,6 +289,9 @@ func TestStrips(t *testing.T) {
 			p.LineTo(float32(cx+90*math.Cos(a)), float32(cy+90*math.Sin(a)))
 			st := &stilus.StrokeStyle{Width: 0.3 + float64(i%6)*0.7}
 			c.Stroke(&p, stilus.Identity, st, paints[i%len(paints)])
+		}
+		if masked {
+			c.PopClip()
 		}
 		c.PopClip()
 	}
