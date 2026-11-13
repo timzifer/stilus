@@ -21,10 +21,16 @@ const SceneMarker = "%stilus-scene "
 
 // WriteScenes writes each benchmark scene as a one-page A3 PDF into dir
 // (synthetic/<name>.pdf): technical-drawing content with a known structure
-// that every engine, including stilus, can render.
+// that every engine, including stilus, can render. Scenes that draw an
+// operation through Op.Draw (gradients, images, layers, patterns, cached
+// glyphs) are skipped: their content has no PDF form here, and a PDF
+// without it would not match what the stilus engine draws.
 func WriteScenes(dir string) ([]string, error) {
 	var names []string
 	for _, s := range scenes.All() {
+		if !Writable(s) {
+			continue
+		}
 		path := filepath.Join(dir, "synthetic", s.Name+".pdf")
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, err
@@ -45,9 +51,23 @@ func WriteScenes(dir string) ([]string, error) {
 	return names, nil
 }
 
+// Writable reports whether ScenePDF can write s: every operation is a plain
+// fill or stroke with a solid paint.
+func Writable(s *scenes.Scene) bool {
+	for i := range s.Ops {
+		if op := &s.Ops[i]; op.Draw != nil || op.Paint == nil || op.Paint.Shader != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // ScenePDF writes s as a single-page PDF. Scene coordinates have their
 // origin at the top left, so the content is flipped into PDF space.
 func ScenePDF(w io.Writer, s *scenes.Scene) error {
+	if !Writable(s) {
+		return fmt.Errorf("scene %s: operations drawn through Op.Draw or with a shader have no PDF form", s.Name)
+	}
 	var c bytes.Buffer
 	num := func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 32) }
 	pt := func(p stilus.Point) string { return num(float64(p.X)) + " " + num(float64(p.Y)) }
