@@ -166,7 +166,7 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 	// runs on unchanged), an edge budget of at least two, and corners
 	// exact in float32.
 	const lim = 1 << 23
-	if st := c.top(); st.mask == nil && st.clearOfFrac(r.Intersect(clip)) && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
+	if st := c.top(); c.comp == nil && st.mask == nil && st.clearOfFrac(r.Intersect(clip)) && (c.r.MaxEdges == 0 || c.r.MaxEdges >= 2) &&
 		r.Min.X >= -lim && r.Min.Y >= -lim && r.Max.X <= lim && r.Max.Y <= lim {
 		c.blitMask(&c.solid.t, mask, origin, PackRGBA(paint.Color), r.Intersect(clip))
 		if c.second != nil {

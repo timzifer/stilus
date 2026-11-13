@@ -98,7 +98,7 @@ jobs:
           TARGET: ${{ matrix.target }}
 
   modules:
-    name: Submodules (bench, harness)
+    name: Submodules (bench, harness, gpu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -108,11 +108,18 @@ jobs:
           cache-dependency-path: |
             bench/go.sum
             harness/go.sum
+            gpu/go.sum
       - name: bench
         working-directory: bench
         run: go vet ./...
       - name: harness
         working-directory: harness
+        run: |
+          go vet ./...
+          go test ./...
+      - name: gpu
+        # Runners have no GPU adapter: the tests skip, vet and build run.
+        working-directory: gpu
         run: |
           go vet ./...
           go test ./...

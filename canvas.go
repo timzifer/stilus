@@ -72,6 +72,9 @@ type Canvas struct {
 	solid  SolidBlitter
 	shader ShaderBlitter
 
+	// comp, when non-nil, composites instead of dst (ResetCompositor).
+	comp Compositor
+
 	// second is the second image of ResetPair, nil for none, and what
 	// paints into it.
 	second  *image.RGBA
@@ -106,10 +109,36 @@ func NewCanvas(dst *image.RGBA) *Canvas {
 // Reset retargets the canvas to dst, limited to region (in dst's
 // coordinates), clears the clip stack and the error.
 func (c *Canvas) Reset(dst *image.RGBA, region image.Rectangle) {
-	c.dst, c.second = dst, nil
+	c.dst, c.second, c.comp = dst, nil, nil
 	c.solid.t.set(dst)
 	c.shader.t.set(dst)
 	c.stack = append(c.stack[:0], newClipState(region.Intersect(dst.Bounds())))
+	c.overflow = 0
+	c.err = nil
+}
+
+// Compositor composites what a Canvas draws when its destination is not
+// an image.RGBA in memory, such as a GPU texture (see the gpu module).
+//
+// Blitter returns the blitter that the coverage of one drawing operation,
+// painted with p, goes to. The canvas calls it once per operation and uses
+// the result only until the next call. The blitter must composite
+// source-over on premultiplied colours, in the order of its calls: the
+// canvas relies on that as it relies on it for its own blitters.
+type Compositor interface {
+	Blitter(p *Paint) Blitter
+}
+
+// ResetCompositor retargets the canvas to dst, limited to region (in
+// device pixels), clears the clip stack and the error. The canvas then
+// touches no pixels itself: every span goes through dst's blitters, with
+// the clip applied, so the coverage is that of a canvas drawing onto an
+// image. A canvas with a compositor draws into one destination;
+// ResetPair does not combine with it.
+func (c *Canvas) ResetCompositor(dst Compositor, region image.Rectangle) {
+	c.dst, c.second, c.comp = nil, nil, dst
+	c.solid.t, c.shader.t = target{}, target{}
+	c.stack = append(c.stack[:0], newClipState(region))
 	c.overflow = 0
 	c.err = nil
 }
@@ -202,6 +231,9 @@ func (c *Canvas) chain(st *clipState, b Blitter) Blitter {
 }
 
 func (c *Canvas) paint(p *Paint) Blitter {
+	if c.comp != nil {
+		return c.comp.Blitter(p)
+	}
 	b := paintWith(p, &c.solid, &c.shader)
 	if c.second == nil {
 		return b
@@ -286,7 +318,9 @@ func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	if strokeMisses(bb, pad, cs.bounds) {
 		return
 	}
-	c.touchStroke(p, m, max(st.Width*pr.sm, 1)/2)
+	if c.comp == nil {
+		c.touchStroke(p, m, max(st.Width*pr.sm, 1)/2)
+	}
 	b, ok := c.strokePaint(cs, paint, pr)
 	if !ok {
 		return
@@ -358,7 +392,7 @@ func (c *Canvas) strokeFast(cs *clipState, b Blitter, paint *Paint, pr strokePre
 	c.seg.r, c.seg.b = &c.r, b
 	c.seg.solid = nil
 	c.seg.frac = cs.frac
-	if cs.mask == nil && opaque && c.second == nil {
+	if cs.mask == nil && opaque && c.second == nil && c.comp == nil {
 		c.seg.solid = &c.solid
 	}
 	c.seg.setBorder(cs, overlap)

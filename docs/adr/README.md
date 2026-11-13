@@ -21,6 +21,7 @@ when its shaders or kernels exist with tests and cera's ADR can use them.
 | [0004](0004-knockout-compositing.md) | Knockout compositing by shader | cera ADR 0009 (M8) | proposed |
 | [0005](0005-prepared-geometry.md) | Prepared geometry shared by bands | cera's banded rendering | accepted |
 | [0006](0006-union.md) | Union of many paths in one coverage pass | cera#21 (batched same-paint operations) | accepted |
+| [0007](0007-gpu-compositing.md) | Compositing on the GPU through gogpu/wgpu | GPU viewers (lux, cera viewer) | accepted |
 
 ## Template
 

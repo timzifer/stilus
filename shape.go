@@ -599,7 +599,9 @@ func (c *Canvas) FillShape(s *Shape, paint *Paint) {
 			// destination under the strips and their compositing, which
 			// gives the loads time to arrive (see touchStroke).
 			f := s.form(0, c)
-			c.addStrips(f, cs.bounds, true)
+			if c.comp == nil {
+				c.addStrips(f, cs.bounds, true)
+			}
 			c.addEdges(f, cs.bounds)
 			c.addStrips(f, cs.bounds, false)
 			c.strokeDone(f, b)
