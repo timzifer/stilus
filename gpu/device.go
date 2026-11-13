@@ -16,6 +16,9 @@
 //	c.Fill(path, m, stilus.NonZero, paint)
 //	t.ReadRGBA(img) // or t.Flush() and sample t.Texture()
 //
+// In a window, a Presenter draws targets into the frame's render pass
+// without copying them (ADR 0010).
+//
 // The GPU blends in floating point and rounds once, so a pixel may differ
 // from the CPU canvas by 1/255 per operation composited onto it.
 // LayerShader reads its backdrop from memory and cannot read a target;
@@ -47,6 +50,7 @@ type Device struct {
 	shader   *wgpu.ShaderModule
 	pipeline *wgpu.RenderPipeline
 	maxBind  uint64 // largest storage binding
+	present  presentRes
 
 	// own, when the device was made by Open.
 	instance *wgpu.Instance
@@ -168,15 +172,21 @@ func NewDevice(dev *wgpu.Device) (*Device, error) {
 		d.Close()
 		return nil, fmt.Errorf("gpu: pipeline: %w", err)
 	}
+	if err := d.present.init(dev); err != nil {
+		d.Close()
+		return nil, err
+	}
 	return d, nil
 }
 
 // WGPU returns the device the pipeline lives on.
 func (d *Device) WGPU() *wgpu.Device { return d.dev }
 
-// Close releases the pipeline, and the device, adapter and instance if
-// Open made them. Targets must be closed first.
+// Close releases the pipelines, and the device, adapter and instance if
+// Open made them. Targets and presenters must be closed
+// first.
 func (d *Device) Close() {
+	d.present.release()
 	if d.pipeline != nil {
 		d.pipeline.Release()
 		d.pipeline = nil
