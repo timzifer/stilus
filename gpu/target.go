@@ -258,10 +258,13 @@ func (t *Target) grow(spans, data int) error {
 	return nil
 }
 
-// Flush draws what was recorded since the last Flush onto the texture,
-// the target's own spans and then those of its recorders, in one render
-// pass; a recorder's layer operations split its spans into segments, drawn
-// in rounds with the layer's copies between them (ADR 0017).
+// Flush draws what was recorded since the last Flush onto the texture:
+// the target's own spans first, then those of its recorders. Layer
+// operations split the spans into segments: the spans before a layer are
+// drawn, then the layer's copies are made and its spans drawn, strip by
+// strip if its copies do not fit at once (ADR 0014, 0017). A target's
+// segments are drawn in order; its recorders' in rounds, every
+// recorder's segment k in one render pass.
 func (t *Target) Flush() error {
 	if t.parent != nil {
 		return errors.New("gpu: a recorder is flushed by its target")
@@ -273,6 +276,9 @@ func (t *Target) Flush() error {
 	}
 	if !draw {
 		return nil
+	}
+	if err := t.prepareLayers(); err != nil {
+		return err
 	}
 	rounds := 1
 	for _, r := range t.recorders {
@@ -289,22 +295,40 @@ func (t *Target) Flush() error {
 			return err
 		}
 	}
-	// Round k draws every recorder's segment k, after the copies of its
-	// layer operation k−1, which read what the rounds before drew.
+	// The target's own segments.
+	for k := 0; k <= len(t.layerOps); k++ {
+		if k > 0 {
+			if err := t.drawLayerOp(&t.layerOps[k-1]); err != nil {
+				return err
+			}
+		}
+		from, to := t.segment(k)
+		if err := t.drawPass(nil, func(pass *wgpu.RenderPassEncoder) { t.drawSpans(pass, from, to) }); err != nil {
+			return err
+		}
+	}
+	// The recorders' segments, round by round.
 	for k := range rounds {
 		if k > 0 {
 			for _, r := range t.recorders {
 				if k-1 < len(r.layerOps) {
-					op := &r.layerOps[k-1]
-					if !op.region.Empty() {
-						if err := r.copyLayer(op.srcs[:], op.offs[:], op.region, op.stride); err != nil {
-							return err
-						}
+					if err := r.drawLayerOp(&r.layerOps[k-1]); err != nil {
+						return err
 					}
 				}
 			}
 		}
-		if err := t.drawRound(k); err != nil {
+		if len(t.recorders) == 0 {
+			break
+		}
+		if err := t.drawPass(nil, func(pass *wgpu.RenderPassEncoder) {
+			for _, r := range t.recorders {
+				if k <= len(r.layerOps) {
+					from, to := r.segment(k)
+					r.drawSpans(pass, from, to)
+				}
+			}
+		}); err != nil {
 			return err
 		}
 	}
@@ -316,10 +340,9 @@ func (t *Target) Flush() error {
 	return nil
 }
 
-// drawRound draws round k of a Flush in a render pass: the target's own
-// spans and every recorder's first segment in round 0, the recorders'
-// segment k after.
-func (t *Target) drawRound(k int) error {
+// drawPass draws in a render pass over the target's texture, clipped to
+// scissor if not nil; the first pass of a Flush after Clear clears.
+func (t *Target) drawPass(scissor *image.Rectangle, draw func(pass *wgpu.RenderPassEncoder)) error {
 	enc, err := t.d.dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{Label: "stilus-flush"})
 	if err != nil {
 		return fmt.Errorf("gpu: encoder: %w", err)
@@ -327,8 +350,9 @@ func (t *Target) drawRound(k int) error {
 	// The descriptor is kept on the target: built here, it would be
 	// allocated for every flush.
 	t.att[0] = wgpu.RenderPassColorAttachment{View: t.view, LoadOp: gputypes.LoadOpLoad, StoreOp: gputypes.StoreOpStore}
-	if t.clear && k == 0 {
+	if t.clear {
 		t.att[0].LoadOp, t.att[0].ClearValue = gputypes.LoadOpClear, t.clearCol
+		t.clear = false
 	}
 	t.passDesc = wgpu.RenderPassDescriptor{Label: "stilus-spans", ColorAttachments: t.att[:]}
 	pass, err := enc.BeginRenderPass(&t.passDesc)
@@ -337,15 +361,11 @@ func (t *Target) drawRound(k int) error {
 		return fmt.Errorf("gpu: render pass: %w", err)
 	}
 	pass.SetPipeline(t.d.pipeline)
-	if k == 0 {
-		t.drawSpans(pass, 0, len(t.spans)/spanBytes)
+	if scissor != nil {
+		sc := scissor.Intersect(t.Bounds())
+		pass.SetScissorRect(gputypes.ScissorRect{X: uint32(sc.Min.X), Y: uint32(sc.Min.Y), Width: uint32(sc.Dx()), Height: uint32(sc.Dy())})
 	}
-	for _, r := range t.recorders {
-		if k <= len(r.layerOps) {
-			from, to := r.segment(k)
-			r.drawSpans(pass, from, to)
-		}
-	}
+	draw(pass)
 	if err := pass.End(); err != nil {
 		enc.DiscardEncoding()
 		return fmt.Errorf("gpu: end pass: %w", err)
@@ -391,12 +411,12 @@ func (t *Target) drawSpans(pass *wgpu.RenderPassEncoder, from, to int) {
 	}
 }
 
-// segment returns the spans of a recorder's segment k: those before its
-// first layer operation for k = 0, else those from its layer operation k−1
-// to the next.
-func (t *Target) segment(k int) (from, to int) {
+// gap returns the spans between layer operations: before the first for
+// k = 0, else from the end of operation k−1 to the start of operation k
+// (or the end).
+func (t *Target) gap(k int) (from, to int) {
 	if k > 0 {
-		from = t.layerOps[k-1].start
+		from = t.layerOps[k-1].end
 	}
 	to = len(t.spans) / spanBytes
 	if k < len(t.layerOps) {
@@ -523,6 +543,12 @@ func (t *Target) Close() {
 // the limit, and reports whether recording may go on.
 func (t *Target) reserve(spans, data int) bool {
 	if len(t.spans)+spans*spanBytes <= t.limit && len(t.data)+data+3 <= t.limit {
+		return true
+	}
+	if open := len(t.layerOps) > 0 && t.layerOps[len(t.layerOps)-1].end < 0; open && t.parent == nil &&
+		len(t.spans)+spans*spanBytes <= int(t.d.maxBind) && len(t.data)+data+3 <= int(t.d.maxBind) {
+		// A layer operation being recorded is not cut by a flush: the
+		// buffers grow.
 		return true
 	}
 	if spans*spanBytes > t.limit || data+3 > t.limit || t.parent != nil {

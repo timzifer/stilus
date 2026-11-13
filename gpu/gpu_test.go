@@ -746,6 +746,17 @@ func layerCases() []layerCase {
 // the CPU canvas, which reads the backdrop from its image) and as
 // gpu.Layer with targets.
 func TestLayers(t *testing.T) {
+	testLayers(t)
+}
+
+// TestLayerStrips is TestLayers with a layer buffer too small for any
+// layer's copies at once: every layer is drawn in strips of a few rows.
+func TestLayerStrips(t *testing.T) {
+	defer gpu.SetLayerLimit(16 << 10)()
+	testLayers(t)
+}
+
+func testLayers(t *testing.T) {
 	d := device(t)
 	const cw, ch = 52, 44
 	cases := layerCases()

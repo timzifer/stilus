@@ -22,3 +22,11 @@ func SetMeshCache(on bool) func() {
 	meshCacheOff = !on
 	return func() { meshCacheOff = old }
 }
+
+// SetLayerLimit bounds the layer buffer for a test and returns a
+// function restoring it.
+func SetLayerLimit(n int) func() {
+	old := layerLimit
+	layerLimit = n
+	return func() { layerLimit = old }
+}
