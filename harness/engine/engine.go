@@ -28,12 +28,10 @@ type Doc interface {
 // New returns the engine with the given name.
 func New(name string) (Engine, error) {
 	switch strings.ToLower(name) {
-	case "pdfkit", "go-pdfkit":
-		return PDFKit{}, nil
 	case "pdfium":
 		return NewPDFium()
 	case "stilus":
 		return Stilus{}, nil
 	}
-	return nil, fmt.Errorf("unknown engine %q (pdfkit, pdfium, stilus)", name)
+	return nil, fmt.Errorf("unknown engine %q (pdfium, stilus)", name)
 }
