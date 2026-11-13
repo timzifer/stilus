@@ -327,7 +327,7 @@ func (t *Target) recordLayer(srcs [5]layerSrc, r image.Rectangle, alpha uint8, f
 	off := len(t.data)
 	t.data = putLayerRecord(t.data, flags, alpha, image.Rectangle{}, 0, [5]int{})
 	b.rec = append(b.rec[:0], t.data[off:]...)
-	b.col, b.recFlush, b.recOK, b.img = uint32(off/4), t.flushes, true, nil
+	b.col, b.recFlush, b.recOK, b.img, b.gform = uint32(off/4), t.flushes, true, nil, nil
 	t.layerOps = append(t.layerOps, layerOp{srcs: srcs, r: r, flags: flags, alpha: alpha, start: len(t.spans) / spanBytes, end: -1, rec: off})
 	return b
 }

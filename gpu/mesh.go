@@ -75,7 +75,7 @@ func (t *Target) meshBlitter(s *stilus.MeshShader) stilus.Blitter {
 		return nil
 	}
 	b := &t.grad
-	b.recOK, b.img = false, nil
+	b.recOK, b.img, b.gform = false, nil, nil
 	b.rec = append(b.rec[:0], rec...)
 	// Alpha is the shader's now, not its Gen's.
 	binary.LittleEndian.PutUint32(b.rec[4:], uint32(f.Alpha()))

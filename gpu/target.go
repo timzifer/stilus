@@ -85,8 +85,9 @@ type Target struct {
 	// planes maps the texture planes in the store to the word offset of
 	// their RGBA copy; it keeps them alive until the store is reset.
 	planes  map[*stilus.Plane]int
-	image   stilus.ImageForm // the current operation's, for grad.img
-	words   []uint32         // a plane's row, converted
+	image   stilus.ImageForm    // the current operation's, for grad.img
+	gform   stilus.GradientForm // the current operation's, for grad.gform
+	words   []uint32            // a plane's row, converted
 	maskRow []uint8
 
 	meshStart, meshIDs, meshFill []int32    // a mesh's grid, while recorded
@@ -622,9 +623,10 @@ type solidBlitter struct {
 	flag uint32 // gradFlag for a gradient
 	cov  []uint8
 
-	rec      []byte            // the paint's record, uploaded when first needed
-	img      *stilus.ImageForm // an image's form, its record made at upload
-	recFlush uint64            // t.flushes when it was uploaded, with recOK
+	rec      []byte               // the paint's record, uploaded when first needed
+	img      *stilus.ImageForm    // an image's form, its record made at upload
+	gform    *stilus.GradientForm // a gradient's, its origin written at upload
+	recFlush uint64               // t.flushes when it was uploaded, with recOK
 	recOK    bool
 }
 
@@ -647,6 +649,9 @@ func (b *solidBlitter) ready(x, y, spans, data int) bool {
 	if !b.recOK || b.recFlush != t.flushes {
 		if b.img != nil {
 			b.rec = t.imageRecord(b.rec[:0], b.img, x, y)
+		}
+		if b.gform != nil {
+			gradOrigin(b.rec, b.gform, x, y)
 		}
 		t.data = pad4(t.data)
 		off := len(t.data) / 4

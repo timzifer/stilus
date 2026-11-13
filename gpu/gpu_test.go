@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"math/rand"
 	"os"
 	"sync"
 	"testing"
@@ -1389,5 +1390,132 @@ func BenchmarkMeshBands(b *testing.B) {
 		for _, r := range recs {
 			r.Close()
 		}
+	}
+}
+
+// TestGradientsRandom draws linear and radial gradients of random
+// geometry, whose pixels do not fall on exact ties between two ramp
+// entries: away from ties float32 takes the entry float64 takes.
+func TestGradientsRandom(t *testing.T) {
+	d := device(t)
+	const w, h = 320, 240
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	rng := rand.New(rand.NewSource(65))
+	ramp := make(stilus.Ramp, 64)
+	for i := range ramp {
+		ramp[i] = stilus.PackRGBA(color.RGBA{uint8(i * 4), uint8(255 - i*4), 60, 255})
+	}
+	var paints []*stilus.Paint
+	for i := 0; i < 24; i++ {
+		m := stilus.Matrix{0.8 + rng.Float64(), rng.Float64() - 0.5, rng.Float64() - 0.5, 0.8 + rng.Float64(), rng.Float64() * 30, rng.Float64() * 30}
+		var g stilus.Gradient
+		g.Ramp, g.Alpha, g.Extend = ramp, 255, [2]bool{true, true}
+		if i%2 == 0 {
+			lg := &stilus.LinearGradient{Gradient: g}
+			lg.Set(rng.Float64()*100, rng.Float64()*100, 100+rng.Float64()*150, rng.Float64()*150, m)
+			paints = append(paints, &stilus.Paint{Shader: lg})
+		} else {
+			rg := &stilus.RadialGradient{Gradient: g}
+			rg.Set(rng.Float64()*150, rng.Float64()*120, rng.Float64()*10, rng.Float64()*150, rng.Float64()*120, 40+rng.Float64()*80, m)
+			paints = append(paints, &stilus.Paint{Shader: rg})
+		}
+	}
+	ops := func(c *stilus.Canvas) {
+		for i, p := range paints {
+			var r stilus.Path
+			r.Rect(float32((i%6)*53), float32((i/6)*60), 53, 60)
+			c.Fill(&r, stilus.Identity, stilus.NonZero, p)
+		}
+	}
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	ops(stilus.NewCanvas(want))
+	tg.Clear(color.RGBA{})
+	var c stilus.Canvas
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(&c)
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	steps := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			a, b := want.RGBAAt(x, y), got.RGBAAt(x, y)
+			if max(absd(a.R, b.R), absd(a.G, b.G), absd(a.B, b.B), absd(a.A, b.A)) > 1 {
+				steps++
+			}
+		}
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	t.Logf("max %d/255, mean %.4f/255, %d of %d pixels a ramp step off", mx, mean, steps, w*h)
+	if steps > w*h/20000 {
+		t.Errorf("%d pixels a ramp step off", steps)
+	}
+}
+
+// TestGradientsFar is TestGradientsRandom 3000 pixels from the origin,
+// as on a page at 300 dpi.
+func TestGradientsFar(t *testing.T) {
+	d := device(t)
+	const w, h = 3400, 240
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	rng := rand.New(rand.NewSource(65))
+	ramp := make(stilus.Ramp, 64)
+	for i := range ramp {
+		ramp[i] = stilus.PackRGBA(color.RGBA{uint8(i * 4), uint8(255 - i*4), 60, 255})
+	}
+	var paints []*stilus.Paint
+	for i := 0; i < 24; i++ {
+		m := stilus.Matrix{0.8 + rng.Float64(), rng.Float64() - 0.5, rng.Float64() - 0.5, 0.8 + rng.Float64(), 3000 + rng.Float64()*30, rng.Float64() * 30}
+		var g stilus.Gradient
+		g.Ramp, g.Alpha, g.Extend = ramp, 255, [2]bool{true, true}
+		if i%2 == 0 {
+			lg := &stilus.LinearGradient{Gradient: g}
+			lg.Set(rng.Float64()*100, rng.Float64()*100, 100+rng.Float64()*150, rng.Float64()*150, m)
+			paints = append(paints, &stilus.Paint{Shader: lg})
+		} else {
+			rg := &stilus.RadialGradient{Gradient: g}
+			rg.Set(rng.Float64()*150, rng.Float64()*120, rng.Float64()*10, rng.Float64()*150, rng.Float64()*120, 40+rng.Float64()*80, m)
+			paints = append(paints, &stilus.Paint{Shader: rg})
+		}
+	}
+	ops := func(c *stilus.Canvas) {
+		for i, p := range paints {
+			var r stilus.Path
+			r.Rect(3000+float32((i%6)*53), float32((i/6)*60), 53, 60)
+			c.Fill(&r, stilus.Identity, stilus.NonZero, p)
+		}
+	}
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	ops(stilus.NewCanvas(want))
+	tg.Clear(color.RGBA{})
+	var c stilus.Canvas
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(&c)
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	steps := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			a, b := want.RGBAAt(x, y), got.RGBAAt(x, y)
+			if max(absd(a.R, b.R), absd(a.G, b.G), absd(a.B, b.B), absd(a.A, b.A)) > 1 {
+				steps++
+			}
+		}
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	t.Logf("max %d/255, mean %.4f/255, %d of %d pixels a ramp step off", mx, mean, steps, w*h)
+	if steps > w*h/20000 {
+		t.Errorf("%d pixels a ramp step off", steps)
 	}
 }

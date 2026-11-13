@@ -14,9 +14,15 @@ import (
 //	2, 3   word offsets of the ramp and the knots, relative to the record
 //	4      Outside, premultiplied RGBA8, R in the low byte
 //	5      Alpha
-//	6…16   float32: linear A, B, C; radial Inv[0…3], Inv[4] − X0,
-//	       Inv[5] − Y0, R0, DX, DY, DR, QA
-//	17…    the ramp (n words), the knots (n float32) if any
+//	6…16   float32: linear A, B and t at the origin's centre; radial
+//	       Inv[0…3], u and v at the origin's centre, R0, DX, DY, DR, QA
+//	17, 18 int32 origin: the first pixel the operation draws
+//	19…    the ramp (n words), the knots (n float32) if any
+//
+// t (u, v) at a pixel is the origin's plus the linear part times the
+// pixel's integer distance from it, so that float32 holds the numbers of
+// the operation, not of the page; the record's origin words are written
+// when it is uploaded (gradOrigin).
 const (
 	gradRadial = 1 << iota
 	gradExtend0
@@ -24,7 +30,7 @@ const (
 	gradKnots
 	gradLinearEq
 
-	gradHead = 17
+	gradHead = 19
 )
 
 // gradient returns the blitter of a gradient the GPU computes, its record
@@ -56,7 +62,7 @@ func (t *Target) gradient(sh stilus.Shader) stilus.Blitter {
 		return nothing{}
 	}
 	b := &t.grad
-	b.recOK, b.img = false, nil
+	b.recOK, b.img, b.gform = false, nil, nil
 	n := len(g.Ramp)
 	flags := uint32(0)
 	if f.Radial {
@@ -83,15 +89,8 @@ func (t *Target) gradient(sh stilus.Shader) stilus.Blitter {
 	put(uint32(gradHead + n))
 	put(rgba(g.Outside))
 	put(uint32(g.Alpha))
-	if f.Radial {
-		m := f.Inv
-		for _, v := range [...]float64{m[0], m[1], m[2], m[3], m[4] - f.X0, m[5] - f.Y0, f.R0, f.DX, f.DY, f.DR, f.QA} {
-			putf(v)
-		}
-	} else {
-		for _, v := range [...]float64{f.A, f.B, f.C, 0, 0, 0, 0, 0, 0, 0, 0} {
-			putf(v)
-		}
+	for range 11 + 2 {
+		put(0) // the form at the origin: gradOrigin
 	}
 	for _, c := range g.Ramp {
 		put(rgba(c))
@@ -100,7 +99,29 @@ func (t *Target) gradient(sh stilus.Shader) stilus.Blitter {
 		putf(k)
 	}
 	b.rec = r
+	t.gform = f
+	b.gform = &t.gform
 	return b
+}
+
+// gradOrigin writes into a gradient record the form at the origin, the
+// centre of pixel (x, y).
+func gradOrigin(r []byte, f *stilus.GradientForm, x, y int) {
+	fx, fy := float64(x)+0.5, float64(y)+0.5
+	var v [11]float64
+	if f.Radial {
+		m := f.Inv
+		v = [11]float64{m[0], m[1], m[2], m[3],
+			m[0]*fx + m[2]*fy + m[4] - f.X0, m[1]*fx + m[3]*fy + m[5] - f.Y0,
+			f.R0, f.DX, f.DY, f.DR, f.QA}
+	} else {
+		v = [11]float64{f.A, f.B, f.A*fx + f.B*fy + f.C}
+	}
+	for i, k := range v {
+		binary.LittleEndian.PutUint32(r[(6+i)*4:], math.Float32bits(float32(k)))
+	}
+	binary.LittleEndian.PutUint32(r[17*4:], uint32(int32(x)))
+	binary.LittleEndian.PutUint32(r[18*4:], uint32(int32(y)))
 }
 
 // rgba converts a colour in PackRGBA layout to the GPU's: R in the low
