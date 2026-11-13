@@ -28,6 +28,7 @@ when its shaders or kernels exist with tests and cera's ADR can use them.
 | [0011](0011-image-forms.md) | Images and patterns sampled by a compositor | ADR 0007 (shader paints) | accepted |
 | [0012](0012-mesh-forms.md) | Meshes shaded by a compositor | ADR 0007 (shader paints) | accepted |
 | [0013](0013-glyph-masks.md) | Glyph masks painted by a compositor | ADR 0007 (shader paints) | accepted |
+| [0014](0014-gpu-layers.md) | Layers composited by a GPU target | ADR 0007, cera ADR 0009 | accepted |
 
 ## Template
 

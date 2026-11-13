@@ -47,8 +47,8 @@ shaded on the CPU.
   would need a mask generation in `GlyphCache`; the copies cost less
   than the cache lookups that come before them.
 - With this, every paint of stilus is painted on the GPU except
-  `LayerShader` (it reads its backdrop from memory) and CMYK pairs;
-  callers' own shaders go through `ShadeSpan`.
+  `LayerShader`, which followed ([ADR 0014](0014-gpu-layers.md)), and
+  CMYK pairs; callers' own shaders go through `ShadeSpan`.
 
 ## Alternatives considered
 
