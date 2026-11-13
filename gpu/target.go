@@ -69,7 +69,12 @@ type Target struct {
 
 	// masks maps the generation of each clip mask uploaded since the last
 	// Flush to the byte offset of its copy in data.
-	masks   map[uint64]int
+	masks map[uint64]int
+	// planes maps the texture planes uploaded since the last Flush to
+	// the word offset of their RGBA copy in data.
+	planes  map[*stilus.Plane]int
+	image   stilus.ImageForm // the current operation's, for grad.img
+	words   []uint32         // a plane's row, converted
 	maskRow []uint8
 }
 
@@ -78,7 +83,7 @@ func (d *Device) NewTarget(w, h int) (*Target, error) {
 	if w <= 0 || h <= 0 || w > MaxSize || h > MaxSize {
 		return nil, fmt.Errorf("gpu: target size %d×%d", w, h)
 	}
-	t := &Target{d: d, w: w, h: h, clear: true, masks: map[uint64]int{}}
+	t := &Target{d: d, w: w, h: h, clear: true, masks: map[uint64]int{}, planes: map[*stilus.Plane]int{}}
 	t.limit = int(min(d.maxBind, 64<<20))
 	t.solid.t, t.grad.t, t.shaded.t = t, t, t
 	t.grad.flag = gradFlag
@@ -136,6 +141,7 @@ func (t *Target) View() *wgpu.TextureView { return t.view }
 func (t *Target) Clear(c color.RGBA) {
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
+	clear(t.planes)
 	t.flushes++
 	t.clear = true
 	t.clearCol = gputypes.Color{R: float64(c.R) / 255, G: float64(c.G) / 255, B: float64(c.B) / 255, A: float64(c.A) / 255}
@@ -260,6 +266,7 @@ func (t *Target) Flush() error {
 	}
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
+	clear(t.planes)
 	t.flushes++
 	t.clear = false
 	return nil
@@ -433,22 +440,33 @@ type solidBlitter struct {
 	flag uint32 // gradFlag for a gradient
 	cov  []uint8
 
-	rec      []byte // the gradient's record, uploaded when first needed
-	recFlush uint64 // t.flushes when it was uploaded, with recOK
+	rec      []byte            // the paint's record, uploaded when first needed
+	img      *stilus.ImageForm // an image's form, its record made at upload
+	recFlush uint64            // t.flushes when it was uploaded, with recOK
 	recOK    bool
 }
 
 // ready reserves room for spans more spans and data more bytes, and
-// uploads the gradient's record where the data no longer holds it.
-func (b *solidBlitter) ready(spans, data int) bool {
+// uploads the paint's record where the data no longer holds it: a
+// gradient's, or an image's with its planes, whose origin is (x, y), the
+// first pixel drawn after the upload.
+func (b *solidBlitter) ready(x, y, spans, data int) bool {
 	t := b.t
 	if b.flag == 0 {
 		return t.reserve(spans, data)
 	}
-	if !t.reserve(spans, data+len(b.rec)+3) {
+	need := data + len(b.rec) + 3
+	if b.img != nil {
+		// All its planes: a flush in reserve drops those uploaded.
+		need = data + imageWords*4 + 3 + planeBytes(b.img)
+	}
+	if !t.reserve(spans, need) {
 		return false
 	}
 	if !b.recOK || b.recFlush != t.flushes {
+		if b.img != nil {
+			b.rec = t.imageRecord(b.rec[:0], b.img, x, y)
+		}
 		t.data = pad4(t.data)
 		off := len(t.data) / 4
 		if off > dataMask {
@@ -461,7 +479,7 @@ func (b *solidBlitter) ready(spans, data int) bool {
 }
 
 func (b *solidBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
-	if b.flag != 0 && !b.ready(1, 0) {
+	if b.flag != 0 && !b.ready(x0, y, 1, 0) {
 		return
 	}
 	b.t.run(y, x0, x1, alpha, b.col, b.flag)
@@ -474,7 +492,7 @@ func (b *solidBlitter) BlitCoverage(y, x int, cov []uint8) {
 		return
 	}
 	cov = cov[o : o+x1-x0]
-	if !b.ready(1, len(cov)) {
+	if !b.ready(x0, y, 1, len(cov)) {
 		return
 	}
 	off := len(t.data)
@@ -508,7 +526,7 @@ func (b *solidBlitter) BlitStrip(s *stilus.Strip) {
 			need += mb.Dx()*mb.Dy() + 3
 		}
 	}
-	if !b.ready(1, need) {
+	if !b.ready(x0, y0, 1, need) {
 		// Larger than a binding (a page-sized mask on a small device):
 		// the rows instead.
 		b.stripRows(s)

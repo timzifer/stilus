@@ -592,3 +592,58 @@ func (s *ImageShader) ShadeSpan(y, x int, dst []uint32) {
 		}
 	}
 }
+
+// SamplerForm describes what a Sampler reads, for a renderer that samples
+// itself, such as a GPU shader. Inv maps the centre (x + ½, y + ½) of a
+// device pixel to (u, v) in the pixel space of Plane, pixel (i, j)
+// covering [i, i+1) × [j, j+1).
+//
+// Nearest sampling reads the pixel (u, v) falls in, the edge pixels
+// outside the plane. Bilinear sampling reads the four pixels around
+// (u − ½, v − ½), each coordinate's pair and weight as split gives them
+// (the weight of the second pixel in 1/256, truncated; the edge pixel
+// twice with weight 0 outside), and mixes them channel-wise as
+// a·(256 − t) + b·t over 256, truncated, along u and then along v (along
+// v first for axis-aligned samplers; the order moves a channel by at most
+// 1). With Wrap, the plane repeats with its size as period: coordinates
+// are reduced modulo W and H (in 32.32 fixed point along a row) and
+// bilinear pairs at the border take the opposite edge.
+type SamplerForm struct {
+	Plane    *Plane // the mip level sampled; shared, must not be changed
+	Inv      Matrix
+	Bilinear bool
+	Wrap     bool
+}
+
+// Form returns what the sampler reads, and false when it is not set up.
+func (s *Sampler) Form() (SamplerForm, bool) {
+	if s.p == nil {
+		return SamplerForm{}, false
+	}
+	return SamplerForm{Plane: s.p, Inv: s.m, Bilinear: s.bilinear, Wrap: s.wrap}, true
+}
+
+// ImageForm describes an ImageShader for a renderer that samples itself.
+// The colour of a pixel is the Image sample times Alpha (each channel
+// round(c·Alpha/255)) or, without an image, Color; with a Mask, it is then
+// multiplied by the mask's sample (its first channel, a level of alpha:
+// 0 clears, 255 keeps, else round(c·a/255) per channel). Without either,
+// the shader paints Color.
+type ImageForm struct {
+	Image, Mask       SamplerForm
+	HasImage, HasMask bool
+	Color             uint32 // premultiplied, PackRGBA layout
+	Alpha             uint8
+}
+
+// Form returns what the shader paints.
+func (s *ImageShader) Form() ImageForm {
+	f := ImageForm{Color: s.color, Alpha: uint8(s.alpha)}
+	if s.hasCol {
+		f.Image, f.HasImage = s.col.Form()
+	}
+	if s.hasMask {
+		f.Mask, f.HasMask = s.mask.Form()
+	}
+	return f
+}
