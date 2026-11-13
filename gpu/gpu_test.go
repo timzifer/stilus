@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gogpu/wgpu"
 	_ "github.com/gogpu/wgpu/hal/allbackends"
 	"github.com/timzifer/stilus"
 	"github.com/timzifer/stilus/gpu"
@@ -16,9 +17,10 @@ import (
 )
 
 var (
-	devOnce sync.Once
-	dev     *gpu.Device
-	devErr  error
+	logAdapter bool
+	devOnce    sync.Once
+	dev        *gpu.Device
+	devErr     error
 )
 
 // device opens one device for the tests and skips the test when there is
@@ -27,9 +29,26 @@ var (
 // the primitives a fraction of a second (CI runs those).
 func device(t testing.TB) *gpu.Device {
 	devOnce.Do(func() {
-		dev, devErr = gpu.Open(&gpu.Options{Fallback: os.Getenv("STILUS_GPU_FALLBACK") == "1"})
+		opts := &gpu.Options{Fallback: os.Getenv("STILUS_GPU_FALLBACK") == "1"}
+		switch os.Getenv("STILUS_GPU_BACKEND") {
+		case "vulkan":
+			opts.Backends = wgpu.BackendsVulkan
+		case "gl":
+			opts.Backends = wgpu.BackendsGL
+		}
+		dev, devErr = gpu.Open(opts)
+		if devErr == nil {
+			logAdapter = true
+		}
 	})
+	if logAdapter {
+		logAdapter = false
+		t.Logf("adapter: %s", dev.AdapterName())
+	}
 	if devErr != nil {
+		if os.Getenv("STILUS_GPU_REQUIRE") == "1" {
+			t.Fatalf("no GPU device: %v", devErr)
+		}
 		t.Skipf("no GPU device: %v", devErr)
 	}
 	return dev

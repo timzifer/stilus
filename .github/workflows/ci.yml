@@ -124,4 +124,35 @@ jobs:
         run: |
           go vet ./...
           go test ./...
-          STILUS_GPU_FALLBACK=1 go test -run 'TestPrimitives|TestFlushes|TestStrips|TestGradients|TestImages|TestMeshes|TestGlyphMasks|TestLayers|TestPair|TestTextureStore|TestRecorders' ./...
+          STILUS_GPU_FALLBACK=1 go test -run 'TestPrimitives|TestFlushes|TestStrips|TestGradients|TestImages|TestMeshes|TestGlyphMasks|TestLayers|TestPair|TestTextureStore|TestRecorders|TestPresent' ./...
+      - name: gpu (js/wasm)
+        # The browser's WebGPU: the module builds; its tests need a GPU.
+        working-directory: gpu
+        run: GOOS=js GOARCH=wasm go build ./...
+
+  gpu-vulkan:
+    name: GPU (Vulkan, lavapipe)
+    # gogpu/wgpu's Vulkan backend on Mesa's lavapipe, a Vulkan driver that
+    # rasterizes on the CPU: the span shader on a real driver and backend,
+    # not only on wgpu's software adapter.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache-dependency-path: gpu/go.sum
+      - name: lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
+          vulkaninfo --summary
+      - name: gpu tests on Vulkan
+        working-directory: gpu
+        env:
+          STILUS_GPU_BACKEND: vulkan
+          STILUS_GPU_REQUIRE: "1"
+        run: |
+          set -o pipefail
+          go test -v -run 'TestScenes|TestPrimitives|TestFlushes|TestStrips|TestGradients|TestImages|TestMeshes|TestGlyphMasks|TestLayers|TestPair|TestTextureStore|TestRecorders|TestPresent' ./... 2>&1 \
+            | grep -E '^(---|    ---|ok|FAIL|PASS)|adapter:|max |panic'

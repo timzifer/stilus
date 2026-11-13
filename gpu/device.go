@@ -73,6 +73,10 @@ type Options struct {
 	Fallback bool
 	// LowPower prefers an integrated GPU.
 	LowPower bool
+	// Backends, when not zero, limits the adapter to these backends, and
+	// Open takes the backend's adapter even if it runs on the CPU (such
+	// as Mesa's lavapipe for Vulkan), but not wgpu's software adapter.
+	Backends gputypes.Backends
 }
 
 // Open creates an instance, adapter and device of their own, headless.
@@ -82,7 +86,11 @@ func Open(opts *Options) (*Device, error) {
 	if opts == nil {
 		opts = &Options{}
 	}
-	inst, err := wgpu.CreateInstance(nil)
+	var idesc *wgpu.InstanceDescriptor
+	if opts.Backends != 0 {
+		idesc = &wgpu.InstanceDescriptor{Backends: opts.Backends}
+	}
+	inst, err := wgpu.CreateInstance(idesc)
 	if err != nil {
 		return nil, fmt.Errorf("gpu: instance: %w", err)
 	}
@@ -95,7 +103,13 @@ func Open(opts *Options) (*Device, error) {
 		inst.Release()
 		return nil, fmt.Errorf("gpu: adapter: %w", err)
 	}
-	if info := ad.Info(); info.DeviceType == gputypes.DeviceTypeCPU && !opts.Fallback {
+	info := ad.Info()
+	switch {
+	case opts.Backends != 0 && (info.Backend == gputypes.BackendEmpty || !opts.Backends.Contains(info.Backend)):
+		ad.Release()
+		inst.Release()
+		return nil, fmt.Errorf("gpu: no adapter of the backends asked for (only %q, %v)", info.Name, info.Backend)
+	case opts.Backends == 0 && info.DeviceType == gputypes.DeviceTypeCPU && !opts.Fallback:
 		ad.Release()
 		inst.Release()
 		return nil, fmt.Errorf("gpu: no hardware adapter (only %q)", info.Name)
@@ -188,6 +202,16 @@ func NewDevice(dev *wgpu.Device) (*Device, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+// AdapterName names the adapter and backend of a device Open made, and is
+// empty for one the caller made.
+func (d *Device) AdapterName() string {
+	if d.adapter == nil {
+		return ""
+	}
+	info := d.adapter.Info()
+	return fmt.Sprintf("%s (%v, %v)", info.Name, info.Backend, info.DeviceType)
 }
 
 // WGPU returns the device the pipeline lives on.
