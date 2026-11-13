@@ -219,3 +219,100 @@ func subtractiveRef(bm BlendMode, black bool, sp, dp [4]uint8) [3]float64 {
 	}
 	return o
 }
+
+// pairComp composites onto an image with the exported blitters and takes
+// strips, as a GPU compositor would.
+type pairComp struct {
+	dst    *image.RGBA
+	solid  SolidBlitter
+	shader ShaderBlitter
+	sb     pairStrips
+	strips int
+}
+
+type pairStrips struct {
+	Blitter
+	cov []uint8
+	n   *int
+}
+
+func (b *pairStrips) BlitStrip(s *Strip) {
+	*b.n++
+	for j := s.Y0; j < s.Y1; j++ {
+		var x int
+		x, b.cov = s.Row(j, b.cov[:0])
+		if len(b.cov) > 0 {
+			b.Blitter.BlitCoverage(j, x, b.cov)
+		}
+	}
+}
+
+func (c *pairComp) Blitter(p *Paint) Blitter {
+	if p.Shader != nil {
+		c.shader.Reset(c.dst, p.Shader)
+		c.sb.Blitter = &c.shader
+	} else {
+		c.solid.Reset(c.dst, p.Color)
+		c.sb.Blitter = &c.solid
+	}
+	c.sb.n = &c.strips
+	return &c.sb
+}
+
+// pairStripScene is pairScene with steep strokes, whose middles are
+// analytic strips.
+func pairStripScene(c *Canvas, gc *GlyphCache, paint func(i int) *Paint) {
+	pairScene(c, gc, paint)
+	var l Path
+	l.MoveTo(12, 4)
+	l.LineTo(30, 96)
+	c.Stroke(&l, Identity, &StrokeStyle{Width: 2}, paint(1))
+	c.Stroke(&l, Matrix{1, 0, 0, 1, 40, 0}, &StrokeStyle{Width: 1.5}, paint(2))
+}
+
+// TestCompositorPair draws through two compositors at once, each with its
+// paint, and gets the bytes of drawing the images one by one.
+func TestCompositorPair(t *testing.T) {
+	rect := image.Rect(0, 0, 120, 100)
+	first := []*Paint{
+		{Color: color.RGBA{200, 10, 30, 255}}, {Color: color.RGBA{0, 90, 0, 255}}, {Color: color.RGBA{40, 40, 0, 128}},
+		{Color: color.RGBA{0, 0, 255, 255}}, {Color: color.RGBA{9, 8, 7, 255}}, {Shader: rampShader{3}},
+	}
+	second := []*Paint{
+		{Color: color.RGBA{60, 60, 60, 255}}, {Shader: rampShader{5}}, {Color: color.RGBA{20, 20, 20, 128}},
+		{Color: color.RGBA{255, 255, 255, 255}}, {Color: color.RGBA{1, 1, 1, 255}}, {Color: color.RGBA{0, 0, 0, 0}},
+	}
+	one := func(ps []*Paint) *image.RGBA {
+		img := image.NewRGBA(rect)
+		c := NewCanvas(img)
+		gc := GlyphCache{MaxBytes: 1 << 20}
+		pairStripScene(c, &gc, func(i int) *Paint { return ps[i] })
+		return img
+	}
+	want1, want2 := one(first), one(second)
+	a, b := &pairComp{dst: image.NewRGBA(rect)}, &pairComp{dst: image.NewRGBA(rect)}
+	var c Canvas
+	c.ResetCompositorPair(a, b, rect)
+	gc := GlyphCache{MaxBytes: 1 << 20}
+	pairStripScene(&c, &gc, func(i int) *Paint {
+		p := *first[i]
+		p.Second = second[i]
+		return &p
+	})
+	if c.Err() != nil {
+		t.Fatal(c.Err())
+	}
+	if !bytes.Equal(a.dst.Pix, want1.Pix) {
+		t.Error("the first compositor's image is not what it is drawn alone")
+	}
+	if !bytes.Equal(b.dst.Pix, want2.Pix) {
+		t.Error("the second compositor's image is not what it is drawn alone")
+	}
+	if a.strips == 0 || a.strips != b.strips {
+		t.Errorf("strips: %d and %d", a.strips, b.strips)
+	}
+	c.ResetCompositor(a, rect)
+	if c.comp2 != nil {
+		t.Error("ResetCompositor keeps the second compositor")
+	}
+}

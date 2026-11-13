@@ -99,7 +99,7 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 		return
 	}
 	ox, oy := math.Floor(m[4]), math.Floor(m[5])
-	if paint.Shader != nil || c.second != nil && paint.second().Shader != nil || !(sigmaMax(m) <= MaxCachedEm) ||
+	if paint.Shader != nil || c.paired() && paint.second().Shader != nil || !(sigmaMax(m) <= MaxCachedEm) ||
 		!(math.Abs(ox) < 1<<24 && math.Abs(oy) < 1<<24) {
 		c.Fill(outline, m, NonZero, paint)
 		return
@@ -177,7 +177,7 @@ func (gc *GlyphCache) FillGlyph(c *Canvas, font uint64, glyph int32, outline *Pa
 	gc.shader = MaskShader{Mask: mask, X: origin.X, Y: origin.Y, Color: PackRGBA(paint.Color)}
 	gc.paint.Shader = &gc.shader
 	gc.paint.Second = nil
-	if c.second != nil {
+	if c.paired() {
 		gc.shader2 = MaskShader{Mask: mask, X: origin.X, Y: origin.Y, Color: PackRGBA(paint.second().Color)}
 		gc.paint2.Shader = &gc.shader2
 		gc.paint.Second = &gc.paint2

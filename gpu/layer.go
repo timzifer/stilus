@@ -141,6 +141,10 @@ func (t *Target) layerBlitter(sh stilus.Shader) stilus.Blitter {
 	default:
 		return nil
 	}
+	if t.parent != nil {
+		t.setErr(fmt.Errorf("%w: layers are not drawn through a recorder", ErrLayer))
+		return nothing{}
+	}
 	r = r.Intersect(t.Bounds())
 	if r.Empty() || alpha == 0 {
 		return nothing{}
