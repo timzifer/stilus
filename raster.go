@@ -45,11 +45,21 @@ const (
 	DefaultMaxEdges = 1 << 22
 	// narrowCells is the path width up to which rows are swept densely.
 	narrowCells = 96
-	// flattenTol is the curve flattening tolerance in device pixels. Chords
-	// always lie inside convex arcs, so the error is one-sided; 0.1 px keeps
-	// the mean deviation from exact coverage well below 1/255.
+	// flattenTol is the curve flattening tolerance in device pixels: the
+	// polyline a filled curve is drawn as, and a stroke's offset curves and
+	// round arcs, stay within it.
 	flattenTol = 0.1
-	maxSegs    = 1024
+	// fillSag is the sagitta allowed per interval when a filled curve is
+	// flattened. Each interval is drawn as two lines through an apex 4/3 of
+	// the sagitta out from the chord, which encloses the arc's area (exactly
+	// for a parabolic arc) and stays within a third of the sagitta, so
+	// flattenTol, of it. Plain chords lie inside convex arcs and lose area:
+	// up to 2.5 % on curves of glyph size.
+	fillSag = 3 * flattenTol
+	// straightSag is the sagitta below which a curve is one line: its area
+	// error is at most 2/3 · length · straightSag.
+	straightSag = 1.0 / 64
+	maxSegs     = 1024
 )
 
 // edge is a line segment of a path, oriented downward, as the line it
@@ -456,20 +466,25 @@ func (r *Rasterizer) addQuad(x0, y0, x1, y1, x2, y2 float64) {
 		return
 	}
 	n, ax, ay, bx, by := quadPoly(x0, y0, x1, y1, x2, y2)
-	if n <= 1 {
+	if n == 0 {
 		r.AddLine(x0, y0, x2, y2)
 		return
 	}
 	dt := 1 / float64(n)
 	px, py := x0, y0
-	for i := 1; i < n; i++ {
-		t := float64(i) * dt
-		qx := (ax*t+bx)*t + x0
-		qy := (ay*t+by)*t + y0
-		r.AddLine(px, py, qx, qy)
+	for i := 1; i <= n; i++ {
+		qx, qy := x2, y2
+		if i < n {
+			t := float64(i) * dt
+			qx = (ax*t+bx)*t + x0
+			qy = (ay*t+by)*t + y0
+		}
+		t := (float64(i) - 0.5) * dt
+		cx, cy := apex(px, py, qx, qy, (ax*t+bx)*t+x0, (ay*t+by)*t+y0)
+		r.AddLine(px, py, cx, cy)
+		r.AddLine(cx, cy, qx, qy)
 		px, py = qx, qy
 	}
-	r.AddLine(px, py, x2, y2)
 }
 
 func (r *Rasterizer) addCubic(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
@@ -487,37 +502,42 @@ func (r *Rasterizer) addCubic(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
 		return
 	}
 	n, ax, ay, bx, by, cx, cy := cubicPoly(x0, y0, x1, y1, x2, y2, x3, y3)
-	if n <= 1 {
+	if n == 0 {
 		r.AddLine(x0, y0, x3, y3)
 		return
 	}
 	dt := 1 / float64(n)
 	px, py := x0, y0
-	for i := 1; i < n; i++ {
-		t := float64(i) * dt
-		qx := ((ax*t+bx)*t+cx)*t + x0
-		qy := ((ay*t+by)*t+cy)*t + y0
-		r.AddLine(px, py, qx, qy)
+	for i := 1; i <= n; i++ {
+		qx, qy := x3, y3
+		if i < n {
+			t := float64(i) * dt
+			qx = ((ax*t+bx)*t+cx)*t + x0
+			qy = ((ay*t+by)*t+cy)*t + y0
+		}
+		t := (float64(i) - 0.5) * dt
+		mx, my := apex(px, py, qx, qy, ((ax*t+bx)*t+cx)*t+x0, ((ay*t+by)*t+cy)*t+y0)
+		r.AddLine(px, py, mx, my)
+		r.AddLine(mx, my, qx, qy)
 		px, py = qx, qy
 	}
-	r.AddLine(px, py, x3, y3)
 }
 
-// quadPoly returns the number of chords a quadratic is flattened into and
-// its polynomial B(t) = a t² + b t + p0.
+// quadPoly returns the number of intervals a quadratic is flattened into
+// (0: one straight line) and its polynomial B(t) = a t² + b t + p0.
 func quadPoly(x0, y0, x1, y1, x2, y2 float64) (n int, ax, ay, bx, by float64) {
 	ax, ay = x0-2*x1+x2, y0-2*y1+y2
-	n = segCount(math.Sqrt(ax*ax+ay*ay) * (0.25 / flattenTol))
+	n = arcCount(math.Sqrt(ax*ax+ay*ay) * 0.25) // sagitta |a|/4
 	return n, ax, ay, 2 * (x1 - x0), 2 * (y1 - y0)
 }
 
-// cubicPoly returns the number of chords a cubic is flattened into and its
-// polynomial B(t) = a t³ + b t² + c t + p0.
+// cubicPoly returns the number of intervals a cubic is flattened into
+// (0: one straight line) and its polynomial B(t) = a t³ + b t² + c t + p0.
 func cubicPoly(x0, y0, x1, y1, x2, y2, x3, y3 float64) (n int, ax, ay, bx, by, cx, cy float64) {
 	d1x, d1y := x0-2*x1+x2, y0-2*y1+y2
 	d2x, d2y := x1-2*x2+x3, y1-2*y2+y3
 	l := math.Sqrt(math.Max(d1x*d1x+d1y*d1y, d2x*d2x+d2y*d2y))
-	n = segCount(l * (0.75 / flattenTol))
+	n = arcCount(l * 0.75) // bound on the sagitta
 	cx, cy = 3*(x1-x0), 3*(y1-y0)
 	bx, by = 3*(x2-x1)-cx, 3*(y2-y1)-cy
 	ax, ay = x3-x0-cx-bx, y3-y0-cy-by
@@ -533,6 +553,31 @@ func segCount(v float64) int {
 		return maxSegs
 	}
 	return int(math.Ceil(math.Sqrt(v)))
+}
+
+// arcCount returns the number of intervals for a curve whose sagitta is at
+// most h: 0 below straightSag, else ceil(sqrt(h/fillSag)) (the sagitta of
+// an interval falls with the square of their number) clamped to
+// [1, maxSegs/2], as each interval is two lines.
+func arcCount(h float64) int {
+	if !(h > straightSag) { // also catches NaN
+		return 0
+	}
+	v := h / fillSag
+	if v <= 1 {
+		return 1
+	}
+	if v >= maxSegs*maxSegs/4 {
+		return maxSegs / 2
+	}
+	return int(math.Ceil(math.Sqrt(v)))
+}
+
+// apex returns the point through which an interval from p to q, whose
+// curve passes m at its middle parameter, is drawn: 4/3 of the way from
+// the chord's midpoint to m, so the two lines enclose the arc's area.
+func apex(px, py, qx, qy, mx, my float64) (float64, float64) {
+	return mx + (mx-(px+qx)*0.5)*(1.0/3), my + (my-(py+qy)*0.5)*(1.0/3)
 }
 
 // AddLine adds a device-space line segment. Of a segment the rows inside
