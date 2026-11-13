@@ -5,10 +5,14 @@
 // unions and glyphs give the same coverage as on an image. A Target is a
 // stilus.Compositor; it records the canvas's spans (constant runs and rows
 // of coverage bytes) and draws them with one render pass per Flush,
-// source-over on premultiplied RGBA8. Solid colours are painted on the
-// GPU; shaders are evaluated on the CPU and their colours uploaded.
+// source-over on premultiplied RGBA8. The GPU paints solid colours,
+// computes the thin strips of strokes (ADR 0008), gradients (0009),
+// images and patterns (0011), meshes (0012) and glyph masks (0013), and
+// composites layers from a copy of the backdrop (0014), LayerShader's
+// with images and Layer's with targets. Other shaders are evaluated on the
+// CPU and their colours uploaded.
 //
-//	dev, _ := gpu.Open()
+//	dev, _ := gpu.Open(nil)
 //	t, _ := dev.NewTarget(w, h)
 //	t.Clear(color.RGBA{255, 255, 255, 255})
 //	c := new(stilus.Canvas)
@@ -20,9 +24,9 @@
 // without copying them (ADR 0010).
 //
 // The GPU blends in floating point and rounds once, so a pixel may differ
-// from the CPU canvas by 1/255 per operation composited onto it.
-// LayerShader reads its backdrop from memory and cannot read a target;
-// pages with layers render on the CPU.
+// from the CPU canvas by 1/255 per operation composited onto it; float32
+// moves a gradient's or an image's sample to its neighbour now and then.
+// CMYK pairs (Canvas.ResetPair) need the CPU canvas.
 package gpu
 
 import (
@@ -131,6 +135,7 @@ func NewDevice(dev *wgpu.Device) (*Device, error) {
 			{Binding: 0, Visibility: gputypes.ShaderStageVertex, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeUniform}},
 			{Binding: 1, Visibility: vf, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
 			{Binding: 2, Visibility: vf, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
+			{Binding: 3, Visibility: gputypes.ShaderStageFragment, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
 		},
 	})
 	if err != nil {

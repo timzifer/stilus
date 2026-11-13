@@ -186,7 +186,10 @@ gain a little. Two kinds of scene lose:
   4 ms.
 - *Shaders*: `ShadeSpan` on the CPU plus four bytes per covered pixel.
   Gradients are computed on the GPU since [ADR 0009](0009-gradient-forms.md)
-  (37 → 3 ms); images, patterns and meshes still go through `ShadeSpan`.
+  (37 → 3 ms), images and patterns since
+  [ADR 0011](0011-image-forms.md), meshes since
+  [ADR 0012](0012-mesh-forms.md), cached glyph masks since
+  [ADR 0013](0013-glyph-masks.md).
 
 The software adapter (`Options.Fallback`) draws the scenes as Metal
 does, max 1/255, in 82 s at 72 dpi: it interprets SPIR-V. An earlier

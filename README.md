@@ -105,9 +105,16 @@ lines, a row range and the clip's mask if any
 fragment shader computes their coverage: hatching 24 → 8 ms, short strokes
 and contours about half, readback included (Apple M4, A3 at 150 dpi).
 Linear and radial gradients are computed on the GPU too
-([ADR 0009](docs/adr/0009-gradient-forms.md)): 25 → 6 ms. Images,
-patterns and meshes are still shaded on the CPU and are slower there. `LayerShader` blend modes that read
-the backdrop (`Dst`) and CMYK pairs need the CPU canvas.
+([ADR 0009](docs/adr/0009-gradient-forms.md)): 25 → 6 ms, and images
+and pattern tiles are sampled there ([ADR 0011](docs/adr/0011-image-forms.md)):
+images 20 → 6 ms, patterns 25 → 8 ms, as are Gouraud meshes
+([ADR 0012](docs/adr/0012-mesh-forms.md)): 20 → 8 ms, and cached
+glyph masks ([ADR 0013](docs/adr/0013-glyph-masks.md)): text 8 → 7 ms.
+Layers with every blend mode, masks and non-isolated groups are
+composited on the GPU from a copy of the backdrop
+([ADR 0014](docs/adr/0014-gpu-layers.md)): `LayerShader` with images, or
+`gpu.Layer` with groups drawn into targets. CMYK pairs need the CPU
+canvas.
 
 ## Shaders
 

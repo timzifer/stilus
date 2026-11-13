@@ -12,8 +12,11 @@
 //               the strip's rows and the clip's columns, and the quad
 //               drawn is the parallelogram around the strip's rows
 //
-// With bit 29 of data set, the colour of modes 0, 1 and 3 is a gradient's,
-// computed per pixel from the record at the word offset color (gradient.go).
+// With bit 29 of data set, the colour of modes 0, 1 and 3 is a paint's,
+// computed per pixel from the record at the word offset color: a
+// gradient's (gradient.go), with bit 31 of its first word an image's
+// (image.go), with bit 30 a mesh's (mesh.go), with bit 28 a coverage
+// mask's (glyph.go), with bit 27 a layer's (layer.go).
 
 struct Span {
     pos: u32,   // x0 | y0 << 16
@@ -30,6 +33,8 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var<storage, read> spans: array<Span>;
 @group(0) @binding(2) var<storage, read> words: array<u32>;
+// What a layer operation reads, copied before it (layer.go).
+@group(0) @binding(3) var<storage, read> layer: array<u32>;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -285,8 +290,480 @@ fn gradColor(r: u32, p: vec2<f32>) -> vec4<f32> {
     return unpack4x8unorm(c);
 }
 
+// mul8 multiplies each channel of c by a/255, rounded: stilus's mul255.
+fn mul8(c: u32, a: u32) -> u32 {
+    var m = 0u;
+    for (var s = 0u; s < 32u; s = s + 8u) {
+        m = m | (div255(((c >> s) & 255u) * a) << s);
+    }
+    return m;
+}
+
+// lerp8 mixes two colours channel-wise, a·(256 − t) + b·t over 256,
+// truncated: stilus's lerp.
+fn lerp8(a: u32, b: u32, t: u32) -> u32 {
+    if (a == b) {
+        return a;
+    }
+    var m = 0u;
+    for (var s = 0u; s < 32u; s = s + 8u) {
+        m = m | ((((a >> s) & 255u) * (256u - t) + ((b >> s) & 255u) * t) >> 8u << s);
+    }
+    return m;
+}
+
+// texIndex is the pixel of [0, n) that u falls in: clamped to the edges,
+// or modulo n when the plane repeats.
+fn texIndex(u: f32, n: u32, wrap: bool) -> u32 {
+    if (wrap) {
+        let r = u - floor(u / f32(n)) * f32(n);
+        return min(u32(max(r, 0.0)), n - 1u);
+    }
+    if (!(u > 0.0)) {
+        return 0u;
+    }
+    if (u >= f32(n)) {
+        return n - 1u;
+    }
+    return u32(u);
+}
+
+// texSplit returns the pixels on either side of u and the weight of the
+// second in 1/256: stilus's split, or its periodic counterpart.
+fn texSplit(u: f32, n: u32, wrap: bool) -> vec3<u32> {
+    if (wrap) {
+        let r = max(u - floor(u / f32(n)) * f32(n), 0.0);
+        let i = min(u32(r), n - 1u);
+        return vec3<u32>(i, (i + 1u) % n, u32((r - f32(i)) * 256.0));
+    }
+    if (!(u > 0.0)) {
+        return vec3<u32>(0u, 0u, 0u);
+    }
+    if (u >= f32(n - 1u)) {
+        return vec3<u32>(n - 1u, n - 1u, 0u);
+    }
+    let i = u32(u);
+    return vec3<u32>(i, i + 1u, u32((u - f32(i)) * 256.0));
+}
+
+// sampleAt reads the sampler at q of an image record at pixel centre p.
+fn sampleAt(q: u32, p: vec2<f32>) -> u32 {
+    let off = words[q];
+    let w = words[q + 1u];
+    let h = words[q + 2u];
+    let fl = words[q + 3u];
+    let dx = f32(i32(floor(p.x)) - bitcast<i32>(words[q + 8u]));
+    let dy = f32(i32(floor(p.y)) - bitcast<i32>(words[q + 9u]));
+    var u = wf(q + 10u) + wf(q + 4u) * dx + wf(q + 6u) * dy;
+    var v = wf(q + 11u) + wf(q + 5u) * dx + wf(q + 7u) * dy;
+    let wrap = (fl & 2u) != 0u;
+    if ((fl & 1u) == 0u) {
+        return words[off + texIndex(v, h, wrap) * w + texIndex(u, w, wrap)];
+    }
+    let sx = texSplit(u - 0.5, w, wrap);
+    let sy = texSplit(v - 0.5, h, wrap);
+    let r0 = off + sy.x * w;
+    let r1 = off + sy.y * w;
+    let a = lerp8(words[r0 + sx.x], words[r0 + sx.y], sx.z);
+    let b = lerp8(words[r1 + sx.x], words[r1 + sx.y], sx.z);
+    return lerp8(a, b, sy.z);
+}
+
+// imageColor is an ImageShader's colour at pixel centre p: the image
+// times Alpha, or Color, times the mask's level.
+fn imageColor(r: u32, p: vec2<f32>) -> vec4<f32> {
+    let flags = words[r];
+    var c = words[r + 1u];
+    if ((flags & 1u) != 0u) {
+        c = sampleAt(r + 3u, p);
+        let alpha = words[r + 2u];
+        if (alpha != 255u) {
+            c = mul8(c, alpha);
+        }
+    }
+    if ((flags & 2u) != 0u) {
+        let a = sampleAt(r + 15u, p) & 255u;
+        if (a == 0u) {
+            c = 0u;
+        } else if (a != 255u) {
+            c = mul8(c, a);
+        }
+    }
+    return unpack4x8unorm(c);
+}
+
+fn meshEdge(e: u32, yc: f32) -> f32 {
+    return wf(e) + (yc - wf(e + 1u)) * wf(e + 2u);
+}
+
+// meshColor is a MeshShader's colour at pixel centre p: the values of the
+// last triangle in the pixel's cell that contains it, times Alpha, or
+// transparent.
+fn meshColor(r: u32, p: vec2<f32>) -> vec4<f32> {
+    let x = i32(floor(p.x)) - bitcast<i32>(words[r + 2u]);
+    let y = i32(floor(p.y)) - bitcast<i32>(words[r + 3u]);
+    if (x < 0 || y < 0) {
+        return vec4<f32>(0.0);
+    }
+    let shift = words[r + 4u];
+    let cx = u32(x) >> shift;
+    let cy = u32(y) >> shift;
+    let gw = words[r + 5u];
+    if (cx >= gw || cy >= words[r + 6u]) {
+        return vec4<f32>(0.0);
+    }
+    let starts = r + words[r + 7u];
+    let ids = r + words[r + 8u];
+    let tris = r + words[r + 9u];
+    let cell = cy * gw + cx;
+    let s0 = words[starts + cell];
+    var k = words[starts + cell + 1u];
+    let yc = f32(y) + 0.5;
+    let xc = f32(x) + 0.5;
+    loop {
+        if (k <= s0) {
+            break;
+        }
+        k = k - 1u;
+        let t = tris + words[ids + k] * 30u;
+        if (y < bitcast<i32>(words[t]) || y >= bitcast<i32>(words[t + 1u])) {
+            continue;
+        }
+        let lo = max(f32(bitcast<i32>(words[t + 2u])), max(meshEdge(t + 4u, yc), meshEdge(t + 7u, yc)));
+        let hi = min(f32(bitcast<i32>(words[t + 3u])), min(meshEdge(t + 10u, yc), meshEdge(t + 13u, yc)));
+        if (x < i32(ceil(lo - 0.5)) || x >= i32(ceil(hi - 0.5))) {
+            continue;
+        }
+        let dx = xc - wf(t + 16u);
+        let dy = yc - wf(t + 17u);
+        var c: u32;
+        if ((words[r] & 1u) != 0u) {
+            let n = i32(words[r + 11u]);
+            let i = i32(floor(wf(t + 18u) + wf(t + 22u) * dx + wf(t + 26u) * dy + 0.5));
+            c = words[r + words[r + 10u] + u32(clamp(i, 0, n - 1))];
+        } else {
+            var v: array<i32, 4>;
+            for (var ch = 0u; ch < 4u; ch = ch + 1u) {
+                v[ch] = clamp(i32(floor(wf(t + 18u + ch) + wf(t + 22u + ch) * dx + wf(t + 26u + ch) * dy + 0.5)), 0, 255);
+            }
+            let a = v[3];
+            c = u32(min(v[0], a)) | (u32(min(v[1], a)) << 8u) | (u32(min(v[2], a)) << 16u) | (u32(a) << 24u);
+        }
+        let alpha = words[r + 1u];
+        if (alpha != 255u) {
+            c = mul8(c, alpha);
+        }
+        return unpack4x8unorm(c);
+    }
+    return vec4<f32>(0.0);
+}
+
+// alphaMaskColor is a MaskShader's colour at pixel centre p: Color times
+// the mask's byte there, 0 outside the mask.
+fn alphaMaskColor(r: u32, p: vec2<f32>) -> vec4<f32> {
+    let x = i32(floor(p.x)) - bitcast<i32>(words[r + 2u]);
+    let y = i32(floor(p.y)) - bitcast<i32>(words[r + 3u]);
+    let w = words[r + 4u];
+    if (x < 0 || y < 0 || u32(x) >= w || u32(y) >= words[r + 5u]) {
+        return vec4<f32>(0.0);
+    }
+    let b = (r + 6u) * 4u + u32(y) * w + u32(x);
+    let a = (words[b >> 2u] >> ((b & 3u) * 8u)) & 255u;
+    var c = words[r + 1u];
+    if (a == 0u) {
+        return vec4<f32>(0.0);
+    }
+    if (a != 255u) {
+        c = mul8(c, a);
+    }
+    return unpack4x8unorm(c);
+}
+
+// ch returns channel i (0 R … 3 A) of a packed colour.
+fn ch(c: u32, i: u32) -> u32 {
+    return (c >> (i * 8u)) & 255u;
+}
+
+fn pack4(r: u32, g: u32, b: u32, a: u32) -> u32 {
+    return r | (g << 8u) | (b << 16u) | (a << 24u);
+}
+
+// sub8 is the complement a − c of a premultiplied channel, 0 above a.
+fn sub8(a: u32, c: u32) -> u32 {
+    if (c > a) {
+        return 0u;
+    }
+    return a - c;
+}
+
+fn hardLight(b: f32, s: f32) -> f32 {
+    if (s <= 0.5) {
+        return b * 2.0 * s;
+    }
+    let t = 2.0 * s - 1.0;
+    return b + t - b * t;
+}
+
+// blendChannel is B(b, s) of a separable mode.
+fn blendChannel(bm: u32, b: f32, s: f32) -> f32 {
+    switch (bm) {
+        case 1u: { return b * s; }
+        case 2u: { return b + s - b * s; }
+        case 3u: { return hardLight(s, b); }
+        case 4u: { return min(b, s); }
+        case 5u: { return max(b, s); }
+        case 6u: {
+            if (b == 0.0) { return 0.0; }
+            if (s >= 1.0) { return 1.0; }
+            return min(1.0, b / (1.0 - s));
+        }
+        case 7u: {
+            if (b >= 1.0) { return 1.0; }
+            if (s <= 0.0) { return 0.0; }
+            return 1.0 - min(1.0, (1.0 - b) / s);
+        }
+        case 8u: { return hardLight(b, s); }
+        case 9u: {
+            if (s <= 0.5) {
+                return b - (1.0 - 2.0 * s) * b * (1.0 - b);
+            }
+            var d = sqrt(b);
+            if (b <= 0.25) {
+                d = ((16.0 * b - 12.0) * b + 4.0) * b;
+            }
+            return b + (2.0 * s - 1.0) * (d - b);
+        }
+        case 10u: { return abs(b - s); }
+        case 11u: { return b + s - 2.0 * b * s; }
+        default: { return s; }
+    }
+}
+
+fn lum(c: vec3<f32>) -> f32 {
+    return 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
+}
+
+fn setLum(c0: vec3<f32>, l0: f32) -> vec3<f32> {
+    let d = l0 - lum(c0);
+    var c = c0 + vec3<f32>(d);
+    let l = lum(c);
+    let n = min(c.x, min(c.y, c.z));
+    let x = max(c.x, max(c.y, c.z));
+    var r: vec3<f32>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        var v = c[i];
+        if (n < 0.0 && l - n > 0.0) {
+            v = l + (v - l) * l / (l - n);
+        }
+        if (x > 1.0 && x - l > 0.0) {
+            v = l + (v - l) * (1.0 - l) / (x - l);
+        }
+        r[i] = clamp(v, 0.0, 1.0);
+    }
+    return r;
+}
+
+fn sat(c: vec3<f32>) -> f32 {
+    return max(c.x, max(c.y, c.z)) - min(c.x, min(c.y, c.z));
+}
+
+fn setSat(c: vec3<f32>, s: f32) -> vec3<f32> {
+    var lo = 0u;
+    var mid = 1u;
+    var hi = 2u;
+    if (c[lo] > c[mid]) { let t = lo; lo = mid; mid = t; }
+    if (c[mid] > c[hi]) { let t = mid; mid = hi; hi = t; }
+    if (c[lo] > c[mid]) { let t = lo; lo = mid; mid = t; }
+    var r = vec3<f32>(0.0);
+    if (c[hi] > c[lo]) {
+        r[mid] = (c[mid] - c[lo]) * s / (c[hi] - c[lo]);
+        r[hi] = s;
+    }
+    return r;
+}
+
+fn blendFn(bm: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    switch (bm) {
+        case 12u: { return setLum(setSat(cs, sat(cb)), lum(cb)); }
+        case 13u: { return setLum(setSat(cb, sat(cs)), lum(cb)); }
+        case 14u: { return setLum(cs, lum(cb)); }
+        case 15u: { return setLum(cb, lum(cs)); }
+        default: {
+            return vec3<f32>(blendChannel(bm, cb.x, cs.x), blendChannel(bm, cb.y, cs.y), blendChannel(bm, cb.z, cs.z));
+        }
+    }
+}
+
+// blendTab is stilus's blendTable: B of opaque 8-bit colours, rounded.
+fn blendTab(bm: u32, b: u32, s: u32) -> u32 {
+    let v = blendChannel(bm, f32(b) / 255.0, f32(s) / 255.0);
+    return u32(clamp(v, 0.0, 1.0) * 255.0 + 0.5);
+}
+
+// blendPixel is stilus's: the colour a premultiplied source s (alpha sa)
+// is drawn over the backdrop d (alpha da) with; the alpha stays.
+fn blendPixel(bm: u32, s: u32, d: u32) -> u32 {
+    let sa = ch(s, 3u);
+    let da = ch(d, 3u);
+    if (sa == 255u && da == 255u && bm < 12u) {
+        return pack4(blendTab(bm, ch(d, 0u), ch(s, 0u)), blendTab(bm, ch(d, 1u), ch(s, 1u)), blendTab(bm, ch(d, 2u), ch(s, 2u)), sa);
+    }
+    let as_ = f32(sa) / 255.0;
+    let ab = f32(da) / 255.0;
+    var cs: vec3<f32>;
+    var cb: vec3<f32>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        cs[i] = min(f32(ch(s, i)) / f32(sa), 1.0);
+        cb[i] = min(f32(ch(d, i)) / f32(da), 1.0);
+    }
+    let bl = blendFn(bm, cb, cs);
+    var o: array<u32, 3>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        let v = f32(ch(s, i)) * (1.0 - ab) + as_ * ab * bl[i] * 255.0;
+        o[i] = u32(min(max(v + 0.5, 0.0), f32(sa)));
+    }
+    return pack4(o[0], o[1], o[2], sa);
+}
+
+// removeBackdrop is stilus's: the layer's pixel v of a non-isolated group
+// without the backdrop b0, αgn being the alpha of alone.
+fn removeBackdrop(v: u32, b0: u32, alone: u32) -> u32 {
+    let an = ch(v, 3u);
+    let ga = ch(alone, 3u);
+    if ((ga & an) == 255u) {
+        return v;
+    }
+    if (ga == 0u || an == 0u) {
+        return 0u;
+    }
+    let a0 = ch(b0, 3u);
+    let g = ga;
+    let num = 255u * g + (255u - g) * a0;
+    let den = 255u * an;
+    let bb = mul8(b0, 255u - g);
+    var o: array<u32, 3>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        let q = (ch(v, i) * num + den / 2u) / den;
+        let b = ch(bb, i);
+        var c = 0u;
+        if (q > b) {
+            c = min(q - b, g);
+        }
+        o[i] = c;
+    }
+    return pack4(o[0], o[1], o[2], g);
+}
+
+// layerColor is LayerShader's colour s at pixel centre p, from the copies
+// of the layer operation (layer.go), which the canvas then composites
+// over the target with the coverage.
+fn layerColor(r: u32, p: vec2<f32>) -> vec4<f32> {
+    let flags = words[r];
+    let bm = flags & 255u;
+    let x = i32(floor(p.x)) - bitcast<i32>(words[r + 2u]);
+    let y = i32(floor(p.y)) - bitcast<i32>(words[r + 3u]);
+    if (x < 0 || y < 0 || u32(x) >= words[r + 4u] || u32(y) >= words[r + 5u]) {
+        return vec4<f32>(0.0);
+    }
+    let idx = u32(y) * words[r + 6u] + u32(x);
+    var v = layer[words[r + 7u] + idx];
+    if ((flags & 512u) != 0u) {
+        v = removeBackdrop(v, layer[words[r + 10u] + idx], layer[words[r + 11u] + idx]);
+    }
+    let alpha = words[r + 1u];
+    let masked = (flags & 256u) != 0u;
+    var m = 255u;
+    if (masked) {
+        m = layer[words[r + 9u] + idx] >> 24u;
+    }
+    if (bm == 0u) {
+        if (!masked) {
+            if (alpha != 255u) {
+                v = mul8(v, alpha);
+            }
+            return unpack4x8unorm(v);
+        }
+        v = mul8(v, div255(alpha * m));
+        if (ch(v, 3u) == 0u) {
+            return vec4<f32>(0.0);
+        }
+        return unpack4x8unorm(v);
+    }
+    let k = div255(alpha * m);
+    let d = layer[words[r + 8u] + idx];
+    let da = ch(d, 3u);
+    let subtractive = (flags & 1024u) != 0u;
+    if ((bm == 1u || bm == 2u) && !subtractive) {
+        if (k != 255u) {
+            v = mul8(v, k);
+        }
+        let sa = ch(v, 3u);
+        if (sa == 0u) {
+            return vec4<f32>(0.0);
+        }
+        if (da == 0u) {
+            return unpack4x8unorm(v);
+        }
+        let over = ch(v, 0u) > sa || ch(v, 1u) > sa || ch(v, 2u) > sa || ch(d, 0u) > da || ch(d, 1u) > da || ch(d, 2u) > da;
+        if (over) {
+            return unpack4x8unorm(blendPixel(bm, v, d));
+        }
+        var o: array<u32, 3>;
+        for (var i = 0u; i < 3u; i = i + 1u) {
+            let sc = ch(v, i);
+            if (bm == 2u) {
+                o[i] = div255(255u * sc + ch(d, i) * (sa - sc));
+            } else {
+                o[i] = div255(sc * (255u - da + ch(d, i)));
+            }
+        }
+        return unpack4x8unorm(pack4(o[0], o[1], o[2], sa));
+    }
+    if (k != 255u) {
+        v = mul8(v, k);
+    }
+    let a = ch(v, 3u);
+    if (a == 0u) {
+        return vec4<f32>(0.0);
+    }
+    if (da == 0u) {
+        return unpack4x8unorm(v);
+    }
+    if (bm == 255u) {
+        var o: array<u32, 3>;
+        for (var i = 0u; i < 3u; i = i + 1u) {
+            o[i] = min(div255(ch(v, i) * (255u - da) + a * ch(d, i)), a);
+        }
+        return unpack4x8unorm(pack4(o[0], o[1], o[2], a));
+    }
+    var s = v;
+    var q = d;
+    if (subtractive) {
+        s = pack4(sub8(a, ch(v, 0u)), sub8(a, ch(v, 1u)), sub8(a, ch(v, 2u)), a);
+        q = pack4(sub8(da, ch(d, 0u)), sub8(da, ch(d, 1u)), sub8(da, ch(d, 2u)), da);
+    }
+    var o = blendPixel(bm, s, q);
+    if (subtractive) {
+        o = pack4(sub8(a, ch(o, 0u)), sub8(a, ch(o, 1u)), sub8(a, ch(o, 2u)), a);
+    }
+    return unpack4x8unorm(o);
+}
+
 fn base(s: Span, p: vec2<f32>) -> vec4<f32> {
     if ((s.data & 0x20000000u) != 0u) {
+        let kind = words[s.color];
+        if ((kind & 0x10000000u) != 0u) {
+            return alphaMaskColor(s.color, p);
+        }
+        if ((kind & 0x08000000u) != 0u) {
+            return layerColor(s.color, p);
+        }
+        if ((kind & 0x80000000u) != 0u) {
+            return imageColor(s.color, p);
+        }
+        if ((kind & 0x40000000u) != 0u) {
+            return meshColor(s.color, p);
+        }
         return gradColor(s.color, p);
     }
     return unpack4x8unorm(s.color);

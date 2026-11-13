@@ -25,6 +25,10 @@ when its shaders or kernels exist with tests and cera's ADR can use them.
 | [0008](0008-gpu-strips.md) | Analytic strips drawn whole by a compositor | ADR 0007 (hatching) | accepted |
 | [0009](0009-gradient-forms.md) | Gradients computed by a compositor | ADR 0007 (shader paints) | accepted |
 | [0010](0010-gpu-present.md) | Drawing targets into a caller's render pass | GPU viewers in a window (#46, #51) | accepted |
+| [0011](0011-image-forms.md) | Images and patterns sampled by a compositor | ADR 0007 (shader paints) | accepted |
+| [0012](0012-mesh-forms.md) | Meshes shaded by a compositor | ADR 0007 (shader paints) | accepted |
+| [0013](0013-glyph-masks.md) | Glyph masks painted by a compositor | ADR 0007 (shader paints) | accepted |
+| [0014](0014-gpu-layers.md) | Layers composited by a GPU target | ADR 0007, cera ADR 0009 | accepted |
 
 ## Template
 

@@ -408,3 +408,486 @@ func absd(a, b uint8) int {
 	}
 	return int(b - a)
 }
+
+// TestImages draws images the GPU samples: RGBA, indexed and bit planes,
+// nearest and bilinear, magnified, reduced (mip levels) and rotated,
+// repeating tiles, translucent, through a mask and as stencils, as fills
+// and strokes, against the canvas's bytes. float32 coordinates put a
+// pixel near a texel border on the other texel now and then.
+func TestImages(t *testing.T) {
+	d := device(t)
+	const w, h = 200, 150
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	const n = 24
+	pix := make([]uint32, n*n)
+	idx := make([]uint8, n*n)
+	bits := make([]uint8, 3*n)
+	for y := 0; y < n; y++ {
+		for x := 0; x < n; x++ {
+			pix[y*n+x] = stilus.PackRGBA(color.RGBA{uint8(x * 10), uint8(y * 10), 120, 255})
+			idx[y*n+x] = uint8((x*11 + y*7) % 256)
+		}
+		bits[y*3] = 0xa5
+		bits[y*3+1] = uint8(y * 9)
+	}
+	var pal stilus.Palette
+	for i := range pal {
+		pal[i] = stilus.PackRGBA(color.RGBA{uint8(i), 80, uint8(255 - i), 255})
+	}
+	texs := []*stilus.Texture{
+		stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneRGBA, W: n, H: n, Stride: n, Pix32: pix}),
+		stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneIndex, W: n, H: n, Stride: n, Pix8: idx, Pal: &pal}),
+		stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneBits, W: n, H: n, Stride: 3, Pix8: bits, Pal: &pal}),
+	}
+	mask := stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneIndex, W: n, H: n, Stride: n, Pix8: idx, Pal: stilus.AlphaPalette})
+	shaders := make([]*stilus.ImageShader, 12)
+	for i := range shaders {
+		s := []float64{0.4, 1.3, 2.7}[i%3]
+		x, y := float64(5+(i%4)*48), float64(5+(i/4)*48)
+		m := stilus.Scale(s, s).Mul(stilus.Translate(x, y))
+		if i%5 == 2 {
+			m = stilus.Scale(s, s).Mul(stilus.Rotate(0.4)).Mul(stilus.Translate(x+10, y))
+		}
+		sh := &stilus.ImageShader{}
+		tex := texs[i%3]
+		switch i % 4 {
+		case 0:
+			sh.SetImage(tex, m, i%2 == 0, []uint8{255, 150}[i/4%2])
+		case 1:
+			sh.SetImageWrap(tex, m, i%3 == 1, 255)
+		case 2:
+			sh.SetImage(tex, m, true, 255)
+			sh.SetMask(mask, m, false)
+		default:
+			sh.SetColor(stilus.PackRGBA(color.RGBA{0, 30, 110, 255}))
+			sh.SetMaskWrap(mask, m, i%2 == 1)
+		}
+		shaders[i] = sh
+	}
+	ops := func(c *stilus.Canvas) {
+		for i, sh := range shaders {
+			p := &stilus.Paint{Shader: sh}
+			var r stilus.Path
+			x, y := float32(5+(i%4)*48), float32(5+(i/4)*48)
+			r.Rect(x, y, 44, 44)
+			c.Fill(&r, stilus.Identity, stilus.NonZero, p)
+			var l stilus.Path
+			l.MoveTo(x, y+44)
+			l.LineTo(x+44, y)
+			c.Stroke(&l, stilus.Identity, &stilus.StrokeStyle{Width: 3}, &stilus.Paint{Shader: shaders[(i+1)%len(shaders)]})
+		}
+	}
+	fill(want, white)
+	c := stilus.NewCanvas(want)
+	ops(c)
+	tg.Clear(white)
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(c)
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	off := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			a, b := want.RGBAAt(x, y), got.RGBAAt(x, y)
+			if max(absd(a.R, b.R), absd(a.G, b.G), absd(a.B, b.B), absd(a.A, b.A)) > 2 {
+				off++
+			}
+		}
+	}
+	t.Logf("max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, off)
+	if off > w*h/500 || mean > 0.1 {
+		t.Errorf("deviation max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, off)
+	}
+}
+
+// TestMeshes draws Gouraud meshes the GPU shades: vertex colours and ramp
+// parameters, overlapping, flat and thin triangles, translucent, as fills,
+// as strokes and within a mask, against the canvas's bytes.
+func TestMeshes(t *testing.T) {
+	d := device(t)
+	const w, h = 200, 150
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	ramp := make(stilus.Ramp, 64)
+	for i := range ramp {
+		ramp[i] = stilus.PackRGBA(color.RGBA{uint8(i * 4), 60, uint8(255 - i*4), 255})
+	}
+	shaders := make([]*stilus.MeshShader, 4)
+	for i := range shaders {
+		var tris []stilus.MeshTriangle
+		ox, oy := float32(10+(i%2)*95), float32(8+(i/2)*72)
+		for k := 0; k < 40; k++ {
+			var tri stilus.MeshTriangle
+			cx, cy := ox+float32((k*37)%80), oy+float32((k*23)%60)
+			for v := range tri {
+				a := uint8(150 + (k*v*13)%106)
+				tri[v] = stilus.MeshVertex{
+					X: cx + float32((k*7+v*19)%30) - 15, Y: cy + float32((k*11+v*29)%26) - 13,
+					C: stilus.PackRGBA(color.RGBA{uint8(int(a) * v / 2), uint8(int(a) * (2 - v) / 2), a / 3, a}),
+					T: float32(v) / 2,
+				}
+			}
+			if k%9 == 0 {
+				tri[1].C, tri[2].C = tri[0].C, tri[0].C
+			}
+			tris = append(tris, tri)
+		}
+		var rp stilus.Ramp
+		if i%2 == 1 {
+			rp = ramp
+		}
+		sh := &stilus.MeshShader{Alpha: []uint8{255, 255, 190, 120}[i]}
+		sh.Set(tris, stilus.Matrix{1.05, 0.1, -0.08, 0.98, 0, 0}, rp)
+		shaders[i] = sh
+	}
+	ops := func(c *stilus.Canvas) {
+		for i, sh := range shaders {
+			p := &stilus.Paint{Shader: sh}
+			var r stilus.Path
+			x, y := float32(5+(i%2)*95), float32(3+(i/2)*72)
+			r.Rect(x, y, 92, 70)
+			if i == 3 {
+				var e stilus.Path
+				e.Ellipse(x+46, y+35, 40, 30)
+				c.ClipPath(&e, stilus.Identity, stilus.NonZero)
+			}
+			c.Fill(&r, stilus.Identity, stilus.NonZero, p)
+			if i == 3 {
+				c.PopClip()
+			}
+			var l stilus.Path
+			l.MoveTo(x, y+70)
+			l.LineTo(x+92, y)
+			c.Stroke(&l, stilus.Identity, &stilus.StrokeStyle{Width: 4}, &stilus.Paint{Shader: shaders[(i+1)%4]})
+		}
+	}
+	fill(want, white)
+	c := stilus.NewCanvas(want)
+	ops(c)
+	tg.Clear(white)
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(c)
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	off := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			a, b := want.RGBAAt(x, y), got.RGBAAt(x, y)
+			if max(absd(a.R, b.R), absd(a.G, b.G), absd(a.B, b.B), absd(a.A, b.A)) > 2 {
+				off++
+			}
+		}
+	}
+	t.Logf("max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, off)
+	if off > w*h/500 || mean > 0.1 {
+		t.Errorf("deviation max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, off)
+	}
+}
+
+// TestGlyphMasks draws cached glyphs, whose masks the GPU paints, at
+// subpixel positions, in opaque and translucent colours, through a mask
+// clip and a fractional clip, against the canvas's bytes; and a mask
+// shader drawn directly.
+func TestGlyphMasks(t *testing.T) {
+	d := device(t)
+	const w, h = 220, 120
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	var glyphs [5]stilus.Path
+	for i := range glyphs {
+		g := &glyphs[i]
+		g.MoveTo(0, 0)
+		g.LineTo(6+float32(i), 0)
+		g.LineTo(3, -9-float32(i))
+		g.Close()
+		g.Ellipse(3, -4, 2, 3)
+	}
+	paints := []*stilus.Paint{
+		{Color: color.RGBA{0, 0, 0, 255}},
+		{Color: color.RGBA{0, 40, 140, 255}},
+		{Color: color.RGBA{90, 0, 0, 150}},
+	}
+	mask := image.NewAlpha(image.Rect(0, 0, 20, 14))
+	for i := range mask.Pix {
+		mask.Pix[i] = uint8(i * 7)
+	}
+	ops := func(c *stilus.Canvas) {
+		var gc stilus.GlyphCache
+		c.ClipRect(stilus.Rect{X0: 2.5, Y0: 1.7, X1: 217.3, Y1: 118.6}, stilus.Identity)
+		for i := 0; i < 300; i++ {
+			x, y := 4+float64(i%30)*7.13, 14+float64(i/30)*10.37
+			if i == 150 {
+				var e stilus.Path
+				e.Ellipse(110, 80, 90, 30)
+				c.ClipPath(&e, stilus.Identity, stilus.NonZero)
+			}
+			gc.FillGlyph(c, 1, int32(i%5), &glyphs[i%5], stilus.Matrix{1, 0, 0, 1, x, y}, paints[i%3])
+		}
+		c.PopClip()
+		ms := &stilus.MaskShader{Mask: mask, X: 30, Y: 40, Color: stilus.PackRGBA(color.RGBA{0, 90, 0, 200})}
+		var r stilus.Path
+		r.Rect(30, 40, 20, 14)
+		c.Fill(&r, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: ms})
+		c.PopClip()
+	}
+	fill(want, white)
+	c := stilus.NewCanvas(want)
+	ops(c)
+	tg.Clear(white)
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(c)
+	if c.Err() != nil {
+		t.Fatal(c.Err())
+	}
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	t.Logf("max %d/255, mean %.4f/255", mx, mean)
+	if mx > 2 || mean > 0.05 {
+		t.Errorf("deviation max %d/255, mean %.4f/255", mx, mean)
+	}
+}
+
+// drawGroup draws the content of a layer: translucent and opaque discs
+// and a bar, in the cell at (x, y).
+func drawGroup(c *stilus.Canvas, x, y float32, i int) {
+	var p stilus.Path
+	p.Ellipse(x+18, y+18, 14, 12)
+	c.Fill(&p, stilus.Identity, stilus.NonZero, &stilus.Paint{Color: color.RGBA{uint8(40 + i*12), 20, 150, 200}})
+	var q stilus.Path
+	q.Ellipse(x+32, y+24, 12, 13)
+	c.Fill(&q, stilus.Identity, stilus.NonZero, &stilus.Paint{Color: color.RGBA{230, uint8(200 - i*9), 30, 255}})
+	var b stilus.Path
+	b.Rect(x+4, y+30, 44, 6)
+	c.Fill(&b, stilus.Identity, stilus.NonZero, &stilus.Paint{Color: color.RGBA{0, 70, 60, 130}})
+}
+
+// drawBackdrop draws what the layers are composited onto.
+func drawBackdrop(c *stilus.Canvas, w, h int) {
+	for i := 0; i < 12; i++ {
+		var p stilus.Path
+		p.Rect(float32(i*w/12), 0, float32(w/12)+1, float32(h))
+		c.Fill(&p, stilus.Identity, stilus.NonZero, &stilus.Paint{Color: color.RGBA{uint8(i * 20), uint8(240 - i*15), uint8(60 + i*10), 255}})
+	}
+	var e stilus.Path
+	e.Ellipse(float32(w)/2, float32(h)/2, float32(w)/3, float32(h)/4)
+	c.Fill(&e, stilus.Identity, stilus.NonZero, &stilus.Paint{Color: color.RGBA{0, 0, 0, 90}})
+}
+
+type layerCase struct {
+	mode        stilus.BlendMode
+	alpha       uint8
+	mask        bool
+	nonIsolated bool
+	subtractive bool
+	black       bool
+}
+
+func layerCases() []layerCase {
+	var cs []layerCase
+	for m := stilus.BlendNormal; m <= stilus.BlendLuminosity; m++ {
+		cs = append(cs, layerCase{mode: m, alpha: []uint8{255, 170}[int(m)%2], mask: m%3 == 1})
+	}
+	cs = append(cs,
+		layerCase{mode: stilus.BlendMultiply, alpha: 255, nonIsolated: true},
+		layerCase{mode: stilus.BlendNormal, alpha: 200, nonIsolated: true, mask: true},
+		layerCase{mode: stilus.BlendScreen, alpha: 255, subtractive: true},
+		layerCase{mode: stilus.BlendColorBurn, alpha: 255, subtractive: true},
+		layerCase{mode: stilus.BlendHue, alpha: 255, black: true},
+		layerCase{mode: stilus.BlendLuminosity, alpha: 220, black: true, mask: true},
+	)
+	return cs
+}
+
+// TestLayers composites layers with every blend mode, alpha, a mask, a
+// non-isolated group's backdrop removed, ink amounts and a CMYK pair's
+// black image onto a target, as stilus.LayerShader with images (want:
+// the CPU canvas, which reads the backdrop from its image) and as
+// gpu.Layer with targets.
+func TestLayers(t *testing.T) {
+	d := device(t)
+	const cw, ch = 52, 44
+	cases := layerCases()
+	cols := 6
+	w, h := cols*cw, (len(cases)+cols-1)/cols*ch
+	bounds := image.Rect(0, 0, w, h)
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	want := image.NewRGBA(bounds)
+	var c stilus.Canvas
+	c.Reset(want, bounds)
+	drawBackdrop(&c, w, h)
+	mask := image.NewAlpha(bounds)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			mask.Pix[mask.PixOffset(x, y)] = uint8((x*5 + y*3) % 256)
+		}
+	}
+	// The layers in images, one per cell, and the shaders for the CPU.
+	shaders := make([]*stilus.LayerShader, len(cases))
+	cells := make([]image.Rectangle, len(cases))
+	for i, lc := range cases {
+		x, y := (i%cols)*cw, (i/cols)*ch
+		r := image.Rect(x, y, x+cw, y+ch)
+		cells[i] = r
+		src := image.NewRGBA(r)
+		sh := &stilus.LayerShader{Src: src, Dst: want, Alpha: lc.alpha, Blend: lc.mode, Subtractive: lc.subtractive, Black: lc.black}
+		if lc.nonIsolated {
+			// The group drawn onto a copy of its backdrop, and alone.
+			copyRect(src, want, r)
+			initial := image.NewRGBA(r)
+			copyRect(initial, want, r)
+			alone := image.NewRGBA(r)
+			var g stilus.Canvas
+			g.Reset(alone, r)
+			drawGroup(&g, float32(x), float32(y), i)
+			sh.Initial, sh.Alone = initial, alone
+		}
+		var g stilus.Canvas
+		g.Reset(src, r)
+		drawGroup(&g, float32(x), float32(y), i)
+		if lc.mask {
+			sh.Mask = mask
+		}
+		shaders[i] = sh
+	}
+	ops := func(c *stilus.Canvas, paints []stilus.Shader) {
+		for i := range cases {
+			var p stilus.Path
+			r := cells[i]
+			// The fill reaches past half pixels: partial coverage at the
+			// cell's edges blends exactly.
+			p.Rect(float32(r.Min.X)+2.5, float32(r.Min.Y)+1.5, float32(r.Dx())-4, float32(r.Dy())-3)
+			c.Fill(&p, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: paints[i]})
+		}
+	}
+	cpu := make([]stilus.Shader, len(cases))
+	for i := range shaders {
+		cpu[i] = shaders[i]
+	}
+	ops(&c, cpu)
+
+	check := func(name string, paints []stilus.Shader) {
+		t.Helper()
+		worst := 0
+		defer func() { t.Logf("%s: max %d/255 over %d cases", name, worst, len(cases)) }()
+		got := image.NewRGBA(bounds)
+		tg.Clear(color.RGBA{})
+		c.ResetCompositor(tg, tg.Bounds())
+		drawBackdrop(&c, w, h)
+		ops(&c, paints)
+		if err := tg.ReadRGBA(got); err != nil {
+			t.Fatal(err)
+		}
+		if tg.Err() != nil {
+			t.Fatal(tg.Err())
+		}
+		for i := range cases {
+			r := cells[i]
+			mx, sum, n := 0, 0, 0
+			for y := r.Min.Y; y < r.Max.Y; y++ {
+				for x := r.Min.X; x < r.Max.X; x++ {
+					a, b := want.RGBAAt(x, y), got.RGBAAt(x, y)
+					dd := max(absd(a.R, b.R), absd(a.G, b.G), absd(a.B, b.B), absd(a.A, b.A))
+					mx = max(mx, dd)
+					sum += dd
+					n++
+				}
+			}
+			mean := float64(sum) / float64(n)
+			worst = max(worst, mx)
+			if mx > 3 || mean > 0.2 {
+				t.Errorf("%s case %d %+v: max %d/255, mean %.3f/255", name, i, cases[i], mx, mean)
+			}
+		}
+	}
+	check("LayerShader", cpu)
+
+	// The same layers drawn into targets.
+	gpuPaints := make([]stilus.Shader, len(cases))
+	var keep []*gpu.Target
+	newTarget := func(img *image.RGBA) *gpu.Target {
+		lt, err := d.NewTarget(img.Rect.Dx(), img.Rect.Dy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		keep = append(keep, lt)
+		var ic stilus.ImageShader
+		tex := stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneRGBA, W: img.Rect.Dx(), H: img.Rect.Dy(), Stride: img.Rect.Dx(), Pix32: pixels32(img)})
+		ic.SetImage(tex, stilus.Identity, false, 255)
+		var lc stilus.Canvas
+		lc.ResetCompositor(lt, lt.Bounds())
+		var p stilus.Path
+		p.Rect(0, 0, float32(img.Rect.Dx()), float32(img.Rect.Dy()))
+		lt.Clear(color.RGBA{})
+		lc.Fill(&p, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: &ic})
+		return lt
+	}
+	for i, sh := range shaders {
+		r := cells[i]
+		l := &gpu.Layer{Src: newTarget(sh.Src), X: r.Min.X, Y: r.Min.Y, Alpha: sh.Alpha, Blend: sh.Blend, Subtractive: sh.Subtractive, Black: sh.Black}
+		if sh.Mask != nil {
+			// The mask's alpha over the cell, in a target at (X, Y).
+			img := image.NewRGBA(r)
+			for y := r.Min.Y; y < r.Max.Y; y++ {
+				for x := r.Min.X; x < r.Max.X; x++ {
+					img.Pix[img.PixOffset(x, y)+3] = mask.Pix[mask.PixOffset(x, y)]
+				}
+			}
+			l.Mask = newTarget(img)
+		}
+		if sh.Initial != nil {
+			l.Initial, l.Alone = newTarget(sh.Initial), newTarget(sh.Alone)
+		}
+		gpuPaints[i] = l
+	}
+	check("Layer", gpuPaints)
+	defer func() {
+		for _, k := range keep {
+			k.Close()
+		}
+	}()
+}
+
+func copyRect(dst, src *image.RGBA, r image.Rectangle) {
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		copy(dst.Pix[dst.PixOffset(r.Min.X, y):dst.PixOffset(r.Max.X, y)], src.Pix[src.PixOffset(r.Min.X, y):src.PixOffset(r.Max.X, y)])
+	}
+}
+
+// pixels32 returns img's pixels as PackRGBA words.
+func pixels32(img *image.RGBA) []uint32 {
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	p := make([]uint32, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := img.RGBAAt(img.Rect.Min.X+x, img.Rect.Min.Y+y)
+			p[y*w+x] = stilus.PackRGBA(c)
+		}
+	}
+	return p
+}
