@@ -71,6 +71,11 @@ func (u *Union) Reset() {
 func (u *Union) Len() int { return len(u.ops) }
 
 // Fill adds p, transformed by m into device space, filled with rule.
+//
+// The union keeps p itself, not a copy: p must not be changed, reset or
+// reused for another element until the union is drawn. To rebuild one Path
+// per element, add it through a Shape (SetFill copies the path) with
+// u.Shape instead.
 func (u *Union) Fill(p *Path, m Matrix, rule FillRule) {
 	if len(p.Points) == 0 || !m.finite() {
 		return
@@ -83,6 +88,9 @@ func (u *Union) Fill(p *Path, m Matrix, rule FillRule) {
 }
 
 // Stroke adds the stroke of p with style st (in user space) under m.
+//
+// As with Fill, the union keeps p and st themselves: neither may change
+// until the union is drawn. Shape.SetStroke copies them.
 func (u *Union) Stroke(p *Path, m Matrix, st *StrokeStyle) {
 	if len(p.Points) == 0 || !m.finite() {
 		return
