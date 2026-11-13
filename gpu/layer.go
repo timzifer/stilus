@@ -53,6 +53,9 @@ const (
 	layerSubtractive = 1 << 10
 	layerBackdrop    = 1 << 11
 
+	// layerWords is the size of a layer record.
+	layerWords = 12
+
 	// blendBackdrop is stilus's B(cb, cs) = cb, the mode of a CMYK pair's
 	// black image in Hue, Saturation and Color.
 	blendBackdrop = 255
@@ -141,30 +144,35 @@ func (t *Target) layerBlitter(sh stilus.Shader) stilus.Blitter {
 	default:
 		return nil
 	}
-	if t.parent != nil {
-		t.setErr(fmt.Errorf("%w: layers are not drawn through a recorder", ErrLayer))
-		return nothing{}
-	}
 	r = r.Intersect(t.Bounds())
 	if r.Empty() || alpha == 0 {
 		return nothing{}
 	}
 	backdrop := mode != uint32(stilus.BlendNormal)
+	flags := uint32(layerKind) | mode
+	if srcs[2] != (layerSrc{}) {
+		flags |= layerMask
+	}
+	if remove {
+		flags |= layerRemove
+	}
+	if sub {
+		flags |= layerSubtractive
+	}
+	if backdrop {
+		flags |= layerBackdrop
+	}
+	if t.parent != nil {
+		if backdrop {
+			srcs[1] = layerSrc{tg: t.parent}
+		}
+		return t.recordLayer(srcs, r, alpha, flags)
+	}
 	if backdrop {
 		srcs[1] = layerSrc{tg: t}
 	}
 	w, h := r.Dx(), r.Dy()
-	stride := (w*4 + 255) &^ 255 // bytes
-	size := stride * h
-	var offs [5]int
-	total := 0
-	for i := range srcs {
-		if srcs[i] == (layerSrc{}) {
-			continue
-		}
-		offs[i] = total
-		total += size
-	}
+	stride, offs, total := layerLayout(&srcs, r)
 	if total > int(t.d.maxBind) {
 		t.setErr(fmt.Errorf("%w: %d × %d needs %d bytes, the device binds %d", ErrLayer, w, h, total, t.d.maxBind))
 		return nothing{}
@@ -194,19 +202,6 @@ func (t *Target) layerBlitter(sh stilus.Shader) stilus.Blitter {
 	if err := t.copyLayer(srcs[:], offs[:], r, stride); err != nil {
 		t.setErr(err)
 		return nothing{}
-	}
-	flags := uint32(layerKind) | mode
-	if srcs[2] != (layerSrc{}) {
-		flags |= layerMask
-	}
-	if remove {
-		flags |= layerRemove
-	}
-	if sub {
-		flags |= layerSubtractive
-	}
-	if backdrop {
-		flags |= layerBackdrop
 	}
 	b := &t.grad
 	b.recOK, b.img = false, nil
@@ -306,6 +301,111 @@ func (t *Target) copyLayer(srcs []layerSrc, offs []int, r image.Rectangle, strid
 	}
 	if _, err := t.d.queue.Submit(cmd); err != nil {
 		return fmt.Errorf("gpu: submit: %w", err)
+	}
+	return nil
+}
+
+// layerLayout places the copies of the sources over r in the layer
+// buffer: rows of stride bytes, one copy after the other.
+func layerLayout(srcs *[5]layerSrc, r image.Rectangle) (stride int, offs [5]int, total int) {
+	stride = (r.Dx()*4 + 255) &^ 255
+	size := stride * r.Dy()
+	for i := range srcs {
+		if srcs[i] == (layerSrc{}) {
+			continue
+		}
+		offs[i] = total
+		total += size
+	}
+	return stride, offs, total
+}
+
+// putLayerRecord appends a layer record: flags, alpha, the region r, the
+// stride and the offsets of the copies.
+func putLayerRecord(rec []byte, flags uint32, alpha uint8, r image.Rectangle, stride int, offs [5]int) []byte {
+	put := func(v uint32) { rec = binary.LittleEndian.AppendUint32(rec, v) }
+	put(flags)
+	put(uint32(alpha))
+	put(uint32(int32(r.Min.X)))
+	put(uint32(int32(r.Min.Y)))
+	put(uint32(r.Dx()))
+	put(uint32(r.Dy()))
+	put(uint32(stride / 4))
+	for _, o := range offs {
+		put(uint32(o / 4))
+	}
+	return rec
+}
+
+// layerOp is a layer operation of a recorder: a barrier in its spans. Its
+// copies are made at the target's Flush, of the part of the layer its
+// spans reach, after the spans before it are drawn.
+type layerOp struct {
+	srcs       [5]layerSrc
+	r          image.Rectangle // the layer within the target
+	flags      uint32
+	alpha      uint8
+	start, end int // its spans; end -1 while recording it
+	rec        int // the byte offset of its record in data
+	region     image.Rectangle
+	stride     int
+	offs       [5]int
+}
+
+// recordLayer records a layer operation of a recorder: its record, whose
+// region and copies Flush fills in, and the blitter of its spans.
+func (t *Target) recordLayer(srcs [5]layerSrc, r image.Rectangle, alpha uint8, flags uint32) stilus.Blitter {
+	if !t.reserve(1, 4*layerWords+3) {
+		return nothing{}
+	}
+	b := &t.grad
+	t.data = pad4(t.data)
+	off := len(t.data)
+	t.data = putLayerRecord(t.data, flags, alpha, image.Rectangle{}, 0, [5]int{})
+	b.rec = append(b.rec[:0], t.data[off:]...)
+	b.col, b.recFlush, b.recOK, b.img = uint32(off/4), t.flushes, true, nil
+	t.layerOps = append(t.layerOps, layerOp{srcs: srcs, r: r, flags: flags, alpha: alpha, start: len(t.spans) / spanBytes, end: -1, rec: off})
+	return b
+}
+
+// closeLayer ends the spans of the layer operation being recorded.
+func (t *Target) closeLayer() {
+	if n := len(t.layerOps); n > 0 && t.layerOps[n-1].end < 0 {
+		t.layerOps[n-1].end = len(t.spans) / spanBytes
+	}
+}
+
+// prepareLayers finds the region of each layer operation of a recorder,
+// the bounds of its spans within the layer, lays its copies out, writes
+// its record and flushes the targets it copies from.
+func (t *Target) prepareLayers() error {
+	t.closeLayer()
+	for i := range t.layerOps {
+		op := &t.layerOps[i]
+		var bb image.Rectangle
+		for k := op.start; k < op.end; k++ {
+			s := t.spans[k*spanBytes:]
+			pos, size := binary.LittleEndian.Uint32(s), binary.LittleEndian.Uint32(s[4:])
+			x, y := int(pos&0xffff), int(pos>>16)
+			bb = bb.Union(image.Rect(x, y, x+int(size&0xffff), y+int(size>>16)))
+		}
+		op.region = bb.Intersect(op.r)
+		var total int
+		op.stride, op.offs, total = layerLayout(&op.srcs, op.region)
+		if total > int(t.d.maxBind) {
+			t.setErr(fmt.Errorf("%w: %d × %d needs %d bytes, the device binds %d", ErrLayer, op.region.Dx(), op.region.Dy(), total, t.d.maxBind))
+			op.region = image.Rectangle{}
+			op.stride, op.offs, total = 0, [5]int{}, 0
+		}
+		t.layerNeed = max(t.layerNeed, total)
+		copy(t.data[op.rec:], putLayerRecord(t.layerTmp[:0], op.flags, op.alpha, op.region, op.stride, op.offs))
+		for _, s := range op.srcs {
+			if s.tg != nil && s.tg != t.parent {
+				if err := s.tg.Flush(); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }

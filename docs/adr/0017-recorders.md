@@ -33,9 +33,9 @@ recorders' in the order they were made, each with its bind group.
 
 Recorders draw disjoint parts, as bands do. Two kinds of operation need
 what was drawn before them on the GPU and so a flush in the middle of a
-band, which a recorder cannot do: layers (ADR 0014) are reported by
-`Err` (`ErrLayer`) and not drawn, so pages with layers draw them through
-the target; a texture larger than the recorder's store is shaded on the
+band, which a recorder cannot do: layers (ADR 0014) were at first
+reported by `Err` (`ErrLayer`) and not drawn (see *Layers through
+recorders*); a texture larger than the recorder's store is shaded on the
 CPU. Spans beyond the device's storage binding are dropped and reported
 (`ErrRecorderFull`).
 
@@ -92,3 +92,30 @@ later frames find the records: `BenchmarkScenesBands` meshes-40 with
 canvas the scene no longer times the set-up: 14.5 → 13.4 ms at 150 dpi
 (the benchmark history measures every release with the scene of the
 working tree, so its line moves for all of them).
+
+## Layers through recorders
+
+Added for #62. A layer operation in a recorder is a barrier in its
+spans: the recorder records the layer's record with its region and
+copies left open, the sources to copy, and where its spans start. The
+target's `Flush` then
+
+1. finds each operation's region, the bounds of its own spans within the
+   layer, so that a band copies only its part of a layer that crosses
+   several; lays the copies out in the recorder's layer buffer and fills
+   the record in; flushes the targets the copies are taken of;
+2. draws in rounds: round 0 the target's spans and every recorder's spans
+   before its first layer operation, round k (one render pass) every
+   recorder's spans from its operation k−1 to the next, after the copies
+   of that operation (backdrop from the texture, sources), which the
+   queue orders after the rounds before.
+
+Spans of a segment are drawn with `FirstInstance`, from the recorder's
+one span buffer. `gpu.TestLayers` composites its 22 layers (every blend
+mode, masks, non-isolated groups, ink amounts, the black image) through
+five recorders at once whose bands cut the layers: max 2/255 as through
+the target, as `LayerShader` with images and as `Layer` with targets,
+race-free; `TestRecorders` includes layers-24. layers-24 in bands, Apple
+M4, 150 dpi, with readback: 1 / 4 / 8 bands 9.1 / 8.7 / 9.0 ms (the
+target alone 9.2 ms): the scene's layers are images, written per frame,
+so bands divide only their rasterization.

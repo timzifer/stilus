@@ -120,7 +120,8 @@ the GPU from frame to frame ([ADR 0016](docs/adr/0016-texture-store.md)):
 a photo redrawn each frame 5.5 → 1.8 ms. Bands draw onto one target at
 once through recorders, one canvas and goroutine each
 ([ADR 0017](docs/adr/0017-recorders.md)): CPU-bound scenes about twice as
-fast at four bands.
+fast at four bands; layers in bands are drawn in rounds, each band
+copying its part of the layer.
 
 ## Shaders
 

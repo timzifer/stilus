@@ -97,6 +97,8 @@ type Target struct {
 	// pending are a recorder's writes into the store, made by its
 	// target's Flush.
 	pending []storeWrite
+	// layerOps are a recorder's layer operations since the last Flush.
+	layerOps []layerOp
 
 	layerTmp []byte // an image's copy for the layer buffer
 	planeTmp []byte // a plane's copy for the store
@@ -178,6 +180,7 @@ func (t *Target) Clear(c color.RGBA) {
 
 // Blitter implements stilus.Compositor.
 func (t *Target) Blitter(p *stilus.Paint) stilus.Blitter {
+	t.closeLayer()
 	t.opStart = len(t.spans) / spanBytes
 	if p.Shader != nil {
 		if b := t.gradient(p.Shader); b != nil {
@@ -255,7 +258,8 @@ func (t *Target) grow(spans, data int) error {
 
 // Flush draws what was recorded since the last Flush onto the texture,
 // the target's own spans and then those of its recorders, in one render
-// pass.
+// pass; a recorder's layer operations split its spans into segments, drawn
+// in rounds with the layer's copies between them (ADR 0017).
 func (t *Target) Flush() error {
 	if t.parent != nil {
 		return errors.New("gpu: a recorder is flushed by its target")
@@ -268,6 +272,13 @@ func (t *Target) Flush() error {
 	if !draw {
 		return nil
 	}
+	rounds := 1
+	for _, r := range t.recorders {
+		if err := r.prepareLayers(); err != nil {
+			return err
+		}
+		rounds = max(rounds, len(r.layerOps)+1)
+	}
 	if err := t.upload(); err != nil {
 		return err
 	}
@@ -276,12 +287,43 @@ func (t *Target) Flush() error {
 			return err
 		}
 	}
+	// Round k draws every recorder's segment k, after the copies of its
+	// layer operation k−1, which read what the rounds before drew.
+	for k := range rounds {
+		if k > 0 {
+			for _, r := range t.recorders {
+				if k-1 < len(r.layerOps) {
+					op := &r.layerOps[k-1]
+					if !op.region.Empty() {
+						if err := r.copyLayer(op.srcs[:], op.offs[:], op.region, op.stride); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+		if err := t.drawRound(k); err != nil {
+			return err
+		}
+	}
+	t.reset()
+	for _, r := range t.recorders {
+		r.reset()
+	}
+	t.clear = false
+	return nil
+}
+
+// drawRound draws round k of a Flush in a render pass: the target's own
+// spans and every recorder's first segment in round 0, the recorders'
+// segment k after.
+func (t *Target) drawRound(k int) error {
 	enc, err := t.d.dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{Label: "stilus-flush"})
 	if err != nil {
 		return fmt.Errorf("gpu: encoder: %w", err)
 	}
 	att := wgpu.RenderPassColorAttachment{View: t.view, LoadOp: gputypes.LoadOpLoad, StoreOp: gputypes.StoreOpStore}
-	if t.clear {
+	if t.clear && k == 0 {
 		att.LoadOp, att.ClearValue = gputypes.LoadOpClear, t.clearCol
 	}
 	pass, err := enc.BeginRenderPass(&wgpu.RenderPassDescriptor{Label: "stilus-spans", ColorAttachments: []wgpu.RenderPassColorAttachment{att}})
@@ -290,9 +332,14 @@ func (t *Target) Flush() error {
 		return fmt.Errorf("gpu: render pass: %w", err)
 	}
 	pass.SetPipeline(t.d.pipeline)
-	t.drawSpans(pass)
+	if k == 0 {
+		t.drawSpans(pass, 0, len(t.spans)/spanBytes)
+	}
 	for _, r := range t.recorders {
-		r.drawSpans(pass)
+		if k <= len(r.layerOps) {
+			from, to := r.segment(k)
+			r.drawSpans(pass, from, to)
+		}
 	}
 	if err := pass.End(); err != nil {
 		enc.DiscardEncoding()
@@ -305,11 +352,6 @@ func (t *Target) Flush() error {
 	if _, err := t.d.queue.Submit(cmd); err != nil {
 		return fmt.Errorf("gpu: submit: %w", err)
 	}
-	t.reset()
-	for _, r := range t.recorders {
-		r.reset()
-	}
-	t.clear = false
 	return nil
 }
 
@@ -336,16 +378,31 @@ func (t *Target) upload() error {
 	return nil
 }
 
-// drawSpans draws the recorded spans into pass.
-func (t *Target) drawSpans(pass *wgpu.RenderPassEncoder) {
-	if n := len(t.spans) / spanBytes; n > 0 {
+// drawSpans draws the recorded spans [from, to) into pass.
+func (t *Target) drawSpans(pass *wgpu.RenderPassEncoder, from, to int) {
+	if to > from {
 		pass.SetBindGroup(0, t.bind, nil)
-		pass.Draw(gputypes.DrawArgs{VertexCount: 6, InstanceCount: uint32(n)})
+		pass.Draw(gputypes.DrawArgs{VertexCount: 6, InstanceCount: uint32(to - from), FirstInstance: uint32(from)})
 	}
+}
+
+// segment returns the spans of a recorder's segment k: those before its
+// first layer operation for k = 0, else those from its layer operation k−1
+// to the next.
+func (t *Target) segment(k int) (from, to int) {
+	if k > 0 {
+		from = t.layerOps[k-1].start
+	}
+	to = len(t.spans) / spanBytes
+	if k < len(t.layerOps) {
+		to = t.layerOps[k].start
+	}
+	return from, to
 }
 
 // reset drops what was recorded, once drawn.
 func (t *Target) reset() {
+	t.layerOps = t.layerOps[:0]
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
 	t.flushes++
