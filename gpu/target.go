@@ -24,6 +24,7 @@ const (
 	modeRun   = 0 << 30
 	modeCov   = 1 << 30
 	modeCols  = 2 << 30
+	modeStrip = 3 << 30
 	dataMask  = 1<<30 - 1
 	// lookBack is how many spans of the current operation a run looks
 	// back at for one on the row above that it can extend.
@@ -427,6 +428,37 @@ func (b *solidBlitter) BlitCoverage(y, x int, cov []uint8) {
 	}
 	t.data = append(t.data, cov...)
 	t.span(x0, y, x1-x0, 1, b.col, modeCov|uint32(off))
+}
+
+// BlitStrip records a strip whole: the GPU computes its coverage
+// (spans.wgsl, stripCoverage) in float32, relative to an origin at the
+// strip's first row, so that its magnitudes stay small.
+func (b *solidBlitter) BlitStrip(s *stilus.Strip) {
+	t := b.t
+	x0, x1 := max(s.X0, 0), min(s.X1, t.w)
+	y0, y1 := max(s.Y0, 0), min(s.Y1, t.h)
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+	if !t.reserve(1, 3+8*4) {
+		return
+	}
+	t.data = pad4(t.data)
+	off := len(t.data) / 4
+	if off > dataMask {
+		return
+	}
+	fy := float64(y0)
+	ox := math.Floor(s.XL + fy*s.SL)
+	if !(math.Abs(ox) < 1<<30) {
+		return
+	}
+	k := s.NX*ox + s.NY*fy
+	for _, v := range [7]float64{s.NX, s.NY, s.K1 - k, s.K2 - k, s.XL + fy*s.SL - ox, s.XR + fy*s.SL - ox, s.SL} {
+		t.data = binary.LittleEndian.AppendUint32(t.data, math.Float32bits(float32(v)))
+	}
+	t.data = binary.LittleEndian.AppendUint32(t.data, uint32(int32(ox)))
+	t.span(x0, y0, x1-x0, y1-y0, b.col, modeStrip|uint32(off))
 }
 
 // shadedBlitter evaluates a shader on the CPU and records its colours,

@@ -1,13 +1,16 @@
 // Spans recorded from stilus blitters, composited source-over onto a
-// premultiplied RGBA8 target (ADR 0007).
+// premultiplied RGBA8 target (ADR 0007, 0008).
 //
 // A span is a rectangle of pixels with a mode:
 //   0 run:      colour × alpha (data)
 //   1 coverage: colour × coverage byte, data is the byte offset of x0's
 //               coverage in words
 //   2 colours:  one premultiplied colour per pixel, data is the word offset
-//               of x0's colour in words; rows of the span repeat the first
-//               (spans of this mode are one row tall)
+//               of x0's colour in words (spans of this mode are one row)
+//   3 strip:    colour × the coverage of a stilus.Strip, data is the word
+//               offset of its parameters (stripParams); the rectangle is
+//               the strip's rows and the clip's columns, and the quad
+//               drawn is the parallelogram around the strip's rows
 
 struct Span {
     pos: u32,   // x0 | y0 << 16
@@ -30,25 +33,124 @@ struct VOut {
     @location(0) @interpolate(flat) id: u32,
 }
 
+// A strip's parameters, relative to its origin (ox, y0): row r = y − y0
+// covers at most the local columns [floor(xl + r·sl), floor(xr + r·sl)],
+// and a pixel's coverage is its area between k2 <= nx·x + ny·y <= k1.
+struct Strip {
+    nx: f32,
+    ny: f32,
+    k1: f32,
+    k2: f32,
+    xl: f32,
+    xr: f32,
+    sl: f32,
+    ox: i32,
+}
+
+fn strip(d: u32) -> Strip {
+    var s: Strip;
+    s.nx = bitcast<f32>(words[d]);
+    s.ny = bitcast<f32>(words[d + 1u]);
+    s.k1 = bitcast<f32>(words[d + 2u]);
+    s.k2 = bitcast<f32>(words[d + 3u]);
+    s.xl = bitcast<f32>(words[d + 4u]);
+    s.xr = bitcast<f32>(words[d + 5u]);
+    s.sl = bitcast<f32>(words[d + 6u]);
+    s.ox = bitcast<i32>(words[d + 7u]);
+    return s;
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     let s = spans[ii];
     var cx = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
     var cy = array<f32, 6>(0.0, 0.0, 1.0, 1.0, 0.0, 1.0);
-    let x = f32(s.pos & 0xffffu) + f32(s.size & 0xffffu) * cx[vi];
-    let y = f32(s.pos >> 16u) + f32(s.size >> 16u) * cy[vi];
+    let x0 = f32(s.pos & 0xffffu);
+    let y0 = f32(s.pos >> 16u);
+    let h = f32(s.size >> 16u);
+    var x = x0 + f32(s.size & 0xffffu) * cx[vi];
+    let y = y0 + h * cy[vi];
+    if ((s.data >> 30u) == 3u) {
+        // The edges of the parallelogram lie two pixels outside the
+        // strip's columns at each row's centre, so that every pixel of a
+        // row's columns has its centre inside; the fragment tests them.
+        let st = strip(s.data & 0x3fffffffu);
+        let r = h * cy[vi] - 0.5;
+        let left = f32(st.ox) + st.xl + r * st.sl - 2.0;
+        let right = f32(st.ox) + st.xr + r * st.sl + 2.0;
+        x = mix(left, right, cx[vi]);
+    }
     var out: VOut;
     out.pos = vec4<f32>(x / g.size.x * 2.0 - 1.0, 1.0 - y / g.size.y * 2.0, 0.0, 1.0);
     out.id = ii;
     return out;
 }
 
+// area is the area of the unit pixel on the side n·(p − c) <= u of a line
+// with the normal n: stilus's trapezoid.
+fn area(u: f32, h: f32, mt: f32, inv2ab: f32, inva: f32) -> f32 {
+    if (u <= -h) {
+        return 0.0;
+    }
+    if (u >= h) {
+        return 1.0;
+    }
+    if (u < -mt) {
+        let v = u + h;
+        return v * v * inv2ab;
+    }
+    if (u > mt) {
+        let v = h - u;
+        return 1.0 - v * v * inv2ab;
+    }
+    return 0.5 + u * inva;
+}
+
+fn stripCoverage(s: Span, px: vec2<f32>) -> f32 {
+    let x0 = i32(s.pos & 0xffffu);
+    let y0 = i32(s.pos >> 16u);
+    let x = i32(px.x);
+    let y = i32(px.y);
+    if (x < x0 || x >= x0 + i32(s.size & 0xffffu) || y < y0 || y >= y0 + i32(s.size >> 16u)) {
+        return 0.0;
+    }
+    let st = strip(s.data & 0x3fffffffu);
+    let r = f32(y - y0);
+    let lx = x - st.ox;
+    // A column outside a row's span has no area between the lines; one
+    // more on each side keeps float32 rounding of the span from dropping
+    // a pixel that has.
+    if (lx < i32(floor(st.xl + r * st.sl)) - 1 || lx > i32(floor(st.xr + r * st.sl)) + 1) {
+        return 0.0;
+    }
+    var a = abs(st.nx);
+    var b = abs(st.ny);
+    if (a < b) {
+        let t = a;
+        a = b;
+        b = t;
+    }
+    let h = (a + b) * 0.5;
+    let mt = (a - b) * 0.5;
+    var inv2ab = 0.0;
+    if (b > 1e-9) {
+        inv2ab = 1.0 / (2.0 * a * b);
+    }
+    let inva = 1.0 / a;
+    let d = st.nx * (f32(lx) + 0.5) + st.ny * (r + 0.5);
+    let c = area(st.k1 - d, h, mt, inv2ab, inva) - area(st.k2 - d, h, mt, inv2ab, inva);
+    return clamp(floor(c * 256.0), 0.0, 255.0);
+}
+
 @fragment
 fn fs_main(in: VOut) -> @location(0) vec4<f32> {
     let s = spans[in.id];
-    let i = u32(in.pos.x) - (s.pos & 0xffffu);
     let mode = s.data >> 30u;
     let d = s.data & 0x3fffffffu;
+    if (mode == 3u) {
+        return unpack4x8unorm(s.color) * (stripCoverage(s, in.pos.xy) / 255.0);
+    }
+    let i = u32(in.pos.x) - (s.pos & 0xffffu);
     if (mode == 2u) {
         return unpack4x8unorm(words[d + i]);
     }

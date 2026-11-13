@@ -22,6 +22,7 @@ when its shaders or kernels exist with tests and cera's ADR can use them.
 | [0005](0005-prepared-geometry.md) | Prepared geometry shared by bands | cera's banded rendering | accepted |
 | [0006](0006-union.md) | Union of many paths in one coverage pass | cera#21 (batched same-paint operations) | accepted |
 | [0007](0007-gpu-compositing.md) | Compositing on the GPU through gogpu/wgpu | GPU viewers (lux, cera viewer) | accepted |
+| [0008](0008-gpu-strips.md) | Analytic strips drawn whole by a compositor | ADR 0007 (hatching) | accepted |
 
 ## Template
 

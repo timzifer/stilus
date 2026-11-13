@@ -72,8 +72,10 @@ type Canvas struct {
 	solid  SolidBlitter
 	shader ShaderBlitter
 
-	// comp, when non-nil, composites instead of dst (ResetCompositor).
-	comp Compositor
+	// comp, when non-nil, composites instead of dst (ResetCompositor);
+	// compB is the blitter it returned last.
+	comp  Compositor
+	compB Blitter
 
 	// second is the second image of ResetPair, nil for none, and what
 	// paints into it.
@@ -232,7 +234,8 @@ func (c *Canvas) chain(st *clipState, b Blitter) Blitter {
 
 func (c *Canvas) paint(p *Paint) Blitter {
 	if c.comp != nil {
-		return c.comp.Blitter(p)
+		c.compB = c.comp.Blitter(p)
+		return c.compB
 	}
 	b := paintWith(p, &c.solid, &c.shader)
 	if c.second == nil {
@@ -390,8 +393,14 @@ func (c *Canvas) strokeFast(cs *clipState, b Blitter, paint *Paint, pr strokePre
 	// disjoint rows, so every pixel is composited once, with the coverage
 	// of one of them.
 	c.seg.r, c.seg.b = &c.r, b
-	c.seg.solid = nil
+	c.seg.solid, c.seg.strips = nil, nil
 	c.seg.frac = cs.frac
+	if cs.mask == nil && c.comp != nil {
+		// The strip's rows would reach the compositor's blitter through
+		// the chain, which without a mask only scales the clip's
+		// fractional borders; stripRows leaves those to the chain.
+		c.seg.strips, _ = c.compB.(StripBlitter)
+	}
 	if cs.mask == nil && opaque && c.second == nil && c.comp == nil {
 		c.seg.solid = &c.solid
 	}

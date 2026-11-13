@@ -126,7 +126,7 @@ func NewDevice(dev *wgpu.Device) (*Device, error) {
 		Entries: []gputypes.BindGroupLayoutEntry{
 			{Binding: 0, Visibility: gputypes.ShaderStageVertex, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeUniform}},
 			{Binding: 1, Visibility: vf, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
-			{Binding: 2, Visibility: gputypes.ShaderStageFragment, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
+			{Binding: 2, Visibility: vf, Buffer: &gputypes.BufferBindingLayout{Type: gputypes.BufferBindingTypeReadOnlyStorage}},
 		},
 	})
 	if err != nil {

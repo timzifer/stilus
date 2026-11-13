@@ -181,10 +181,9 @@ gain a little. Two kinds of scene lose:
   each of ~1 700 rows, 19 bytes recorded per row. The profile is mostly
   in the core: without the fused strip kernel the analytic rows go
   through `emitCoverage` and the border-fraction blitter (48 % and 31 %
-  cumulative), the target's recording is 22 %. Next steps, each measured
-  on its own: a strip span (one instance for the rows of an analytic
-  strip, its coverage computed in WGSL from the strip's two lines), and
-  a compositor entry point for the fused kernel's rows.
+  cumulative), the target's recording is 22 %. Drawing the strips whole
+  on the GPU ([ADR 0008](0008-gpu-strips.md)) took hatching from 37 to
+  4 ms.
 - *Shaders*: `ShadeSpan` on the CPU plus four bytes per covered pixel.
   WGSL counterparts for gradients and textures remove both; they need the
   shaders' set-up readable from the gpu package (a later ADR).

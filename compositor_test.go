@@ -101,3 +101,74 @@ func TestCompositorRegion(t *testing.T) {
 		t.Fatal("Reset did not leave the compositor")
 	}
 }
+
+// stripBlitter takes strips whole and blits their rows, as Strip.Row
+// gives them.
+type stripBlitter struct {
+	stilus.Blitter
+	cov    []uint8
+	strips *int
+}
+
+func (b *stripBlitter) BlitStrip(s *stilus.Strip) {
+	*b.strips++
+	for j := s.Y0; j < s.Y1; j++ {
+		var x int
+		x, b.cov = s.Row(j, b.cov[:0])
+		if len(b.cov) > 0 {
+			b.Blitter.BlitCoverage(j, x, b.cov)
+		}
+	}
+}
+
+type stripCompositor struct {
+	imageCompositor
+	sb     stripBlitter
+	strips int
+}
+
+func (c *stripCompositor) Blitter(p *stilus.Paint) stilus.Blitter {
+	c.sb.Blitter, c.sb.strips = c.imageCompositor.Blitter(p), &c.strips
+	return &c.sb
+}
+
+// TestStripBlitterScenes: strips handed to a StripBlitter and drawn row
+// by row with Strip.Row give the bytes of the canvas, on the scenes and
+// under a rectangle clip with fractional borders.
+func TestStripBlitterScenes(t *testing.T) {
+	const dpi = 72
+	size := scenes.Size(dpi)
+	clips := map[string]*stilus.Rect{"": nil, "frac": {X0: 40.3, Y0: 30.6, X1: 1100.45, Y1: 800.2}}
+	total := 0
+	for _, s := range scenes.All() {
+		for cn, clip := range clips {
+			t.Run(s.Name+"/"+cn, func(t *testing.T) {
+				draw := func(c *stilus.Canvas) {
+					if clip != nil {
+						c.ClipRect(*clip, scenes.Matrix(dpi))
+					}
+					s.Draw(c, dpi)
+					if clip != nil {
+						c.PopClip()
+					}
+				}
+				want, got := image.NewRGBA(size), image.NewRGBA(size)
+				c := stilus.NewCanvas(want)
+				draw(c)
+				comp := &stripCompositor{imageCompositor: imageCompositor{dst: got}}
+				c.ResetCompositor(comp, size)
+				draw(c)
+				if c.Err() != nil {
+					t.Fatal(c.Err())
+				}
+				total += comp.strips
+				if !bytes.Equal(want.Pix, got.Pix) {
+					t.Fatalf("%d bytes differ (%d strips)", diffBytes(want.Pix, got.Pix), comp.strips)
+				}
+			})
+		}
+	}
+	if total == 0 {
+		t.Fatal("no strips handed over")
+	}
+}
