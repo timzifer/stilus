@@ -598,3 +598,73 @@ func TestMeshes(t *testing.T) {
 		t.Errorf("deviation max %d/255, mean %.4f/255, %d pixels beyond 2/255", mx, mean, off)
 	}
 }
+
+// TestGlyphMasks draws cached glyphs, whose masks the GPU paints, at
+// subpixel positions, in opaque and translucent colours, through a mask
+// clip and a fractional clip, against the canvas's bytes; and a mask
+// shader drawn directly.
+func TestGlyphMasks(t *testing.T) {
+	d := device(t)
+	const w, h = 220, 120
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	want := image.NewRGBA(image.Rect(0, 0, w, h))
+	got := image.NewRGBA(want.Rect)
+	var glyphs [5]stilus.Path
+	for i := range glyphs {
+		g := &glyphs[i]
+		g.MoveTo(0, 0)
+		g.LineTo(6+float32(i), 0)
+		g.LineTo(3, -9-float32(i))
+		g.Close()
+		g.Ellipse(3, -4, 2, 3)
+	}
+	paints := []*stilus.Paint{
+		{Color: color.RGBA{0, 0, 0, 255}},
+		{Color: color.RGBA{0, 40, 140, 255}},
+		{Color: color.RGBA{90, 0, 0, 150}},
+	}
+	mask := image.NewAlpha(image.Rect(0, 0, 20, 14))
+	for i := range mask.Pix {
+		mask.Pix[i] = uint8(i * 7)
+	}
+	ops := func(c *stilus.Canvas) {
+		var gc stilus.GlyphCache
+		c.ClipRect(stilus.Rect{X0: 2.5, Y0: 1.7, X1: 217.3, Y1: 118.6}, stilus.Identity)
+		for i := 0; i < 300; i++ {
+			x, y := 4+float64(i%30)*7.13, 14+float64(i/30)*10.37
+			if i == 150 {
+				var e stilus.Path
+				e.Ellipse(110, 80, 90, 30)
+				c.ClipPath(&e, stilus.Identity, stilus.NonZero)
+			}
+			gc.FillGlyph(c, 1, int32(i%5), &glyphs[i%5], stilus.Matrix{1, 0, 0, 1, x, y}, paints[i%3])
+		}
+		c.PopClip()
+		ms := &stilus.MaskShader{Mask: mask, X: 30, Y: 40, Color: stilus.PackRGBA(color.RGBA{0, 90, 0, 200})}
+		var r stilus.Path
+		r.Rect(30, 40, 20, 14)
+		c.Fill(&r, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: ms})
+		c.PopClip()
+	}
+	fill(want, white)
+	c := stilus.NewCanvas(want)
+	ops(c)
+	tg.Clear(white)
+	c.ResetCompositor(tg, tg.Bounds())
+	ops(c)
+	if c.Err() != nil {
+		t.Fatal(c.Err())
+	}
+	if err := tg.ReadRGBA(got); err != nil {
+		t.Fatal(err)
+	}
+	mx, mean := deviation(want.Pix, got.Pix)
+	t.Logf("max %d/255, mean %.4f/255", mx, mean)
+	if mx > 2 || mean > 0.05 {
+		t.Errorf("deviation max %d/255, mean %.4f/255", mx, mean)
+	}
+}

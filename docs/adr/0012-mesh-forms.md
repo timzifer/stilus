@@ -81,8 +81,8 @@ shaded on the CPU.
   with many triangles overlapping in few cells cost more per pixel.
 - meshes-40 joins the benchmark scenes, so the history chart has it for
   releases from this one on.
-- Cached glyph masks (`MaskShader`) are the last paint shaded on the CPU
-  per pixel; they need a mask generation (ADR 0011).
+- Cached glyph masks (`MaskShader`) followed
+  ([ADR 0013](0013-glyph-masks.md)).
 
 ## Alternatives considered
 
