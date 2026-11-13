@@ -15,7 +15,8 @@
 // With bit 29 of data set, the colour of modes 0, 1 and 3 is a paint's,
 // computed per pixel from the record at the word offset color: a
 // gradient's (gradient.go), with bit 31 of its first word an image's
-// (image.go), with bit 30 a mesh's (mesh.go).
+// (image.go), with bit 30 a mesh's (mesh.go), with bit 28 a coverage
+// mask's (glyph.go).
 
 struct Span {
     pos: u32,   // x0 | y0 << 16
@@ -455,9 +456,33 @@ fn meshColor(r: u32, p: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(0.0);
 }
 
+// alphaMaskColor is a MaskShader's colour at pixel centre p: Color times
+// the mask's byte there, 0 outside the mask.
+fn alphaMaskColor(r: u32, p: vec2<f32>) -> vec4<f32> {
+    let x = i32(floor(p.x)) - bitcast<i32>(words[r + 2u]);
+    let y = i32(floor(p.y)) - bitcast<i32>(words[r + 3u]);
+    let w = words[r + 4u];
+    if (x < 0 || y < 0 || u32(x) >= w || u32(y) >= words[r + 5u]) {
+        return vec4<f32>(0.0);
+    }
+    let b = (r + 6u) * 4u + u32(y) * w + u32(x);
+    let a = (words[b >> 2u] >> ((b & 3u) * 8u)) & 255u;
+    var c = words[r + 1u];
+    if (a == 0u) {
+        return vec4<f32>(0.0);
+    }
+    if (a != 255u) {
+        c = mul8(c, a);
+    }
+    return unpack4x8unorm(c);
+}
+
 fn base(s: Span, p: vec2<f32>) -> vec4<f32> {
     if ((s.data & 0x20000000u) != 0u) {
         let kind = words[s.color];
+        if ((kind & 0x10000000u) != 0u) {
+            return alphaMaskColor(s.color, p);
+        }
         if ((kind & 0x80000000u) != 0u) {
             return imageColor(s.color, p);
         }

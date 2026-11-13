@@ -108,8 +108,8 @@ Linear and radial gradients are computed on the GPU too
 ([ADR 0009](docs/adr/0009-gradient-forms.md)): 25 → 6 ms, and images
 and pattern tiles are sampled there ([ADR 0011](docs/adr/0011-image-forms.md)):
 images 20 → 6 ms, patterns 25 → 8 ms, as are Gouraud meshes
-([ADR 0012](docs/adr/0012-mesh-forms.md)): 20 → 8 ms. Cached glyph
-masks are still shaded on the CPU. `LayerShader` blend modes that read
+([ADR 0012](docs/adr/0012-mesh-forms.md)): 20 → 8 ms, and cached
+glyph masks ([ADR 0013](docs/adr/0013-glyph-masks.md)): text 8 → 7 ms. `LayerShader` blend modes that read
 the backdrop (`Dst`) and CMYK pairs need the CPU canvas.
 
 ## Shaders
