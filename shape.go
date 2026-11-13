@@ -373,20 +373,25 @@ func (r *shapeRec) addQuad(x0, y0, x1, y1, x2, y2 float64) {
 		return
 	}
 	n, ax, ay, bx, by := quadPoly(x0, y0, x1, y1, x2, y2)
-	if n <= 1 {
+	if n == 0 {
 		r.AddLine(x0, y0, x2, y2)
 		return
 	}
 	dt := 1 / float64(n)
 	px, py := x0, y0
-	for i := 1; i < n; i++ {
-		t := float64(i) * dt
-		qx := (ax*t+bx)*t + x0
-		qy := (ay*t+by)*t + y0
-		r.AddLine(px, py, qx, qy)
+	for i := 1; i <= n; i++ {
+		qx, qy := x2, y2
+		if i < n {
+			t := float64(i) * dt
+			qx = (ax*t+bx)*t + x0
+			qy = (ay*t+by)*t + y0
+		}
+		t := (float64(i) - 0.5) * dt
+		cx, cy := apex(px, py, qx, qy, (ax*t+bx)*t+x0, (ay*t+by)*t+y0)
+		r.AddLine(px, py, cx, cy)
+		r.AddLine(cx, cy, qx, qy)
 		px, py = qx, qy
 	}
-	r.AddLine(px, py, x2, y2)
 }
 
 // addCubic is Rasterizer.addCubic without the clip.
@@ -400,20 +405,25 @@ func (r *shapeRec) addCubic(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
 		return
 	}
 	n, ax, ay, bx, by, cx, cy := cubicPoly(x0, y0, x1, y1, x2, y2, x3, y3)
-	if n <= 1 {
+	if n == 0 {
 		r.AddLine(x0, y0, x3, y3)
 		return
 	}
 	dt := 1 / float64(n)
 	px, py := x0, y0
-	for i := 1; i < n; i++ {
-		t := float64(i) * dt
-		qx := ((ax*t+bx)*t+cx)*t + x0
-		qy := ((ay*t+by)*t+cy)*t + y0
-		r.AddLine(px, py, qx, qy)
+	for i := 1; i <= n; i++ {
+		qx, qy := x3, y3
+		if i < n {
+			t := float64(i) * dt
+			qx = ((ax*t+bx)*t+cx)*t + x0
+			qy = ((ay*t+by)*t+cy)*t + y0
+		}
+		t := (float64(i) - 0.5) * dt
+		mx, my := apex(px, py, qx, qy, ((ax*t+bx)*t+cx)*t+x0, ((ay*t+by)*t+cy)*t+y0)
+		r.AddLine(px, py, mx, my)
+		r.AddLine(mx, my, qx, qy)
 		px, py = qx, qy
 	}
-	r.AddLine(px, py, x3, y3)
 }
 
 func (s *Shape) reset() {
