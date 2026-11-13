@@ -181,6 +181,16 @@ fn wf(i: u32) -> f32 {
     return bitcast<f32>(words[i]);
 }
 
+// rword and rfloat read word i of the data: a caller's shader reads its
+// record with them (custom.go).
+fn rword(i: u32) -> u32 {
+    return words[i];
+}
+
+fn rfloat(i: u32) -> f32 {
+    return bitcast<f32>(words[i]);
+}
+
 fn div255(v: u32) -> u32 {
     let x = v + 128u;
     return (x + (x >> 8u)) >> 8u;
@@ -761,6 +771,9 @@ fn base(s: Span, p: vec2<f32>) -> vec4<f32> {
         }
         if ((kind & 0x08000000u) != 0u) {
             return layerColor(s.color, p);
+        }
+        if ((kind & 0x04000000u) != 0u) {
+            return customColor(kind & 0xffffu, s.color + 1u, p);
         }
         if ((kind & 0x80000000u) != 0u) {
             return imageColor(s.color, p);

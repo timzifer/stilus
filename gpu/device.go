@@ -9,8 +9,9 @@
 // computes the thin strips of strokes (ADR 0008), gradients (0009),
 // images and patterns (0011), meshes (0012) and glyph masks (0013), and
 // composites layers from a copy of the backdrop (0014), LayerShader's
-// with images and Layer's with targets. Other shaders are evaluated on the
-// CPU and their colours uploaded.
+// with images and Layer's with targets. A caller's shader runs on the GPU
+// when it is a Shader whose WGSL is registered on the device (0018);
+// others are evaluated on the CPU and their colours uploaded.
 //
 //	dev, _ := gpu.Open(nil)
 //	t, _ := dev.NewTarget(w, h)
@@ -58,8 +59,12 @@ type Device struct {
 	playout  *wgpu.PipelineLayout
 	shader   *wgpu.ShaderModule
 	pipeline *wgpu.RenderPipeline
-	maxBind  uint64 // largest storage binding
-	present  presentRes
+	// types are the callers' shader types (custom.go); retired are the
+	// modules and pipelines they replaced, released with the device.
+	types   []*ShaderType
+	retired []func()
+	maxBind uint64 // largest storage binding
+	present presentRes
 
 	// own, when the device was made by Open.
 	instance *wgpu.Instance
@@ -143,10 +148,6 @@ func NewDevice(dev *wgpu.Device) (*Device, error) {
 		d.maxBind = 128 << 20
 	}
 	var err error
-	d.shader, err = dev.CreateShaderModule(&wgpu.ShaderModuleDescriptor{Label: "stilus-spans", WGSL: spansWGSL})
-	if err != nil {
-		return nil, fmt.Errorf("gpu: shader: %w", err)
-	}
 	vf := gputypes.ShaderStageVertex | gputypes.ShaderStageFragment
 	d.layout, err = dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
 		Label: "stilus-spans",
@@ -170,32 +171,9 @@ func NewDevice(dev *wgpu.Device) (*Device, error) {
 		d.Close()
 		return nil, fmt.Errorf("gpu: pipeline layout: %w", err)
 	}
-	over := gputypes.BlendComponent{
-		SrcFactor: gputypes.BlendFactorOne,
-		DstFactor: gputypes.BlendFactorOneMinusSrcAlpha,
-		Operation: gputypes.BlendOperationAdd,
-	}
-	d.pipeline, err = dev.CreateRenderPipeline(&wgpu.RenderPipelineDescriptor{
-		Label:  "stilus-spans",
-		Layout: d.playout,
-		Vertex: wgpu.VertexState{Module: d.shader, EntryPoint: "vs_main"},
-		Primitive: gputypes.PrimitiveState{
-			Topology: gputypes.PrimitiveTopologyTriangleList,
-		},
-		Multisample: gputypes.MultisampleState{Count: 1, Mask: 0xFFFFFFFF},
-		Fragment: &wgpu.FragmentState{
-			Module:     d.shader,
-			EntryPoint: "fs_main",
-			Targets: []gputypes.ColorTargetState{{
-				Format:    Format,
-				Blend:     &gputypes.BlendState{Color: over, Alpha: over},
-				WriteMask: gputypes.ColorWriteMaskAll,
-			}},
-		},
-	})
-	if err != nil {
+	if d.shader, d.pipeline, err = d.buildPipeline(d.spansSource()); err != nil {
 		d.Close()
-		return nil, fmt.Errorf("gpu: pipeline: %w", err)
+		return nil, err
 	}
 	if err := d.present.init(dev); err != nil {
 		d.Close()
@@ -212,6 +190,43 @@ func (d *Device) AdapterName() string {
 	}
 	info := d.adapter.Info()
 	return fmt.Sprintf("%s (%v, %v)", info.Name, info.Backend, info.DeviceType)
+}
+
+// buildPipeline compiles the span shader from source and makes its
+// pipeline.
+func (d *Device) buildPipeline(source string) (*wgpu.ShaderModule, *wgpu.RenderPipeline, error) {
+	shader, err := d.dev.CreateShaderModule(&wgpu.ShaderModuleDescriptor{Label: "stilus-spans", WGSL: source})
+	if err != nil {
+		return nil, nil, fmt.Errorf("gpu: shader: %w", err)
+	}
+	over := gputypes.BlendComponent{
+		SrcFactor: gputypes.BlendFactorOne,
+		DstFactor: gputypes.BlendFactorOneMinusSrcAlpha,
+		Operation: gputypes.BlendOperationAdd,
+	}
+	pipeline, err := d.dev.CreateRenderPipeline(&wgpu.RenderPipelineDescriptor{
+		Label:  "stilus-spans",
+		Layout: d.playout,
+		Vertex: wgpu.VertexState{Module: shader, EntryPoint: "vs_main"},
+		Primitive: gputypes.PrimitiveState{
+			Topology: gputypes.PrimitiveTopologyTriangleList,
+		},
+		Multisample: gputypes.MultisampleState{Count: 1, Mask: 0xFFFFFFFF},
+		Fragment: &wgpu.FragmentState{
+			Module:     shader,
+			EntryPoint: "fs_main",
+			Targets: []gputypes.ColorTargetState{{
+				Format:    Format,
+				Blend:     &gputypes.BlendState{Color: over, Alpha: over},
+				WriteMask: gputypes.ColorWriteMaskAll,
+			}},
+		},
+	})
+	if err != nil {
+		shader.Release()
+		return nil, nil, fmt.Errorf("gpu: pipeline: %w", err)
+	}
+	return shader, pipeline, nil
 }
 
 // WGPU returns the device the pipeline lives on.

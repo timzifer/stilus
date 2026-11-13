@@ -123,6 +123,11 @@ once through recorders, one canvas and goroutine each
 fast at four bands; layers in bands are drawn in rounds, each band
 copying its part of the layer.
 
+A caller's own shader runs on the GPU when it registers its WGSL on the
+device (`Device.NewShaderType`, `gpu.Shader`,
+[ADR 0018](docs/adr/0018-gpu-shader-types.md)); otherwise it is shaded
+on the CPU.
+
 Tested on Metal (Apple M4), on Vulkan through Mesa's lavapipe and on
 wgpu's software adapter (both in CI); the module builds for js/wasm
 (the browser's WebGPU). DX12 and GLES are untested.

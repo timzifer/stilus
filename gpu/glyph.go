@@ -38,7 +38,7 @@ func (t *Target) alphaMaskBlitter(s *stilus.MaskShader) stilus.Blitter {
 		return nil
 	}
 	b := &t.grad
-	b.recOK, b.img, b.gform = false, nil, nil
+	b.recOK, b.img, b.gform, b.custom = false, nil, nil, false
 	r := b.rec[:0]
 	put := func(v uint32) { r = binary.LittleEndian.AppendUint32(r, v) }
 	put(alphaMaskKind)

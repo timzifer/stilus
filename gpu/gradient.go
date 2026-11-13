@@ -55,6 +55,8 @@ func (t *Target) gradient(sh stilus.Shader) stilus.Blitter {
 		return t.alphaMaskBlitter(s)
 	case *stilus.LayerShader, *Layer:
 		return t.layerBlitter(s)
+	case Shader:
+		return t.customBlitter(s)
 	default:
 		return nil
 	}
@@ -62,7 +64,7 @@ func (t *Target) gradient(sh stilus.Shader) stilus.Blitter {
 		return nothing{}
 	}
 	b := &t.grad
-	b.recOK, b.img, b.gform = false, nil, nil
+	b.recOK, b.img, b.gform, b.custom = false, nil, nil, false
 	n := len(g.Ramp)
 	flags := uint32(0)
 	if f.Radial {
