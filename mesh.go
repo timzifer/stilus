@@ -498,3 +498,75 @@ func (t *meshTri) at(r, g, b, a int64, ramp Ramp) uint32 {
 func byteOf(v int64) uint8 {
 	return uint8(min(max(v>>meshFrac, 0), 255))
 }
+
+// MeshForm describes a MeshShader for a renderer that shades itself, such
+// as a GPU shader: its triangles in device space, as Set prepared them,
+// in stream order. A pixel takes the values of the last triangle whose
+// rows and columns contain it (MeshFormTriangle), times Alpha; a pixel no
+// triangle contains is transparent. It is a view of the shader, valid
+// until the next Set.
+type MeshForm struct{ s *MeshShader }
+
+// MeshEdge is a non-horizontal edge of a mesh triangle: it crosses the row
+// whose centre is at yc at X + (yc − Y)·Slope. An edge with an infinite X
+// bounds nothing.
+type MeshEdge struct{ X, Y, Slope float64 }
+
+// MeshFormTriangle is a triangle of a MeshForm. It contains the pixels of
+// rows [R0, R1) whose centres lie between its left edges (inclusive) and
+// right edges (exclusive): for row y, with yc = y + ½, the columns
+// [ceil(lo − ½), ceil(hi − ½)) where lo = max(C0, L[0], L[1]) and
+// hi = min(C1, R[0], R[1]) at yc.
+//
+// Its values at the centre of pixel (x, y) are V[c] + GX[c]·(x + ½ − X0) +
+// GY[c]·(y + ½ − Y0), rounded half up: N = 4 colour bytes (R, G, B, A,
+// clamped to [0, 255], R, G and B then to at most A), or N = 1 an index
+// into the ramp, clamped to it. The shader steps them in 40.24 fixed point
+// along a row, which moves a value by at most 1.
+type MeshFormTriangle struct {
+	R0, R1, C0, C1 int
+	L, R           [2]MeshEdge
+	X0, Y0         float64
+	V, GX, GY      [4]float64
+	N              int
+}
+
+// Form returns the shader's form, and false when it paints nothing (not
+// set, no triangle, or zero Alpha).
+func (s *MeshShader) Form() (MeshForm, bool) {
+	if !s.ok || len(s.tris) == 0 || s.Alpha == 0 {
+		return MeshForm{}, false
+	}
+	return MeshForm{s}, true
+}
+
+// Len returns the number of triangles.
+func (f MeshForm) Len() int { return len(f.s.tris) }
+
+// Ramp returns the ramp the values of N = 1 index, nil for colours.
+func (f MeshForm) Ramp() Ramp {
+	if len(f.s.tris) > 0 && f.s.tris[0].nv == 1 {
+		return f.s.ramp
+	}
+	return nil
+}
+
+// Alpha returns the shader's Alpha.
+func (f MeshForm) Alpha() uint8 { return f.s.Alpha }
+
+// Bounds returns the pixels the triangles can contain.
+func (f MeshForm) Bounds() image.Rectangle {
+	return image.Rect(f.s.gx0, f.s.gy0, f.s.c1, f.s.r1)
+}
+
+// Triangle returns triangle i.
+func (f MeshForm) Triangle(i int) MeshFormTriangle {
+	t := &f.s.tris[i]
+	edge := func(e meshEdge) MeshEdge { return MeshEdge{e.x, e.y, e.slope} }
+	return MeshFormTriangle{
+		R0: t.r0, R1: t.r1, C0: t.c0, C1: t.c1,
+		L:  [2]MeshEdge{edge(t.l[0]), edge(t.l[1])},
+		R:  [2]MeshEdge{edge(t.r[0]), edge(t.r[1])},
+		X0: t.x0, Y0: t.y0, V: t.val, GX: t.gx, GY: t.gy, N: t.nv,
+	}
+}

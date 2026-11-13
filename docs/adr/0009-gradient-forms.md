@@ -78,9 +78,8 @@ nothing.
 - `Form` exposes `Set`'s derived numbers as API: changing how a gradient
   computes t now means changing `GradientForm` and the gpu shader with
   it. The equality test guards the first, the gpu tests the second.
-- Images, patterns and meshes are next on the same pattern (a form for
-  `ImageShader`: the texture's levels, the transform, the filter), with
-  textures the GPU samples instead of records.
+- Images and patterns followed on the same pattern
+  ([ADR 0011](0011-image-forms.md)).
 
 ## Alternatives considered
 
