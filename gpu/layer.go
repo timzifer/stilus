@@ -162,64 +162,26 @@ func (t *Target) layerBlitter(sh stilus.Shader) stilus.Blitter {
 	if backdrop {
 		flags |= layerBackdrop
 	}
-	if t.parent != nil {
-		if backdrop {
-			srcs[1] = layerSrc{tg: t.parent}
-		}
-		return t.recordLayer(srcs, r, alpha, flags)
-	}
 	if backdrop {
-		srcs[1] = layerSrc{tg: t}
+		srcs[1] = layerSrc{tg: t.root()}
 	}
-	w, h := r.Dx(), r.Dy()
-	stride, offs, total := layerLayout(&srcs, r)
-	if total > int(t.d.maxBind) {
-		t.setErr(fmt.Errorf("%w: %d × %d needs %d bytes, the device binds %d", ErrLayer, w, h, total, t.d.maxBind))
-		return nothing{}
-	}
-	// What was drawn before is in the textures the copies are taken of,
-	// and the spans of the last layer operation, which read the layer
-	// buffer, are drawn before it changes.
-	if err := t.Flush(); err != nil {
-		t.setErr(err)
-		return nothing{}
-	}
-	for _, s := range srcs {
-		if s.tg != nil && s.tg != t {
-			if err := s.tg.Flush(); err != nil {
-				t.setErr(err)
-				return nothing{}
-			}
-		}
-	}
-	if total > t.layerNeed {
-		t.layerNeed = total
-		if err := t.grow(len(t.spans), len(t.data)); err != nil {
-			t.setErr(err)
-			return nothing{}
-		}
-	}
-	if err := t.copyLayer(srcs[:], offs[:], r, stride); err != nil {
-		t.setErr(err)
-		return nothing{}
-	}
-	b := &t.grad
-	b.recOK, b.img = false, nil
-	rec := b.rec[:0]
-	put := func(v uint32) { rec = binary.LittleEndian.AppendUint32(rec, v) }
-	put(flags)
-	put(uint32(alpha))
-	put(uint32(int32(r.Min.X)))
-	put(uint32(int32(r.Min.Y)))
-	put(uint32(w))
-	put(uint32(h))
-	put(uint32(stride / 4))
-	for _, o := range offs {
-		put(uint32(o / 4))
-	}
-	b.rec = rec
-	return b
+	return t.recordLayer(srcs, r, alpha, flags)
 }
+
+// root is the target a recorder draws onto, or t.
+func (t *Target) root() *Target {
+	if t.parent != nil {
+		return t.parent
+	}
+	return t
+}
+
+// layerLimit bounds the layer buffer below the storage binding (tests
+// lower it).
+var layerLimit = 1 << 62
+
+// layerCap is the most the layer buffer holds for one strip of a layer.
+func (t *Target) layerCap() int { return int(min(t.d.maxBind, uint64(layerLimit))) }
 
 // copyLayer fills the layer buffer: region r of each source at its
 // offset, rows of stride bytes; images are written, targets copied.
@@ -337,9 +299,10 @@ func putLayerRecord(rec []byte, flags uint32, alpha uint8, r image.Rectangle, st
 	return rec
 }
 
-// layerOp is a layer operation of a recorder: a barrier in its spans. Its
-// copies are made at the target's Flush, of the part of the layer its
-// spans reach, after the spans before it are drawn.
+// layerOp is a layer operation: a barrier in the spans of a target or a
+// recorder. Its copies are made at the target's Flush, of the part of the
+// layer its spans reach, after the spans before it are drawn, in strips
+// of rows when they do not fit the layer buffer at once.
 type layerOp struct {
 	srcs       [5]layerSrc
 	r          image.Rectangle // the layer within the target
@@ -350,6 +313,7 @@ type layerOp struct {
 	region     image.Rectangle
 	stride     int
 	offs       [5]int
+	rows       int // rows per strip whose copies fit the layer buffer
 }
 
 // recordLayer records a layer operation of a recorder: its record, whose
@@ -392,15 +356,22 @@ func (t *Target) prepareLayers() error {
 		op.region = bb.Intersect(op.r)
 		var total int
 		op.stride, op.offs, total = layerLayout(&op.srcs, op.region)
-		if total > int(t.d.maxBind) {
-			t.setErr(fmt.Errorf("%w: %d × %d needs %d bytes, the device binds %d", ErrLayer, op.region.Dx(), op.region.Dy(), total, t.d.maxBind))
-			op.region = image.Rectangle{}
-			op.stride, op.offs, total = 0, [5]int{}, 0
+		op.rows = op.region.Dy()
+		if total > t.layerCap() {
+			// Strips of rows whose copies fit.
+			perRow := total / max(op.region.Dy(), 1)
+			op.rows = t.layerCap() / perRow
+			if op.rows == 0 {
+				t.setErr(fmt.Errorf("%w: a row of %d pixels needs %d bytes, the layer buffer holds %d", ErrLayer, op.region.Dx(), perRow, t.layerCap()))
+				op.region = image.Rectangle{}
+				op.rows = 0
+			}
+			total = perRow * op.rows
 		}
 		t.layerNeed = max(t.layerNeed, total)
 		copy(t.data[op.rec:], putLayerRecord(t.layerTmp[:0], op.flags, op.alpha, op.region, op.stride, op.offs))
 		for _, s := range op.srcs {
-			if s.tg != nil && s.tg != t.parent {
+			if s.tg != nil && s.tg != t.root() {
 				if err := s.tg.Flush(); err != nil {
 					return err
 				}
@@ -408,4 +379,65 @@ func (t *Target) prepareLayers() error {
 		}
 	}
 	return nil
+}
+
+// stripped reports whether a layer operation is drawn in several strips.
+func (op *layerOp) stripped() bool { return op.rows < op.region.Dy() }
+
+// prepareStrip points the record of a layer operation at the copies of
+// strip, its rows y0 on, and makes them.
+func (t *Target) prepareStrip(op *layerOp, strip image.Rectangle) error {
+	_, offs, _ := layerLayout(&op.srcs, strip)
+	// The record indexes the copies from the region's first row:
+	// (y − r.Min.Y)·stride + x. A strip's copy starts at its own first
+	// row, so each offset is moved back by the rows before the strip, in
+	// u32 arithmetic as the shader adds.
+	shift := uint32((strip.Min.Y - op.region.Min.Y) * op.stride / 4)
+	var w [5 * 4]byte
+	for i, o := range offs {
+		binary.LittleEndian.PutUint32(w[4*i:], uint32(o/4)-shift)
+	}
+	if err := t.d.queue.WriteBuffer(t.dataBuf, uint64(op.rec+7*4), w[:]); err != nil {
+		return fmt.Errorf("gpu: write layer record: %w", err)
+	}
+	return t.copyLayer(op.srcs[:], offs[:], strip, op.stride)
+}
+
+// drawLayerOp draws a layer operation that does not fit the layer buffer
+// at once, strip by strip, each clipped to its rows; for one that does,
+// it only makes the copies, and its spans are drawn with the spans after
+// it.
+func (t *Target) drawLayerOp(op *layerOp) error {
+	r := op.region
+	if r.Empty() || op.rows <= 0 {
+		return nil
+	}
+	if !op.stripped() {
+		return t.prepareStrip(op, r)
+	}
+	for y0 := r.Min.Y; y0 < r.Max.Y; y0 += op.rows {
+		strip := image.Rect(r.Min.X, y0, r.Max.X, min(y0+op.rows, r.Max.Y))
+		if err := t.prepareStrip(op, strip); err != nil {
+			return err
+		}
+		if err := t.root().drawPass(&strip, func(pass *wgpu.RenderPassEncoder) {
+			t.drawSpans(pass, op.start, op.end)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// segment returns the spans drawn in one pass after layer operation k−1:
+// its own spans when it was not drawn in strips, and those up to the next
+// operation; for k = 0, those before the first.
+func (t *Target) segment(k int) (from, to int) {
+	from, to = t.gap(k)
+	if k > 0 {
+		if op := &t.layerOps[k-1]; !op.stripped() || op.region.Empty() {
+			from = op.start
+		}
+	}
+	return from, to
 }

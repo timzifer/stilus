@@ -8,9 +8,8 @@ import (
 )
 
 // TestAllocs: recording a warm scene onto a target does not allocate,
-// whatever its paints (layers aside: a layer operation on a target
-// flushes, which goes through wgpu). A Flush allocates only in wgpu; its
-// count is logged, not gated (issue #63).
+// whatever its paints, layers included. A Flush allocates only in wgpu;
+// its count is logged, not gated (issue #63).
 func TestAllocs(t *testing.T) {
 	d := device(t)
 	const dpi = 72
@@ -39,7 +38,7 @@ func TestAllocs(t *testing.T) {
 			tg.Flush()
 		})
 		t.Logf("%-24s record %6.0f  record+flush %6.0f", s.Name, rec, flush)
-		if rec != 0 && s.Name != "layers-24" {
+		if rec != 0 {
 			t.Errorf("%s: recording allocates %.0f times", s.Name, rec)
 		}
 	}

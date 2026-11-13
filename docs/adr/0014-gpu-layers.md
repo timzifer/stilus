@@ -85,8 +85,8 @@ onto anything but a target it paints nothing.
   per layer.
 - The layer buffer holds up to five copies of R; it is bounded by the
   device's storage binding size (128 MB on Metal; a page at 150 dpi is
-  17 MB per copy). A layer that does not fit is not drawn and the
-  target's `Err` reports it.
+  17 MB per copy). A layer that did not fit was not drawn at first; it is
+  now drawn in strips (see *Barriers and strips*).
 - Not byte-identical: float32 where stilus computes float64.
 
 ## Outcome
@@ -115,3 +115,27 @@ each; groups drawn into targets are copied on the GPU instead.
   the target): no copy of the backdrop, but every later operation would
   move to the other texture, and spans of other paints would have to
   wait for it.
+
+## Barriers and strips
+
+Changed for #66, after layers through recorders (ADR 0017). A layer
+operation on a target no longer flushes when it starts; it is a barrier
+in the target's spans as in a recorder's, and the target's `Flush`
+draws the spans before it, makes its copies, draws its spans with the
+spans after it, and so on. The sources of a `Layer` (other targets) are
+therefore read when the target flushes, not when the operation starts.
+While a layer operation is recorded, the target grows its buffers rather
+than flush in its middle.
+
+When an operation's copies do not fit the layer buffer, its region is
+cut into strips of rows that do: for each strip the record's offsets are
+written so that the shader's index from the region's first row lands in
+the strip's copies (moved back by the rows before the strip, in u32
+arithmetic), the strip's copies are made, and the operation's spans are
+drawn clipped to the strip's rows; a layer that fits is drawn in the
+same pass as the spans after it. `gpu.TestLayerStrips` runs `TestLayers`
+with a layer buffer of 16 KB, every layer in strips of a few rows,
+through the target and through five recorders: max 2/255 as without
+strips. Recording layers-24 no longer allocates (`TestAllocs` gates
+every scene now); a page at 300 dpi with full-page layers draws within
+the 128 MB of Metal's binding.
