@@ -26,7 +26,8 @@
 // The GPU blends in floating point and rounds once, so a pixel may differ
 // from the CPU canvas by 1/255 per operation composited onto it; float32
 // moves a gradient's or an image's sample to its neighbour now and then.
-// CMYK pairs (Canvas.ResetPair) need the CPU canvas.
+// A CMYK destination is two targets drawn through one canvas
+// (Canvas.ResetCompositorPair, ADR 0015).
 package gpu
 
 import (

@@ -891,3 +891,104 @@ func pixels32(img *image.RGBA) []uint32 {
 	}
 	return p
 }
+
+// TestPair draws a CMYK destination, two targets of (C, M, Y, A) and
+// (K, K, K, A), through one canvas: fills, strokes (strips), a gradient,
+// cached glyphs and a layer pair blended on ink amounts, against
+// Canvas.ResetPair on images.
+func TestPair(t *testing.T) {
+	d := device(t)
+	const w, h = 160, 110
+	bounds := image.Rect(0, 0, w, h)
+	ta, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ta.Close()
+	tb, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tb.Close()
+	wa, wb := image.NewRGBA(bounds), image.NewRGBA(bounds)
+	ink := func(c, m, y, k, a uint8) *stilus.Paint {
+		return &stilus.Paint{Color: color.RGBA{c, m, y, a}, Second: &stilus.Paint{Color: color.RGBA{k, k, k, a}}}
+	}
+	ramp := stilus.Ramp{stilus.PackRGBA(color.RGBA{200, 0, 40, 255}), stilus.PackRGBA(color.RGBA{0, 160, 90, 255})}
+	kramp := stilus.Ramp{stilus.PackRGBA(color.RGBA{10, 10, 10, 255}), stilus.PackRGBA(color.RGBA{120, 120, 120, 255})}
+	var g1, g2 stilus.LinearGradient
+	g1.Ramp, g1.Alpha, g1.Extend = ramp, 255, [2]bool{true, true}
+	g2.Ramp, g2.Alpha, g2.Extend = kramp, 255, [2]bool{true, true}
+	g1.Set(0, 0, w, 0, stilus.Identity)
+	g2.Set(0, 0, w, 0, stilus.Identity)
+	// A layer pair: the CMY layer on ink amounts, the K layer as the
+	// black image, both Multiply.
+	lr := image.Rect(60, 20, 140, 90)
+	la, lb := image.NewRGBA(lr), image.NewRGBA(lr)
+	var lc stilus.Canvas
+	lc.ResetPair(la, lb, lr)
+	var e stilus.Path
+	e.Ellipse(100, 55, 35, 30)
+	lc.Fill(&e, stilus.Identity, stilus.NonZero, ink(30, 160, 200, 40, 220))
+	ops := func(c *stilus.Canvas, dsta, dstb *image.RGBA) {
+		var r stilus.Path
+		r.Rect(5, 5, 150, 100)
+		c.Fill(&r, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: &g1, Second: &stilus.Paint{Shader: &g2}})
+		for i := 0; i < 10; i++ {
+			var l stilus.Path
+			l.MoveTo(float32(10+i*14), 4)
+			l.LineTo(float32(20+i*14), 106)
+			c.Stroke(&l, stilus.Identity, &stilus.StrokeStyle{Width: 0.5 + float64(i)*0.4}, ink(uint8(i*20), 200, 0, uint8(i*25), 255))
+		}
+		var gc stilus.GlyphCache
+		var g stilus.Path
+		g.MoveTo(0, 0)
+		g.LineTo(6, 0)
+		g.LineTo(3, -8)
+		g.Close()
+		for i := 0; i < 20; i++ {
+			gc.FillGlyph(c, 1, 1, &g, stilus.Matrix{1, 0, 0, 1, 8 + float64(i)*7.3, 100}, ink(0, 0, 0, 255, 255))
+		}
+		ls := &stilus.LayerShader{Src: la, Dst: dsta, Alpha: 255, Blend: stilus.BlendMultiply, Subtractive: true}
+		lk := &stilus.LayerShader{Src: lb, Dst: dstb, Alpha: 255, Blend: stilus.BlendMultiply, Black: true}
+		var lp stilus.Path
+		lp.Rect(float32(lr.Min.X), float32(lr.Min.Y), float32(lr.Dx()), float32(lr.Dy()))
+		c.Fill(&lp, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: ls, Second: &stilus.Paint{Shader: lk}})
+	}
+	var c stilus.Canvas
+	c.ResetPair(wa, wb, bounds)
+	ops(&c, wa, wb)
+	ta.Clear(color.RGBA{})
+	tb.Clear(color.RGBA{})
+	c.ResetCompositorPair(ta, tb, bounds)
+	ops(&c, nil, nil)
+	if c.Err() != nil {
+		t.Fatal(c.Err())
+	}
+	for i, p := range [2]struct {
+		tg   *gpu.Target
+		want *image.RGBA
+	}{{ta, wa}, {tb, wb}} {
+		got := image.NewRGBA(bounds)
+		if err := p.tg.ReadRGBA(got); err != nil {
+			t.Fatal(err)
+		}
+		if p.tg.Err() != nil {
+			t.Fatal(p.tg.Err())
+		}
+		mx, mean := deviation(p.want.Pix, got.Pix)
+		drawn := 0
+		for k := 3; k < len(got.Pix); k += 4 {
+			if got.Pix[k] != 0 {
+				drawn++
+			}
+		}
+		if drawn < w*h/2 {
+			t.Errorf("image %d: only %d pixels drawn", i, drawn)
+		}
+		t.Logf("image %d: max %d/255, mean %.4f/255, %d pixels drawn", i, mx, mean, drawn)
+		if mx > 3 || mean > 0.05 {
+			t.Errorf("image %d: deviation max %d/255, mean %.4f/255", i, mx, mean)
+		}
+	}
+}

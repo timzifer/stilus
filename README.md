@@ -113,8 +113,9 @@ glyph masks ([ADR 0013](docs/adr/0013-glyph-masks.md)): text 8 → 7 ms.
 Layers with every blend mode, masks and non-isolated groups are
 composited on the GPU from a copy of the backdrop
 ([ADR 0014](docs/adr/0014-gpu-layers.md)): `LayerShader` with images, or
-`gpu.Layer` with groups drawn into targets. CMYK pairs need the CPU
-canvas.
+`gpu.Layer` with groups drawn into targets. A CMYK destination is two
+targets drawn through one canvas (`Canvas.ResetCompositorPair`,
+[ADR 0015](docs/adr/0015-compositor-pairs.md)).
 
 ## Shaders
 
