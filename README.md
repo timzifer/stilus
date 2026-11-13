@@ -67,6 +67,10 @@ Rasterization stays on the CPU; the canvas sends its spans to a
 `Compositor` instead of an image, and the GPU paints and blends them in
 one render pass. The core module keeps no dependencies.
 
+```sh
+go get github.com/timzifer/stilus/gpu   # tagged gpu/vX.Y.Z, requires a stilus release
+```
+
 ```go
 import _ "github.com/gogpu/wgpu/hal/allbackends"
 
@@ -317,6 +321,11 @@ avoided in `simd_amd64.go`:
 - Fuzz targets: `FuzzFill`, `FuzzStroke`.
 
 ## Development
+
+The `gpu` module is released on its own, with tags `gpu/vX.Y.Z`. Its
+`go.mod` requires the stilus release whose API it uses and replaces it
+with `../` for work in the repository; a change to both lands as a stilus
+release first, then the `gpu` requirement is raised to it and tagged.
 
 ```sh
 go test ./...                                  # tests, reference comparisons, alloc gates
