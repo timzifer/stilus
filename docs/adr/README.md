@@ -31,6 +31,7 @@ when its shaders or kernels exist with tests and cera's ADR can use them.
 | [0014](0014-gpu-layers.md) | Layers composited by a GPU target | ADR 0007, cera ADR 0009 | accepted |
 | [0015](0015-compositor-pairs.md) | CMYK destinations through two compositors | ADR 0007 (CMYK pages) | accepted |
 | [0016](0016-texture-store.md) | Texture planes kept across flushes | ADR 0011 (viewers) | accepted |
+| [0017](0017-recorders.md) | Several canvases drawing onto one target at once | cera's banded rendering | accepted |
 
 ## Template
 

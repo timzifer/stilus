@@ -1,6 +1,8 @@
 package gpu_test
 
 import (
+	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -1071,6 +1073,136 @@ func TestTextureStore(t *testing.T) {
 		}
 		if mx, mean := deviation(want.Pix, got.Pix); mx > 0 {
 			t.Errorf("frame %d: max %d/255, mean %.4f/255", frame, mx, mean)
+		}
+	}
+}
+
+// TestRecorders draws every scene but the layered one in four bands at
+// once, one canvas and recorder per band on its own goroutine, and gets
+// what the CPU canvas draws of the whole page; frames are drawn twice, so
+// that the recorders' stores are found again.
+func TestRecorders(t *testing.T) {
+	d := device(t)
+	const dpi, bands = 72, 4
+	size := scenes.Size(dpi)
+	tg, err := d.NewTarget(size.Dx(), size.Dy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	recs := make([]*gpu.Recorder, bands)
+	for i := range recs {
+		if recs[i], err = tg.NewRecorder(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := image.NewRGBA(size)
+	got := image.NewRGBA(size)
+	// The scenes set their shaders up as they draw: one set per band, as
+	// BenchmarkScenesParallel has it.
+	sets := make([][]*scenes.Scene, bands)
+	for i := range sets {
+		sets[i] = scenes.All()
+	}
+	for k, s := range scenes.All() {
+		if s.Name == "layers-24" {
+			continue
+		}
+		// The software adapter interprets the shaders: one scene there.
+		if os.Getenv("STILUS_GPU_FALLBACK") == "1" && s.Name != "text-30000-cached" {
+			continue
+		}
+		t.Run(s.Name, func(t *testing.T) {
+			fill(want, white)
+			var c stilus.Canvas
+			c.Reset(want, size)
+			s.Draw(&c, dpi)
+			for frame := 0; frame < 2; frame++ {
+				tg.Clear(white)
+				var wg sync.WaitGroup
+				for i, r := range recs {
+					band := image.Rect(0, size.Dy()*i/bands, size.Dx(), size.Dy()*(i+1)/bands)
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						var c stilus.Canvas
+						c.ResetCompositor(r, band)
+						sets[i][k].Draw(&c, dpi)
+					}()
+				}
+				wg.Wait()
+				if err := tg.ReadRGBA(got); err != nil {
+					t.Fatal(err)
+				}
+				for _, r := range recs {
+					if r.Err() != nil {
+						t.Fatal(r.Err())
+					}
+				}
+				mx, mean := deviation(want.Pix, got.Pix)
+				if mx > 4 || mean > 0.05 {
+					t.Errorf("frame %d: max %d/255, mean %.4f/255", frame, mx, mean)
+				}
+			}
+		})
+	}
+	// A layer through a recorder is reported, not drawn.
+	var c stilus.Canvas
+	c.ResetCompositor(recs[0], size)
+	var p stilus.Path
+	p.Rect(0, 0, 10, 10)
+	c.Fill(&p, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: &gpu.Layer{Src: tg}})
+	if !errors.Is(recs[0].Err(), gpu.ErrLayer) {
+		t.Errorf("layer through a recorder: %v", recs[0].Err())
+	}
+}
+
+// BenchmarkScenesBands draws the scenes at 150 dpi in bands at once, one
+// canvas and recorder per band, with readback.
+func BenchmarkScenesBands(b *testing.B) {
+	d := device(b)
+	const dpi = 150
+	size := scenes.Size(dpi)
+	tg, err := d.NewTarget(size.Dx(), size.Dy())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer tg.Close()
+	img := image.NewRGBA(size)
+	for _, bands := range []int{1, 4, 8} {
+		recs := make([]*gpu.Recorder, bands)
+		sets := make([][]*scenes.Scene, bands)
+		for i := range recs {
+			recs[i], _ = tg.NewRecorder()
+			sets[i] = scenes.All()
+		}
+		canvases := make([]stilus.Canvas, bands)
+		for k, s := range sets[0] {
+			if s.Name == "layers-24" {
+				continue
+			}
+			b.Run(fmt.Sprintf("%s/%d-bands", s.Name, bands), func(b *testing.B) {
+				for n := 0; n < b.N; n++ {
+					tg.Clear(white)
+					var wg sync.WaitGroup
+					for i, r := range recs {
+						band := image.Rect(0, size.Dy()*i/bands, size.Dx(), size.Dy()*(i+1)/bands)
+						wg.Add(1)
+						go func() {
+							defer wg.Done()
+							canvases[i].ResetCompositor(r, band)
+							sets[i][k].Draw(&canvases[i], dpi)
+						}()
+					}
+					wg.Wait()
+					if err := tg.ReadRGBA(img); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+		for _, r := range recs {
+			r.Close()
 		}
 	}
 }

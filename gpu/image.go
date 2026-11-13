@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/timzifer/stilus"
 )
@@ -47,7 +48,7 @@ func (t *Target) imageBlitter(s *stilus.ImageShader) stilus.Blitter {
 	if !f.HasImage && f.HasMask && f.Color == 0 || f.HasImage && f.Alpha == 0 {
 		return nothing{}
 	}
-	if planeBytes(&f) > storeMax(t) {
+	if planeBytes(&f) > storeMax(t) || t.parent != nil && t.storeUsed+planeBytes(&f) > storeMax(t) {
 		return nil
 	}
 	t.image = f
@@ -99,6 +100,13 @@ func (t *Target) storeRoom(f *stilus.ImageForm) bool {
 	}
 	if n := need(false); t.store != nil && t.storeUsed+n <= int(t.store.Size()) {
 		return true
+	} else if t.parent != nil {
+		// A recorder cannot flush: its store grows at its target's Flush.
+		if t.storeUsed+n > storeMax(t) {
+			return false
+		}
+		t.storeNeed = max(t.storeNeed, t.storeUsed+n)
+		return true
 	}
 	n := need(true)
 	if n > storeMax(t) {
@@ -131,13 +139,9 @@ func (t *Target) DropTextures() {
 	t.storeUsed = 0
 }
 
-// plane uploads p into the store unless it is there, and returns its word
-// offset. storeRoom has made room.
-func (t *Target) plane(p *stilus.Plane) int {
-	if off, ok := t.planes[p]; ok {
-		return off
-	}
-	off := t.storeUsed
+// planeRGBA returns p as RGBA words, row-major, padded to storeSize, in
+// the target's scratch buffer.
+func (t *Target) planeRGBA(p *stilus.Plane) []byte {
 	n := storeSize(p)
 	if cap(t.planeTmp) < n {
 		t.planeTmp = make([]byte, n)
@@ -164,11 +168,24 @@ func (t *Target) plane(p *stilus.Plane) int {
 			buf = binary.LittleEndian.AppendUint32(buf, rgba(c))
 		}
 	}
-	buf = buf[:n]
-	if err := t.d.queue.WriteBuffer(t.store, uint64(off), buf); err != nil {
+	return buf[:n]
+}
+
+// plane uploads p into the store unless it is there, and returns its word
+// offset. storeRoom has made room. A recorder keeps the write for its
+// target's Flush.
+func (t *Target) plane(p *stilus.Plane) int {
+	if off, ok := t.planes[p]; ok {
+		return off
+	}
+	off := t.storeUsed
+	buf := t.planeRGBA(p)
+	if t.parent != nil {
+		t.pending = append(t.pending, storeWrite{off, slices.Clone(buf)})
+	} else if err := t.d.queue.WriteBuffer(t.store, uint64(off), buf); err != nil {
 		t.setErr(fmt.Errorf("gpu: write texture: %w", err))
 	}
-	t.storeUsed += n
+	t.storeUsed += len(buf)
 	t.planes[p] = off / 4
 	return off / 4
 }

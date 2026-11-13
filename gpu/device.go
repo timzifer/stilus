@@ -28,6 +28,10 @@
 // moves a gradient's or an image's sample to its neighbour now and then.
 // A CMYK destination is two targets drawn through one canvas
 // (Canvas.ResetCompositorPair, ADR 0015).
+//
+// Texture planes stay in a target's store from flush to flush (ADR 0016).
+// Several canvases draw onto one target at once through its recorders,
+// one per band and goroutine (NewRecorder, ADR 0017).
 package gpu
 
 import (

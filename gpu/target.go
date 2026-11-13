@@ -89,6 +89,14 @@ type Target struct {
 
 	meshStart, meshIDs, meshFill []int32 // a mesh's grid, while recorded
 
+	// parent is the target of a recorder, nil for a target; recorders are
+	// the recorders of a target, drawn after it.
+	parent    *Target
+	recorders []*Target
+	// pending are a recorder's writes into the store, made by its
+	// target's Flush.
+	pending []storeWrite
+
 	layerTmp []byte // an image's copy for the layer buffer
 	planeTmp []byte // a plane's copy for the store
 	err      error  // the first layer operation that failed (Err)
@@ -121,25 +129,29 @@ func (d *Device) NewTarget(w, h int) (*Target, error) {
 		t.Close()
 		return nil, fmt.Errorf("gpu: texture view: %w", err)
 	}
-	if t.uniform, err = d.dev.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: "stilus-globals", Size: 16,
-		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
-	}); err != nil {
-		t.Close()
-		return nil, fmt.Errorf("gpu: buffer: %w", err)
-	}
-	var g [16]byte
-	binary.LittleEndian.PutUint32(g[0:], math.Float32bits(float32(w)))
-	binary.LittleEndian.PutUint32(g[4:], math.Float32bits(float32(h)))
-	if err := d.queue.WriteBuffer(t.uniform, 0, g[:]); err != nil {
-		t.Close()
-		return nil, fmt.Errorf("gpu: write globals: %w", err)
-	}
-	if err := t.grow(1<<12, 1<<12); err != nil {
+	if err := t.initBuffers(); err != nil {
 		t.Close()
 		return nil, err
 	}
 	return t, nil
+}
+
+// initBuffers makes the target's buffers and bind group.
+func (t *Target) initBuffers() error {
+	var err error
+	if t.uniform, err = t.d.dev.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: "stilus-globals", Size: 16,
+		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
+	}); err != nil {
+		return fmt.Errorf("gpu: buffer: %w", err)
+	}
+	var g [16]byte
+	binary.LittleEndian.PutUint32(g[0:], math.Float32bits(float32(t.w)))
+	binary.LittleEndian.PutUint32(g[4:], math.Float32bits(float32(t.h)))
+	if err := t.d.queue.WriteBuffer(t.uniform, 0, g[:]); err != nil {
+		return fmt.Errorf("gpu: write globals: %w", err)
+	}
+	return t.grow(1<<12, 1<<12)
 }
 
 // Bounds is the target's rectangle in device pixels, the region to pass to
@@ -239,24 +251,27 @@ func (t *Target) grow(spans, data int) error {
 	return nil
 }
 
-// Flush draws what was recorded since the last Flush onto the texture.
+// Flush draws what was recorded since the last Flush onto the texture,
+// the target's own spans and then those of its recorders, in one render
+// pass.
 func (t *Target) Flush() error {
+	if t.parent != nil {
+		return errors.New("gpu: a recorder is flushed by its target")
+	}
 	n := len(t.spans) / spanBytes
-	if n == 0 && !t.clear {
+	draw := n > 0 || t.clear
+	for _, r := range t.recorders {
+		draw = draw || len(r.spans) > 0
+	}
+	if !draw {
 		return nil
 	}
-	if err := t.grow(len(t.spans), len(t.data)); err != nil {
+	if err := t.upload(); err != nil {
 		return err
 	}
-	q := t.d.queue
-	if n > 0 {
-		if err := q.WriteBuffer(t.spanBuf, 0, t.spans); err != nil {
-			return fmt.Errorf("gpu: write spans: %w", err)
-		}
-		if len(t.data) > 0 {
-			if err := q.WriteBuffer(t.dataBuf, 0, pad4(t.data)); err != nil {
-				return fmt.Errorf("gpu: write data: %w", err)
-			}
+	for _, r := range t.recorders {
+		if err := r.upload(); err != nil {
+			return err
 		}
 	}
 	enc, err := t.d.dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{Label: "stilus-flush"})
@@ -272,10 +287,10 @@ func (t *Target) Flush() error {
 		enc.DiscardEncoding()
 		return fmt.Errorf("gpu: render pass: %w", err)
 	}
-	if n > 0 {
-		pass.SetPipeline(t.d.pipeline)
-		pass.SetBindGroup(0, t.bind, nil)
-		pass.Draw(gputypes.DrawArgs{VertexCount: 6, InstanceCount: uint32(n)})
+	pass.SetPipeline(t.d.pipeline)
+	t.drawSpans(pass)
+	for _, r := range t.recorders {
+		r.drawSpans(pass)
 	}
 	if err := pass.End(); err != nil {
 		enc.DiscardEncoding()
@@ -285,14 +300,53 @@ func (t *Target) Flush() error {
 	if err != nil {
 		return fmt.Errorf("gpu: finish: %w", err)
 	}
-	if _, err := q.Submit(cmd); err != nil {
+	if _, err := t.d.queue.Submit(cmd); err != nil {
 		return fmt.Errorf("gpu: submit: %w", err)
 	}
+	t.reset()
+	for _, r := range t.recorders {
+		r.reset()
+	}
+	t.clear = false
+	return nil
+}
+
+// upload makes the buffers hold what was recorded and writes it.
+func (t *Target) upload() error {
+	store := t.store
+	if err := t.grow(len(t.spans), len(t.data)); err != nil {
+		return err
+	}
+	if err := t.uploadStore(t.store != store); err != nil {
+		return err
+	}
+	q := t.d.queue
+	if len(t.spans) > 0 {
+		if err := q.WriteBuffer(t.spanBuf, 0, t.spans); err != nil {
+			return fmt.Errorf("gpu: write spans: %w", err)
+		}
+		if len(t.data) > 0 {
+			if err := q.WriteBuffer(t.dataBuf, 0, pad4(t.data)); err != nil {
+				return fmt.Errorf("gpu: write data: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// drawSpans draws the recorded spans into pass.
+func (t *Target) drawSpans(pass *wgpu.RenderPassEncoder) {
+	if n := len(t.spans) / spanBytes; n > 0 {
+		pass.SetBindGroup(0, t.bind, nil)
+		pass.Draw(gputypes.DrawArgs{VertexCount: 6, InstanceCount: uint32(n)})
+	}
+}
+
+// reset drops what was recorded, once drawn.
+func (t *Target) reset() {
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
 	t.flushes++
-	t.clear = false
-	return nil
 }
 
 // pad4 extends b to a multiple of four bytes, as buffer writes need.
@@ -384,6 +438,13 @@ func (t *Target) Close() {
 		t.pbind.Release()
 		t.pbind = nil
 	}
+	for len(t.recorders) > 0 {
+		(&Recorder{t.recorders[0]}).Close()
+	}
+	if t.parent != nil {
+		// The texture is the target's.
+		t.view, t.tex = nil, nil
+	}
 	if t.view != nil {
 		t.view.Release()
 		t.view = nil
@@ -400,8 +461,12 @@ func (t *Target) reserve(spans, data int) bool {
 	if len(t.spans)+spans*spanBytes <= t.limit && len(t.data)+data+3 <= t.limit {
 		return true
 	}
-	if spans*spanBytes > t.limit || data+3 > t.limit {
-		return false // a single span larger than a binding: dropped
+	if spans*spanBytes > t.limit || data+3 > t.limit || t.parent != nil {
+		// A single span larger than a binding, or a recorder full: dropped.
+		if t.parent != nil {
+			t.setErr(ErrRecorderFull)
+		}
+		return false
 	}
 	if err := t.Flush(); err != nil {
 		return false
