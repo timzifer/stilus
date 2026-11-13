@@ -59,6 +59,32 @@ Integration points for other renderers: implement `Blitter` (own pixel
 format, GPU upload, coverage masks), `Shader` (called per span, never per
 pixel) or consume `Stroker` output through a `LineSink`.
 
+## GPU compositing
+
+The separate module `github.com/timzifer/stilus/gpu` composites onto a
+[gogpu/wgpu](https://github.com/gogpu/wgpu) texture ([ADR 0007](docs/adr/0007-gpu-compositing.md)).
+Rasterization stays on the CPU; the canvas sends its spans to a
+`Compositor` instead of an image, and the GPU paints and blends them in
+one render pass. The core module keeps no dependencies.
+
+```go
+import _ "github.com/gogpu/wgpu/hal/allbackends"
+
+dev, _ := gpu.Open(nil)
+t, _ := dev.NewTarget(w, h)
+t.Clear(color.RGBA{255, 255, 255, 255})
+c.ResetCompositor(t, t.Bounds())                  // c is any *stilus.Canvas
+c.Fill(path, ctm, stilus.NonZero, paint)
+t.Flush()                                         // then sample t.Texture(), or
+t.ReadRGBA(img)
+```
+
+Within 1/255 of the CPU canvas on the scenes (Metal and wgpu's software
+adapter); faster on fills
+with transparency, slower on long hairline hatching and on shader paints,
+which are still evaluated on the CPU. `LayerShader` blend modes that read
+the backdrop (`Dst`) and CMYK pairs need the CPU canvas.
+
 ## Shaders
 
 Paints beyond a solid colour, each a `Shader` for `Paint.Shader`; they

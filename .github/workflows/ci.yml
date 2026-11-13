@@ -108,6 +108,7 @@ jobs:
           cache-dependency-path: |
             bench/go.sum
             harness/go.sum
+            gpu/go.sum
       - name: bench
         working-directory: bench
         run: go vet ./...
@@ -116,3 +117,11 @@ jobs:
         run: |
           go vet ./...
           go test ./...
+      - name: gpu
+        # Runners have no GPU adapter: the scene tests skip; the primitives
+        # run on wgpu's software adapter.
+        working-directory: gpu
+        run: |
+          go vet ./...
+          go test ./...
+          STILUS_GPU_FALLBACK=1 go test -run 'TestPrimitives|TestFlushes' ./...
