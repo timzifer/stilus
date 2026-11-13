@@ -3,6 +3,7 @@ package stilus
 import (
 	"image"
 	"math"
+	"sync/atomic"
 )
 
 // MeshVertex is a vertex of a Gouraud-shaded triangle: a point and either
@@ -85,7 +86,12 @@ type MeshShader struct {
 	grid      meshBins
 	band      meshBins
 	ok        bool
+	gen       uint64 // meshGen at the last Set
 }
+
+// meshGen numbers the Sets of all mesh shaders, so that a shader's
+// generation names its triangles.
+var meshGen atomic.Uint64
 
 // meshBox is a triangle's rows [r0, r1) and columns [c0, c1).
 type meshBox struct{ r0, r1, c0, c1 int32 }
@@ -110,6 +116,7 @@ const (
 // keeps ramp, not tris.
 func (s *MeshShader) Set(tris []MeshTriangle, m Matrix, ramp Ramp) bool {
 	s.ok = false
+	s.gen = meshGen.Add(1)
 	s.tris, s.box = s.tris[:0], s.box[:0]
 	if _, ok := m.Invert(); !ok || !m.finite() {
 		return false
@@ -553,6 +560,12 @@ func (f MeshForm) Ramp() Ramp {
 
 // Alpha returns the shader's Alpha.
 func (f MeshForm) Alpha() uint8 { return f.s.Alpha }
+
+// Gen returns the generation of the shader's triangles: two forms with
+// the same Gen have the same triangles and ramp, at any time and across
+// shaders, so that a renderer can prepare them once (for all the bands of
+// a page, say). Alpha is not part of it.
+func (f MeshForm) Gen() uint64 { return f.s.gen }
 
 // Bounds returns the pixels the triangles can contain.
 func (f MeshForm) Bounds() image.Rectangle {

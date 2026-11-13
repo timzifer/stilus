@@ -1206,3 +1206,141 @@ func BenchmarkScenesBands(b *testing.B) {
 		}
 	}
 }
+
+// meshPage returns n meshes of 384 triangles over a w × h page, set up
+// once, as a page prepares its shadings.
+func meshPage(n, w, h int) ([]*stilus.MeshShader, []stilus.Path) {
+	shaders := make([]*stilus.MeshShader, n)
+	outlines := make([]stilus.Path, n)
+	for i := range shaders {
+		x0, y0 := float32((i*97)%(w-120)), float32((i*61)%(h-90))
+		const nx, ny = 16, 12
+		var tris []stilus.MeshTriangle
+		vert := func(r, c int) stilus.MeshVertex {
+			jx, jy := float32((r*7+c*13+i)%5)-2, float32((r*11+c*3+i)%5)-2
+			if r == 0 || r == ny || c == 0 || c == nx {
+				jx, jy = 0, 0
+			}
+			return stilus.MeshVertex{
+				X: x0 + float32(c)*7 + jx, Y: y0 + float32(r)*7 + jy,
+				C: stilus.PackRGBA(color.RGBA{uint8(c * 15), uint8(r * 20), uint8(i * 9), 255}),
+			}
+		}
+		for r := 0; r < ny; r++ {
+			for c := 0; c < nx; c++ {
+				a, b, cc, d := vert(r, c), vert(r, c+1), vert(r+1, c), vert(r+1, c+1)
+				tris = append(tris, stilus.MeshTriangle{a, b, d}, stilus.MeshTriangle{a, d, cc})
+			}
+		}
+		sh := &stilus.MeshShader{Alpha: 255}
+		sh.Set(tris, stilus.Identity, nil)
+		shaders[i] = sh
+		outlines[i].Rect(x0, y0, nx*7, ny*7)
+	}
+	return shaders, outlines
+}
+
+// TestMeshCache draws meshes set up once in four bands at once over two
+// frames: each mesh's record is made once; an Alpha changed without Set
+// is drawn; a Set makes a new record.
+func TestMeshCache(t *testing.T) {
+	d := device(t)
+	const w, h, bands = 400, 300, 4
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	recs := make([]*gpu.Recorder, bands)
+	for i := range recs {
+		recs[i], _ = tg.NewRecorder()
+	}
+	shaders, outlines := meshPage(12, w, h)
+	draw := func(c *stilus.Canvas) {
+		for i, sh := range shaders {
+			c.Fill(&outlines[i], stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: sh})
+		}
+	}
+	frame := func(name string, wantBuilds int) {
+		t.Helper()
+		want := image.NewRGBA(image.Rect(0, 0, w, h))
+		got := image.NewRGBA(want.Rect)
+		c := stilus.NewCanvas(want)
+		draw(c)
+		tg.Clear(color.RGBA{})
+		var wg sync.WaitGroup
+		for i, r := range recs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var c stilus.Canvas
+				c.ResetCompositor(r, image.Rect(0, h*i/bands, w, h*(i+1)/bands))
+				draw(&c)
+			}()
+		}
+		wg.Wait()
+		if err := tg.ReadRGBA(got); err != nil {
+			t.Fatal(err)
+		}
+		if mx, _ := deviation(want.Pix, got.Pix); mx > 1 {
+			t.Errorf("%s: max %d/255", name, mx)
+		}
+		if n := gpu.MeshBuilds(tg); n != wantBuilds {
+			t.Errorf("%s: %d mesh records made, want %d", name, n, wantBuilds)
+		}
+	}
+	frame("first frame", len(shaders))
+	frame("second frame", len(shaders))
+	shaders[3].Alpha = 120
+	frame("alpha changed", len(shaders))
+	shaders, outlines = meshPage(12, w, h) // Set again
+	frame("set again", 2*len(shaders))
+}
+
+// BenchmarkMeshBands draws 40 meshes set up once per page in bands, one
+// canvas and recorder per band, with readback.
+func BenchmarkMeshBands(b *testing.B) {
+	d := device(b)
+	if os.Getenv("STILUS_MESH_CACHE") == "0" {
+		defer gpu.SetMeshCache(false)()
+	}
+	const w, h = 2400, 1700
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer tg.Close()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for _, bands := range []int{1, 4, 8} {
+		recs := make([]*gpu.Recorder, bands)
+		for i := range recs {
+			recs[i], _ = tg.NewRecorder()
+		}
+		b.Run(fmt.Sprintf("%d-bands", bands), func(b *testing.B) {
+			for n := 0; n < b.N; n++ {
+				// A new page: the meshes are set up again, once.
+				shaders, outlines := meshPage(40, w, h)
+				tg.Clear(white)
+				var wg sync.WaitGroup
+				for i, r := range recs {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						var c stilus.Canvas
+						c.ResetCompositor(r, image.Rect(0, h*i/bands, w, h*(i+1)/bands))
+						for k, sh := range shaders {
+							c.Fill(&outlines[k], stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: sh})
+						}
+					}()
+				}
+				wg.Wait()
+				if err := tg.ReadRGBA(img); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		for _, r := range recs {
+			r.Close()
+		}
+	}
+}

@@ -46,6 +46,7 @@ func (t *Target) NewRecorder() (*Recorder, error) {
 	r := &Target{
 		d: t.d, w: t.w, h: t.h, tex: t.tex, view: t.view, parent: t,
 		masks: map[uint64]int{}, planes: map[*stilus.Plane]int{},
+		meshes: t.meshes,
 	}
 	r.limit = int(t.d.maxBind)
 	r.solid.t, r.grad.t, r.shaded.t = r, r, r
