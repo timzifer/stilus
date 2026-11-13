@@ -69,6 +69,8 @@ type Target struct {
 
 	clear    bool
 	clearCol gputypes.Color
+	att      [1]wgpu.RenderPassColorAttachment
+	passDesc wgpu.RenderPassDescriptor
 
 	solid  solidBlitter
 	grad   solidBlitter // a gradient computed on the GPU
@@ -322,11 +324,14 @@ func (t *Target) drawRound(k int) error {
 	if err != nil {
 		return fmt.Errorf("gpu: encoder: %w", err)
 	}
-	att := wgpu.RenderPassColorAttachment{View: t.view, LoadOp: gputypes.LoadOpLoad, StoreOp: gputypes.StoreOpStore}
+	// The descriptor is kept on the target: built here, it would be
+	// allocated for every flush.
+	t.att[0] = wgpu.RenderPassColorAttachment{View: t.view, LoadOp: gputypes.LoadOpLoad, StoreOp: gputypes.StoreOpStore}
 	if t.clear && k == 0 {
-		att.LoadOp, att.ClearValue = gputypes.LoadOpClear, t.clearCol
+		t.att[0].LoadOp, t.att[0].ClearValue = gputypes.LoadOpClear, t.clearCol
 	}
-	pass, err := enc.BeginRenderPass(&wgpu.RenderPassDescriptor{Label: "stilus-spans", ColorAttachments: []wgpu.RenderPassColorAttachment{att}})
+	t.passDesc = wgpu.RenderPassDescriptor{Label: "stilus-spans", ColorAttachments: t.att[:]}
+	pass, err := enc.BeginRenderPass(&t.passDesc)
 	if err != nil {
 		enc.DiscardEncoding()
 		return fmt.Errorf("gpu: render pass: %w", err)
