@@ -200,6 +200,17 @@ render pass and the copy of its target no longer conflict in one encoder.
 slow to be chosen silently. CI, without a GPU, runs the primitives on it;
 the scene tests skip without a hardware adapter.
 
+## Allocations
+
+Measured for #63 (`gpu.TestAllocs`, every scene at 72 dpi, warm):
+recording onto a target allocates nothing, whatever the paint, and the
+test gates it. A layer operation on a target flushes, and a `Flush`
+allocates 800–980 times per render pass, all of it in gogpu/wgpu and its
+Metal HAL (`msgSend`, goffi's argument layout, the encoder and pass), the
+gpu module's own last one (the pass descriptor) removed. The CPU core's
+rule, no allocations after warm-up, therefore holds for recording and
+not yet for flushing; the flush's share is wgpu's to remove.
+
 ## Alternatives considered
 
 - *Upload the CPU image.* What callers do now; costs the page per frame
