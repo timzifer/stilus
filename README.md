@@ -115,7 +115,9 @@ composited on the GPU from a copy of the backdrop
 ([ADR 0014](docs/adr/0014-gpu-layers.md)): `LayerShader` with images, or
 `gpu.Layer` with groups drawn into targets. A CMYK destination is two
 targets drawn through one canvas (`Canvas.ResetCompositorPair`,
-[ADR 0015](docs/adr/0015-compositor-pairs.md)).
+[ADR 0015](docs/adr/0015-compositor-pairs.md)). Texture planes stay on
+the GPU from frame to frame ([ADR 0016](docs/adr/0016-texture-store.md)):
+a photo redrawn each frame 5.5 → 1.8 ms.
 
 ## Shaders
 

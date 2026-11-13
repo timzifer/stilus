@@ -992,3 +992,85 @@ func TestPair(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkPhotoFrames draws a 2400 × 1600 photo reduced onto a target,
+// frame after frame, as a viewer redrawing its page does.
+func BenchmarkPhotoFrames(b *testing.B) {
+	d := device(b)
+	const pw, ph = 2400, 1600
+	pix := make([]uint32, pw*ph)
+	for i := range pix {
+		pix[i] = stilus.PackRGBA(color.RGBA{uint8(i), uint8(i >> 8), uint8(i >> 16), 255})
+	}
+	tex := stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneRGBA, W: pw, H: ph, Stride: pw, Pix32: pix})
+	tg, err := d.NewTarget(1200, 800)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer tg.Close()
+	var sh stilus.ImageShader
+	sh.SetImage(tex, stilus.Scale(0.5, 0.5), true, 255)
+	var r stilus.Path
+	r.Rect(0, 0, 1200, 800)
+	var c stilus.Canvas
+	px := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	for i := 0; i < b.N; i++ {
+		tg.Clear(white)
+		c.ResetCompositor(tg, tg.Bounds())
+		c.Fill(&r, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: &sh})
+		if err := tg.ReadRGBA(px); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TestTextureStore draws more texture planes than the store holds, in
+// one frame and over several: the store is flushed and emptied when full,
+// and planes drawn again in a later frame are found there.
+func TestTextureStore(t *testing.T) {
+	d := device(t)
+	defer gpu.SetStoreLimit(1 << 20)()
+	const w, h = 240, 160
+	tg, err := d.NewTarget(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	var texs []*stilus.Texture
+	for k := 0; k < 8; k++ {
+		const n = 300 // 360 KB a plane: three fit
+		pix := make([]uint32, n*n)
+		for i := range pix {
+			pix[i] = stilus.PackRGBA(color.RGBA{uint8(i*(k+1) + k*40), uint8(i >> 7), uint8(k * 30), 255})
+		}
+		texs = append(texs, stilus.NewTexture(stilus.Plane{Kind: stilus.PlaneRGBA, W: n, H: n, Stride: n, Pix32: pix}))
+	}
+	ops := func(c *stilus.Canvas, order []int) {
+		for j, k := range order {
+			var sh stilus.ImageShader
+			x, y := float64(j%4)*60, float64(j/4)*80
+			sh.SetImage(texs[k], stilus.Translate(x-float64(k*7), y-float64(k*5)), false, 255)
+			var r stilus.Path
+			r.Rect(float32(x), float32(y), 60, 80)
+			c.Fill(&r, stilus.Identity, stilus.NonZero, &stilus.Paint{Shader: &sh})
+		}
+	}
+	for frame, order := range [][]int{{0, 1, 2, 3, 4, 5, 6, 7}, {7, 6, 5, 4, 3, 2, 1, 0}, {0, 0, 1, 1, 2, 2, 3, 3}} {
+		want := image.NewRGBA(image.Rect(0, 0, w, h))
+		got := image.NewRGBA(want.Rect)
+		c := stilus.NewCanvas(want)
+		ops(c, order)
+		tg.Clear(color.RGBA{})
+		c.ResetCompositor(tg, tg.Bounds())
+		ops(c, order)
+		if err := tg.ReadRGBA(got); err != nil {
+			t.Fatal(err)
+		}
+		if tg.Err() != nil {
+			t.Fatal(tg.Err())
+		}
+		if mx, mean := deviation(want.Pix, got.Pix); mx > 0 {
+			t.Errorf("frame %d: max %d/255, mean %.4f/255", frame, mx, mean)
+		}
+	}
+}

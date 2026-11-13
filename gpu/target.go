@@ -53,6 +53,11 @@ type Target struct {
 	// least layerNeed bytes.
 	layerBuf  *wgpu.Buffer
 	layerNeed int
+	// store keeps texture planes across flushes (image.go): storeUsed
+	// bytes of it hold the planes of planes, storeNeed is its size.
+	store     *wgpu.Buffer
+	storeUsed int
+	storeNeed int
 	bind      *wgpu.BindGroup
 	read      *wgpu.Buffer    // readback, made on first ReadRGBA
 	pbind     *wgpu.BindGroup // texture group of presenters, made on first Draw
@@ -75,8 +80,8 @@ type Target struct {
 	// masks maps the generation of each clip mask uploaded since the last
 	// Flush to the byte offset of its copy in data.
 	masks map[uint64]int
-	// planes maps the texture planes uploaded since the last Flush to
-	// the word offset of their RGBA copy in data.
+	// planes maps the texture planes in the store to the word offset of
+	// their RGBA copy; it keeps them alive until the store is reset.
 	planes  map[*stilus.Plane]int
 	image   stilus.ImageForm // the current operation's, for grad.img
 	words   []uint32         // a plane's row, converted
@@ -85,6 +90,7 @@ type Target struct {
 	meshStart, meshIDs, meshFill []int32 // a mesh's grid, while recorded
 
 	layerTmp []byte // an image's copy for the layer buffer
+	planeTmp []byte // a plane's copy for the store
 	err      error  // the first layer operation that failed (Err)
 }
 
@@ -151,7 +157,6 @@ func (t *Target) View() *wgpu.TextureView { return t.view }
 func (t *Target) Clear(c color.RGBA) {
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
-	clear(t.planes)
 	t.flushes++
 	t.clear = true
 	t.clearCol = gputypes.Color{R: float64(c.R) / 255, G: float64(c.G) / 255, B: float64(c.B) / 255, A: float64(c.A) / 255}
@@ -175,7 +180,7 @@ func (t *Target) Blitter(p *stilus.Paint) stilus.Blitter {
 // grow makes the GPU buffers hold at least spans and data bytes.
 func (t *Target) grow(spans, data int) error {
 	if t.spanBuf != nil && int(t.spanBuf.Size()) >= spans && int(t.dataBuf.Size()) >= data &&
-		int(t.layerBuf.Size()) >= t.layerNeed {
+		int(t.layerBuf.Size()) >= t.layerNeed && int(t.store.Size()) >= t.storeNeed {
 		return nil
 	}
 	newBuf := func(old *wgpu.Buffer, n int, label string) (*wgpu.Buffer, error) {
@@ -211,6 +216,9 @@ func (t *Target) grow(spans, data int) error {
 	if t.layerBuf, err = newBuf(t.layerBuf, t.layerNeed, "stilus-layer"); err != nil {
 		return err
 	}
+	if t.store, err = newBuf(t.store, t.storeNeed, "stilus-store"); err != nil {
+		return err
+	}
 	if t.bind != nil {
 		t.bind.Release()
 	}
@@ -222,6 +230,7 @@ func (t *Target) grow(spans, data int) error {
 			{Binding: 1, Buffer: t.spanBuf},
 			{Binding: 2, Buffer: t.dataBuf},
 			{Binding: 3, Buffer: t.layerBuf},
+			{Binding: 4, Buffer: t.store},
 		},
 	})
 	if err != nil {
@@ -281,7 +290,6 @@ func (t *Target) Flush() error {
 	}
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
-	clear(t.planes)
 	t.flushes++
 	t.clear = false
 	return nil
@@ -362,7 +370,7 @@ func (t *Target) ReadRGBA(dst *image.RGBA) error {
 
 // Close releases the target's GPU resources.
 func (t *Target) Close() {
-	for _, b := range []**wgpu.Buffer{&t.uniform, &t.spanBuf, &t.dataBuf, &t.layerBuf, &t.read} {
+	for _, b := range []**wgpu.Buffer{&t.uniform, &t.spanBuf, &t.dataBuf, &t.layerBuf, &t.store, &t.read} {
 		if *b != nil {
 			(*b).Release()
 			*b = nil
@@ -476,8 +484,7 @@ func (b *solidBlitter) ready(x, y, spans, data int) bool {
 	}
 	need := data + len(b.rec) + 3
 	if b.img != nil {
-		// All its planes: a flush in reserve drops those uploaded.
-		need = data + imageWords*4 + 3 + planeBytes(b.img)
+		need = data + imageWords*4 + 3
 	}
 	if !t.reserve(spans, need) {
 		return false
