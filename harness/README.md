@@ -1,15 +1,12 @@
 # harness – M0: measurement harness for the PDF renderer
 
 A separate module (Go ≥ 1.26.4) so the stilus core stays dependency-free.
-It renders a corpus with several engines, times them, counts allocations,
-compares every page against the reference and splits go-pdfkit's CPU time
-into parser, interpreter, paths, text, images, shadings, transparency and
-colour.
+It renders a corpus with several engines, times them, counts allocations
+and compares every page against the reference.
 
 | engine | what | role |
 |---|---|---|
 | `pdfium` | PDFium compiled to WebAssembly (go-pdfium on wazero, no cgo) | reference |
-| `pdfkit` | go-pdfkit/render with go-gfx | today's baseline |
 | `stilus` | stilus core, drawing synthetic pages from their geometry | rasterizer accuracy/speed until the PDF front end exists |
 
 ## Use
@@ -21,14 +18,13 @@ go run ./cmd/pdfbench scenes -dir corpus     # synthetic A3 drawings (scenes of 
 go run ./cmd/pdfbench run -corpus corpus,/path/to/customer/drawings -dpi 150 -out report
 ```
 
-`run` flags: `-engines pdfkit,stilus,pdfium`, `-ref pdfium`, `-runs 3`
+`run` flags: `-engines stilus,pdfium`, `-ref pdfium`, `-runs 3`
 (timed renders after one warm-up; min and median are reported), `-pages 5`
 (per document, 0 = all), `-match substring`, `-images` (write every
-rendering), `-profiles dir` (raw go-pdfkit CPU profiles for `go tool pprof`),
-`-split=false`.
+rendering).
 
 Output in `-out`: `report.md` (speed, allocations, accuracy per category,
-time split, per-page table), `results.csv`, and `diffs/*.png` for every page
+per-page table), `results.csv`, and `diffs/*.png` for every page
 that misses the accuracy target (reference as faint grey; red where the
 engine is darker, blue where it is lighter, saturating at 64/255).
 
@@ -39,7 +35,7 @@ area. Target of the spec: mean deviation < 1/255 and < 0.5 % of pixels
 deviating by more than 32/255. SSIM (8×8 windows) is reported alongside.
 
 The reference is rendered with `FPDF_RenderPageBitmapWithMatrix` and an
-exact scale into a bitmap sized like go-pdfkit sizes pages (rounded up).
+exact scale into a bitmap of the page size rounded up to whole pixels.
 PDFium's own DPI rendering stretches the page to the rounded bitmap size,
 which shifts content by up to a pixel across a page and made every engine
 look 10–40/255 off.

@@ -70,9 +70,9 @@ func (d *pdfiumDoc) Close() {
 
 // Render draws with an exact scale. PDFium's own DPI rendering stretches the
 // page to the rounded-up bitmap size, which shifts content by up to a pixel
-// across a page and would dominate every comparison; here the bitmap is
-// sized like go-pdfkit sizes it (rounded up) and the page is drawn with the
-// matrix scale(dpi/72) onto white.
+// across a page and would dominate every comparison; here the bitmap is the
+// page size rounded up to whole pixels and the page is drawn with the matrix
+// scale(dpi/72) onto white.
 func (d *pdfiumDoc) Render(page int, dpi float64) (image.Image, error) {
 	in := d.p.inst
 	pg, err := in.FPDF_LoadPage(&requests.FPDF_LoadPage{Document: d.doc, Index: page})

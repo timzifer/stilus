@@ -1,7 +1,6 @@
 // Command pdfbench is the measurement harness of the PDF renderer spec (M0):
-// it renders a corpus with several engines, times them, counts allocations,
-// compares every page against the reference (PDFium via WebAssembly) and
-// splits the CPU time of go-pdfkit into parser, paths, text, images, ….
+// it renders a corpus with several engines, times them, counts allocations
+// and compares every page against the reference (PDFium via WebAssembly).
 //
 //	pdfbench fetch  -dir corpus            download and verify the public corpus
 //	pdfbench scenes -dir corpus            write the synthetic drawing pages
@@ -9,7 +8,6 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"encoding/csv"
 	"flag"
@@ -21,13 +19,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/pprof"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/google/pprof/profile"
 
 	"github.com/timzifer/stilus/harness/corpus"
 	"github.com/timzifer/stilus/harness/engine"
@@ -79,9 +74,7 @@ type config struct {
 	maxPages int
 	out      string
 	images   bool
-	split    bool
 	filter   string
-	profiles string
 }
 
 // row is one page rendered by one engine.
@@ -99,16 +92,14 @@ func run(args []string) error {
 	fl := flag.NewFlagSet("run", flag.ExitOnError)
 	var c config
 	dirs := fl.String("corpus", "corpus", "comma-separated directories searched for *.pdf")
-	engines := fl.String("engines", "pdfkit,pdfium", "engines to run")
+	engines := fl.String("engines", "stilus,pdfium", "engines to run")
 	fl.StringVar(&c.ref, "ref", "pdfium", "reference engine for the comparison")
 	fl.Float64Var(&c.dpi, "dpi", 150, "resolution (integer for pdfium)")
 	fl.IntVar(&c.runs, "runs", 3, "timed renders per page (after one warm-up)")
 	fl.IntVar(&c.maxPages, "pages", 5, "pages per document (0: all)")
 	fl.StringVar(&c.out, "out", "report", "output directory")
 	fl.BoolVar(&c.images, "images", false, "also write every rendering as PNG")
-	fl.BoolVar(&c.split, "split", true, "profile go-pdfkit and split its time into buckets")
 	fl.StringVar(&c.filter, "match", "", "only files whose path contains this")
-	fl.StringVar(&c.profiles, "profiles", "", "directory for the raw go-pdfkit CPU profiles (optional)")
 	fl.Parse(args)
 	c.dirs = strings.Split(*dirs, ",")
 	c.engines = strings.Split(*engines, ",")
@@ -137,8 +128,6 @@ func run(args []string) error {
 	}
 
 	var rows []row
-	splitTotal := map[string]float64{}
-	splitPerFile := map[string]map[string]float64{}
 	for fi, file := range files {
 		data, err := os.ReadFile(file)
 		if err != nil {
@@ -149,23 +138,7 @@ func run(args []string) error {
 		imgs := map[string][]*image.Gray{} // engine -> page -> grey
 		pageRows := map[string][]int{}     // engine -> row index per page
 		for _, e := range engs {
-			var prof bytes.Buffer
-			profiling := c.split && e.Name() == "pdfkit" && pprof.StartCPUProfile(&prof) == nil
 			rs, gs := renderDoc(e, data, c, name, cats[file], file)
-			if profiling {
-				pprof.StopCPUProfile()
-				if c.profiles != "" {
-					os.MkdirAll(c.profiles, 0o755)
-					os.WriteFile(filepath.Join(c.profiles, flatName(name)+".pprof"), prof.Bytes(), 0o644)
-				}
-				if p, err := profile.Parse(&prof); err == nil {
-					sp := split(p)
-					splitPerFile[name] = sp
-					for k, v := range sp {
-						splitTotal[k] += v
-					}
-				}
-			}
 			for _, r := range rs {
 				pageRows[e.Name()] = append(pageRows[e.Name()], len(rows))
 				rows = append(rows, r)
@@ -195,7 +168,7 @@ func run(args []string) error {
 	if err := writeCSV(filepath.Join(c.out, "results.csv"), rows); err != nil {
 		return err
 	}
-	rep := report(c, rows, splitTotal, splitPerFile)
+	rep := report(c, rows)
 	if err := os.WriteFile(filepath.Join(c.out, "report.md"), []byte(rep), 0o644); err != nil {
 		return err
 	}
@@ -395,7 +368,7 @@ func pct(v []float64, p float64) float64 {
 	return s[min(len(s)-1, int(math.Ceil(p*float64(len(s))))-1)]
 }
 
-func report(c config, rows []row, splitTotal map[string]float64, splitPerFile map[string]map[string]float64) string {
+func report(c config, rows []row) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# pdfbench report\n\n%s · %g dpi · %d timed runs/page after warm-up · max %d pages/document · %s/%s, %d CPUs · reference: %s\n\n",
 		time.Now().Format("2006-01-02 15:04"), c.dpi, c.runs, c.maxPages, runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), c.ref)
@@ -461,36 +434,6 @@ func report(c config, rows []row, splitTotal map[string]float64, splitPerFile ma
 				}
 			}
 			fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %.2f | %.2f %% | %.4f |\n", e, cat, len(ms), pass, sizes, median(mean), median(over), median(ss))
-		}
-	}
-
-	if len(splitTotal) > 0 {
-		var sum float64
-		for _, v := range splitTotal {
-			sum += v
-		}
-		b.WriteString("\n## Where go-pdfkit spends its time (CPU profile, all pages)\n\n| bucket | share |\n|---|---:|\n")
-		for _, k := range buckets {
-			if v := splitTotal[k]; v > 0 {
-				fmt.Fprintf(&b, "| %s | %.1f %% |\n", k, 100*v/sum)
-			}
-		}
-		b.WriteString("\nPer file (share of that file's CPU time):\n\n| file | " + strings.Join(buckets, " | ") + " |\n|---|" + strings.Repeat("---:|", len(buckets)) + "\n")
-		for _, f := range slices.Sorted(mapsKeys(splitPerFile)) {
-			sp := splitPerFile[f]
-			var s float64
-			for _, v := range sp {
-				s += v
-			}
-			fmt.Fprintf(&b, "| %s |", f)
-			for _, k := range buckets {
-				if s > 0 && sp[k] > 0 {
-					fmt.Fprintf(&b, " %.0f %% |", 100*sp[k]/s)
-				} else {
-					b.WriteString(" |")
-				}
-			}
-			b.WriteString("\n")
 		}
 	}
 
