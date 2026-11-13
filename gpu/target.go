@@ -28,7 +28,10 @@ const (
 	// stripWords is the size of a strip's parameters (spans.wgsl, Strip).
 	stripWords = 13
 	noMask     = 1<<32 - 1
-	dataMask   = 1<<30 - 1
+	dataMask   = 1<<29 - 1
+	// gradFlag marks a span whose colour is a gradient's: its colour word
+	// is the word offset of the gradient's record (spans.wgsl, gradColor).
+	gradFlag = 1 << 29
 	// lookBack is how many spans of the current operation a run looks
 	// back at for one on the row above that it can extend.
 	lookBack = 8
@@ -58,7 +61,11 @@ type Target struct {
 	clearCol gputypes.Color
 
 	solid  solidBlitter
+	grad   solidBlitter // a gradient computed on the GPU
 	shaded shadedBlitter
+	// flushes counts Flush and Clear, which drop the data a gradient's
+	// record is in.
+	flushes uint64
 
 	// masks maps the generation of each clip mask uploaded since the last
 	// Flush to the byte offset of its copy in data.
@@ -73,7 +80,8 @@ func (d *Device) NewTarget(w, h int) (*Target, error) {
 	}
 	t := &Target{d: d, w: w, h: h, clear: true, masks: map[uint64]int{}}
 	t.limit = int(min(d.maxBind, 64<<20))
-	t.solid.t, t.shaded.t = t, t
+	t.solid.t, t.grad.t, t.shaded.t = t, t, t
+	t.grad.flag = gradFlag
 	var err error
 	t.tex, err = d.dev.CreateTexture(&wgpu.TextureDescriptor{
 		Label:         "stilus-target",
@@ -128,6 +136,7 @@ func (t *Target) View() *wgpu.TextureView { return t.view }
 func (t *Target) Clear(c color.RGBA) {
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
+	t.flushes++
 	t.clear = true
 	t.clearCol = gputypes.Color{R: float64(c.R) / 255, G: float64(c.G) / 255, B: float64(c.B) / 255, A: float64(c.A) / 255}
 }
@@ -136,6 +145,9 @@ func (t *Target) Clear(c color.RGBA) {
 func (t *Target) Blitter(p *stilus.Paint) stilus.Blitter {
 	t.opStart = len(t.spans) / spanBytes
 	if p.Shader != nil {
+		if b := t.gradient(p.Shader); b != nil {
+			return b
+		}
 		t.shaded.s = p.Shader
 		return &t.shaded
 	}
@@ -248,6 +260,7 @@ func (t *Target) Flush() error {
 	}
 	t.spans, t.data, t.opStart = t.spans[:0], t.data[:0], 0
 	clear(t.masks)
+	t.flushes++
 	t.clear = false
 	return nil
 }
@@ -385,14 +398,14 @@ func (t *Target) span(x, y, w, h int, col, data uint32) {
 
 // run records a run, extending a run of the current operation on the row
 // above with the same columns and alpha instead where there is one.
-func (t *Target) run(y, x0, x1 int, alpha uint8, col uint32) {
+func (t *Target) run(y, x0, x1 int, alpha uint8, col, flag uint32) {
 	x0, x1, _, ok := t.clipRow(y, x0, x1)
 	if !ok || alpha == 0 {
 		return
 	}
 	pos := uint32(x0)
 	size := uint32(x1 - x0)
-	data := modeRun | uint32(alpha)
+	data := modeRun | flag | uint32(alpha)
 	n := len(t.spans) / spanBytes
 	for i := n - 1; i >= max(t.opStart, n-lookBack); i-- {
 		s := t.spans[i*spanBytes:]
@@ -412,15 +425,46 @@ func (t *Target) run(y, x0, x1 int, alpha uint8, col uint32) {
 	t.span(x0, y, x1-x0, 1, col, data)
 }
 
-// solidBlitter records spans of one colour.
+// solidBlitter records spans of one colour, or of a gradient whose record
+// it uploads.
 type solidBlitter struct {
-	t   *Target
-	col uint32
-	cov []uint8
+	t    *Target
+	col  uint32 // the colour, or the word offset of the gradient's record
+	flag uint32 // gradFlag for a gradient
+	cov  []uint8
+
+	rec      []byte // the gradient's record, uploaded when first needed
+	recFlush uint64 // t.flushes when it was uploaded, with recOK
+	recOK    bool
+}
+
+// ready reserves room for spans more spans and data more bytes, and
+// uploads the gradient's record where the data no longer holds it.
+func (b *solidBlitter) ready(spans, data int) bool {
+	t := b.t
+	if b.flag == 0 {
+		return t.reserve(spans, data)
+	}
+	if !t.reserve(spans, data+len(b.rec)+3) {
+		return false
+	}
+	if !b.recOK || b.recFlush != t.flushes {
+		t.data = pad4(t.data)
+		off := len(t.data) / 4
+		if off > dataMask {
+			return false
+		}
+		t.data = append(t.data, b.rec...)
+		b.col, b.recFlush, b.recOK = uint32(off), t.flushes, true
+	}
+	return true
 }
 
 func (b *solidBlitter) BlitRun(y, x0, x1 int, alpha uint8) {
-	b.t.run(y, x0, x1, alpha, b.col)
+	if b.flag != 0 && !b.ready(1, 0) {
+		return
+	}
+	b.t.run(y, x0, x1, alpha, b.col, b.flag)
 }
 
 func (b *solidBlitter) BlitCoverage(y, x int, cov []uint8) {
@@ -430,7 +474,7 @@ func (b *solidBlitter) BlitCoverage(y, x int, cov []uint8) {
 		return
 	}
 	cov = cov[o : o+x1-x0]
-	if !t.reserve(1, len(cov)) {
+	if !b.ready(1, len(cov)) {
 		return
 	}
 	off := len(t.data)
@@ -438,7 +482,7 @@ func (b *solidBlitter) BlitCoverage(y, x int, cov []uint8) {
 		return
 	}
 	t.data = append(t.data, cov...)
-	t.span(x0, y, x1-x0, 1, b.col, modeCov|uint32(off))
+	t.span(x0, y, x1-x0, 1, b.col, modeCov|b.flag|uint32(off))
 }
 
 // BlitStrip records a strip whole: the GPU computes its coverage
@@ -464,7 +508,7 @@ func (b *solidBlitter) BlitStrip(s *stilus.Strip) {
 			need += mb.Dx()*mb.Dy() + 3
 		}
 	}
-	if !t.reserve(1, need) {
+	if !b.ready(1, need) {
 		// Larger than a binding (a page-sized mask on a small device):
 		// the rows instead.
 		b.stripRows(s)
@@ -495,7 +539,7 @@ func (b *solidBlitter) BlitStrip(s *stilus.Strip) {
 	for _, v := range [6]uint32{uint32(int32(ox)), moff, uint32(int32(mb.Min.X)), uint32(int32(mb.Min.Y)), uint32(mb.Dx()), uint32(mb.Dy())} {
 		t.data = binary.LittleEndian.AppendUint32(t.data, v)
 	}
-	t.span(x0, y0, x1-x0, y1-y0, b.col, modeStrip|uint32(off))
+	t.span(x0, y0, x1-x0, y1-y0, b.col, modeStrip|b.flag|uint32(off))
 }
 
 // stripRows blits a strip's rows as the canvas would have.

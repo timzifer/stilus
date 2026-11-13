@@ -11,12 +11,15 @@
 //               offset of its parameters (stripParams); the rectangle is
 //               the strip's rows and the clip's columns, and the quad
 //               drawn is the parallelogram around the strip's rows
+//
+// With bit 29 of data set, the colour of modes 0, 1 and 3 is a gradient's,
+// computed per pixel from the record at the word offset color (gradient.go).
 
 struct Span {
     pos: u32,   // x0 | y0 << 16
     size: u32,  // w | h << 16
     color: u32, // premultiplied RGBA8, R in the low byte
-    data: u32,  // mode << 30 | datum
+    data: u32,  // mode << 30 | gradient << 29 | datum
 }
 
 struct Globals {
@@ -86,7 +89,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
         // The edges of the parallelogram lie two pixels outside the
         // strip's columns at each row's centre, so that every pixel of a
         // row's columns has its centre inside; the fragment tests them.
-        let st = strip(s.data & 0x3fffffffu);
+        let st = strip(s.data & 0x1fffffffu);
         let r = h * cy[vi] - 0.5;
         let left = f32(st.ox) + st.xl + r * st.sl - 2.0;
         let right = f32(st.ox) + st.xr + r * st.sl + 2.0;
@@ -126,7 +129,7 @@ fn stripCoverage(s: Span, px: vec2<f32>) -> f32 {
     if (x < x0 || x >= x0 + i32(s.size & 0xffffu) || y < y0 || y >= y0 + i32(s.size >> 16u)) {
         return 0.0;
     }
-    let st = strip(s.data & 0x3fffffffu);
+    let st = strip(s.data & 0x1fffffffu);
     let r = f32(y - y0);
     let lx = x - st.ox;
     // A column outside a row's span has no area between the lines; one
@@ -167,13 +170,139 @@ fn stripCoverage(s: Span, px: vec2<f32>) -> f32 {
     return f32((v + (v >> 8u)) >> 8u);
 }
 
+fn wf(i: u32) -> f32 {
+    return bitcast<f32>(words[i]);
+}
+
+fn div255(v: u32) -> u32 {
+    let x = v + 128u;
+    return (x + (x >> 8u)) >> 8u;
+}
+
+// gradT returns a gradient's parameter at the pixel centre p, and false
+// where no circle of a radial gradient passes through it.
+fn gradT(r: u32, p: vec2<f32>) -> vec2<f32> {
+    let flags = words[r];
+    let q = r + 6u;
+    if ((flags & 1u) == 0u) {
+        return vec2<f32>(wf(q) * p.x + wf(q + 1u) * p.y + wf(q + 2u), 1.0);
+    }
+    let u = wf(q) * p.x + (wf(q + 2u) * p.y + wf(q + 4u));
+    let v = wf(q + 1u) * p.x + (wf(q + 3u) * p.y + wf(q + 5u));
+    let r0 = wf(q + 6u);
+    let dr = wf(q + 9u);
+    let qa = wf(q + 10u);
+    let b = u * wf(q + 7u) + v * wf(q + 8u) + r0 * dr;
+    let c = u * u + v * v - r0 * r0;
+    var t1: f32;
+    var t2: f32;
+    if ((flags & 16u) != 0u) {
+        if (b == 0.0) {
+            return vec2<f32>(0.0, 0.0);
+        }
+        t1 = c / (2.0 * b);
+        t2 = t1;
+    } else {
+        let d = b * b - qa * c;
+        if (d < 0.0) {
+            return vec2<f32>(0.0, 0.0);
+        }
+        let sq = sqrt(d);
+        t1 = (b + sq) / qa;
+        t2 = (b - sq) / qa;
+        if (t1 < t2) {
+            let x = t1;
+            t1 = t2;
+            t2 = x;
+        }
+    }
+    let e0 = (flags & 2u) != 0u;
+    let e1 = (flags & 4u) != 0u;
+    if (!(r0 + t1 * dr < 0.0) && !(t1 < 0.0 && !e0) && !(t1 > 1.0 && !e1)) {
+        return vec2<f32>(t1, 1.0);
+    }
+    if (!(r0 + t2 * dr < 0.0) && !(t2 < 0.0 && !e0) && !(t2 > 1.0 && !e1)) {
+        return vec2<f32>(t2, 1.0);
+    }
+    return vec2<f32>(0.0, 0.0);
+}
+
+// gradColor returns a gradient's premultiplied colour at the pixel centre
+// p, as stilus's Gradient computes it from t: Outside where it does not
+// extend, the nearest ramp entry or the blend between knots, times Alpha.
+fn gradColor(r: u32, p: vec2<f32>) -> vec4<f32> {
+    let flags = words[r];
+    let n = words[r + 1u];
+    let ramp = r + words[r + 2u];
+    let knots = r + words[r + 3u];
+    let tv = gradT(r, p);
+    var t = tv.x;
+    var c = words[r + 4u];
+    var inside = tv.y > 0.0;
+    if (inside && t < 0.0) {
+        inside = (flags & 2u) != 0u;
+        t = 0.0;
+    }
+    if (inside && t > 1.0) {
+        inside = (flags & 4u) != 0u;
+        t = 1.0;
+    }
+    if (inside) {
+        if ((flags & 8u) == 0u) {
+            c = words[ramp + u32(t * f32(n - 1u) + 0.5)];
+        } else {
+            var i = 0u;
+            loop {
+                if (i + 1u >= n || wf(knots + i + 1u) > t) {
+                    break;
+                }
+                i = i + 1u;
+            }
+            let k0 = wf(knots + i);
+            if (t <= k0 || i + 1u == n) {
+                c = words[ramp + i];
+            } else {
+                let w = u32((t - k0) * (1.0 / (wf(knots + i + 1u) - k0)) * 256.0 + 0.5);
+                let a = words[ramp + i];
+                let b = words[ramp + i + 1u];
+                c = 0u;
+                for (var s = 0u; s < 32u; s = s + 8u) {
+                    let ca = (a >> s) & 255u;
+                    let cb = (b >> s) & 255u;
+                    c = c | (((ca * (256u - w) + cb * w + 128u) >> 8u) << s);
+                }
+            }
+        }
+    }
+    let alpha = words[r + 5u];
+    if (alpha != 255u) {
+        var m = 0u;
+        for (var s = 0u; s < 32u; s = s + 8u) {
+            m = m | (div255(((c >> s) & 255u) * alpha) << s);
+        }
+        c = m;
+    }
+    return unpack4x8unorm(c);
+}
+
+fn base(s: Span, p: vec2<f32>) -> vec4<f32> {
+    if ((s.data & 0x20000000u) != 0u) {
+        return gradColor(s.color, p);
+    }
+    return unpack4x8unorm(s.color);
+}
+
 @fragment
 fn fs_main(in: VOut) -> @location(0) vec4<f32> {
     let s = spans[in.id];
     let mode = s.data >> 30u;
-    let d = s.data & 0x3fffffffu;
+    let d = s.data & 0x1fffffffu;
     if (mode == 3u) {
-        return unpack4x8unorm(s.color) * (stripCoverage(s, in.pos.xy) / 255.0);
+        let cov = stripCoverage(s, in.pos.xy);
+        if (cov == 0.0) {
+            return vec4<f32>(0.0);
+        }
+        return base(s, in.pos.xy) * (cov / 255.0);
     }
     let i = u32(in.pos.x) - (s.pos & 0xffffu);
     if (mode == 2u) {
@@ -184,5 +313,5 @@ fn fs_main(in: VOut) -> @location(0) vec4<f32> {
         let b = d + i;
         a = f32((words[b >> 2u] >> ((b & 3u) * 8u)) & 255u);
     }
-    return unpack4x8unorm(s.color) * (a / 255.0);
+    return base(s, in.pos.xy) * (a / 255.0);
 }

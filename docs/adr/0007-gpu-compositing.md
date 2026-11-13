@@ -185,8 +185,8 @@ gain a little. Two kinds of scene lose:
   on the GPU ([ADR 0008](0008-gpu-strips.md)) took hatching from 37 to
   4 ms.
 - *Shaders*: `ShadeSpan` on the CPU plus four bytes per covered pixel.
-  WGSL counterparts for gradients and textures remove both; they need the
-  shaders' set-up readable from the gpu package (a later ADR).
+  Gradients are computed on the GPU since [ADR 0009](0009-gradient-forms.md)
+  (37 → 3 ms); images, patterns and meshes still go through `ShadeSpan`.
 
 The software adapter (`Options.Fallback`) draws the scenes as Metal
 does, max 1/255, in 82 s at 72 dpi: it interprets SPIR-V. An earlier
