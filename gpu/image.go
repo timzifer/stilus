@@ -53,7 +53,7 @@ func (t *Target) imageBlitter(s *stilus.ImageShader) stilus.Blitter {
 	}
 	t.image = f
 	b := &t.grad
-	b.recOK, b.img, b.gform = false, &t.image, nil
+	b.recOK, b.img, b.gform, b.custom = false, &t.image, nil, false
 	return b
 }
 
@@ -79,21 +79,31 @@ func storeMax(t *Target) int { return int(min(t.d.maxBind, uint64(storeLimit))) 
 // aligned to 256 bytes.
 func storeSize(p *stilus.Plane) int { return (p.W*p.H*4 + 255) &^ 255 }
 
-// storeRoom makes room in the store for the planes of f not in it yet,
-// flushing and emptying it if they do not fit, growing it if all of them
-// do not fit an empty one, and reports whether they now fit.
+// storeRoom makes room in the store for the planes of f.
 func (t *Target) storeRoom(f *stilus.ImageForm) bool {
+	var ps [2]*stilus.Plane
+	if f.HasImage {
+		ps[0] = f.Image.Plane
+	}
+	if f.HasMask {
+		ps[1] = f.Mask.Plane
+	}
+	return t.storeFit(ps[:])
+}
+
+// storeFit makes room in the store for the planes ps (nil ones skipped)
+// not in it yet, flushing and emptying it if they do not fit, growing it
+// if all of them do not fit an empty one, and reports whether they now
+// fit.
+func (t *Target) storeFit(ps []*stilus.Plane) bool {
 	need := func(all bool) int {
 		n := 0
-		for _, s := range []struct {
-			p  *stilus.Plane
-			ok bool
-		}{{f.Image.Plane, f.HasImage}, {f.Mask.Plane, f.HasMask && f.Mask.Plane != f.Image.Plane}} {
-			if !s.ok {
+		for i, p := range ps {
+			if p == nil || slices.Contains(ps[:i], p) {
 				continue
 			}
-			if _, in := t.planes[s.p]; all || !in {
-				n += storeSize(s.p)
+			if _, in := t.planes[p]; all || !in {
+				n += storeSize(p)
 			}
 		}
 		return n
@@ -214,40 +224,49 @@ func (t *Target) imageRecord(r []byte, f *stilus.ImageForm, x, y int) []byte {
 	put(flags)
 	put(rgba(f.Color))
 	put(uint32(f.Alpha))
-	sampler := func(s *stilus.SamplerForm, off int, ok bool) {
-		if !ok {
-			for range samplerWords {
-				put(0)
-			}
-			return
-		}
-		p, m := s.Plane, s.Inv
-		fl := uint32(0)
-		if s.Bilinear {
-			fl |= smpBilinear
-		}
-		if s.Wrap {
-			fl |= smpWrap
-		}
-		fx, fy := float64(x)+0.5, float64(y)+0.5
-		u, v := m[0]*fx+m[2]*fy+m[4], m[1]*fx+m[3]*fy+m[5]
-		if s.Wrap {
-			u -= math.Floor(u/float64(p.W)) * float64(p.W)
-			v -= math.Floor(v/float64(p.H)) * float64(p.H)
-		}
-		put(uint32(off))
-		put(uint32(p.W))
-		put(uint32(p.H))
-		put(fl)
-		for _, k := range [4]float64{m[0], m[1], m[2], m[3]} {
-			put(math.Float32bits(float32(k)))
-		}
-		put(uint32(int32(x)))
-		put(uint32(int32(y)))
-		put(math.Float32bits(float32(u)))
-		put(math.Float32bits(float32(v)))
+	if f.HasImage {
+		r = appendSampler(r, &f.Image, io, x, y)
+	} else {
+		r = append(r, make([]byte, samplerWords*4)...)
 	}
-	sampler(&f.Image, io, f.HasImage)
-	sampler(&f.Mask, mo, f.HasMask)
+	if f.HasMask {
+		r = appendSampler(r, &f.Mask, mo, x, y)
+	} else {
+		r = append(r, make([]byte, samplerWords*4)...)
+	}
+	return r
+}
+
+// appendSampler appends the block of sampler s, its plane at word off in
+// the store, with its origin at pixel (x, y): plane offset, W, H, flags
+// (smpBilinear, smpWrap), float32 Inv[0…3], int32 x, y, float32 u, v at
+// the origin's centre, reduced modulo W, H when repeating.
+func appendSampler(r []byte, s *stilus.SamplerForm, off, x, y int) []byte {
+	put := func(v uint32) { r = binary.LittleEndian.AppendUint32(r, v) }
+	p, m := s.Plane, s.Inv
+	fl := uint32(0)
+	if s.Bilinear {
+		fl |= smpBilinear
+	}
+	if s.Wrap {
+		fl |= smpWrap
+	}
+	fx, fy := float64(x)+0.5, float64(y)+0.5
+	u, v := m[0]*fx+m[2]*fy+m[4], m[1]*fx+m[3]*fy+m[5]
+	if s.Wrap {
+		u -= math.Floor(u/float64(p.W)) * float64(p.W)
+		v -= math.Floor(v/float64(p.H)) * float64(p.H)
+	}
+	put(uint32(off))
+	put(uint32(p.W))
+	put(uint32(p.H))
+	put(fl)
+	for _, k := range [4]float64{m[0], m[1], m[2], m[3]} {
+		put(math.Float32bits(float32(k)))
+	}
+	put(uint32(int32(x)))
+	put(uint32(int32(y)))
+	put(math.Float32bits(float32(u)))
+	put(math.Float32bits(float32(v)))
 	return r
 }

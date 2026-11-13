@@ -93,6 +93,12 @@ type Target struct {
 	meshStart, meshIDs, meshFill []int32    // a mesh's grid, while recorded
 	meshes                       *meshCache // shared with the recorders
 
+	// The current operation's caller shader (custom.go).
+	custom       Shader
+	customType   *ShaderType
+	customSmp    []stilus.SamplerForm
+	customPlanes []*stilus.Plane
+
 	// parent is the target of a recorder, nil for a target; recorders are
 	// the recorders of a target, drawn after it.
 	parent    *Target
@@ -626,6 +632,7 @@ type solidBlitter struct {
 	rec      []byte               // the paint's record, uploaded when first needed
 	img      *stilus.ImageForm    // an image's form, its record made at upload
 	gform    *stilus.GradientForm // a gradient's, its origin written at upload
+	custom   bool                 // a caller's shader's, its record made at upload
 	recFlush uint64               // t.flushes when it was uploaded, with recOK
 	recOK    bool
 }
@@ -643,6 +650,11 @@ func (b *solidBlitter) ready(x, y, spans, data int) bool {
 	if b.img != nil {
 		need = data + imageWords*4 + 3
 	}
+	if b.custom {
+		// The caller's record, of a size known when it is made; a
+		// recorder grows, a target makes room for a generous one.
+		need = data + 1<<16
+	}
 	if !t.reserve(spans, need) {
 		return false
 	}
@@ -652,6 +664,9 @@ func (b *solidBlitter) ready(x, y, spans, data int) bool {
 		}
 		if b.gform != nil {
 			gradOrigin(b.rec, b.gform, x, y)
+		}
+		if b.custom {
+			b.rec = t.customRecord(b.rec[:0], x, y)
 		}
 		t.data = pad4(t.data)
 		off := len(t.data) / 4

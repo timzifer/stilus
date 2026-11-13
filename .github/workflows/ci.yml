@@ -124,7 +124,7 @@ jobs:
         run: |
           go vet ./...
           go test ./...
-          STILUS_GPU_FALLBACK=1 go test -run 'TestPrimitives|TestFlushes|TestStrips|TestGradients|TestImages|TestMeshes|TestGlyphMasks|TestLayers|TestPair|TestTextureStore|TestRecorders|TestPresent' ./...
+          STILUS_GPU_FALLBACK=1 go test -run 'TestPrimitives|TestFlushes|TestStrips|TestGradients|TestImages|TestMeshes|TestGlyphMasks|TestLayers|TestPair|TestTextureStore|TestRecorders|TestPresent|TestShaderTypes' ./...
       - name: gpu (js/wasm)
         # The browser's WebGPU: the module builds; its tests need a GPU.
         working-directory: gpu
@@ -154,5 +154,5 @@ jobs:
           STILUS_GPU_REQUIRE: "1"
         run: |
           set -o pipefail
-          go test -v -run 'TestScenes|TestPrimitives|TestFlushes|TestStrips|TestGradients|TestImages|TestMeshes|TestGlyphMasks|TestLayers|TestPair|TestTextureStore|TestRecorders|TestPresent' ./... 2>&1 \
+          go test -v -run 'TestScenes|TestPrimitives|TestFlushes|TestStrips|TestGradients|TestImages|TestMeshes|TestGlyphMasks|TestLayers|TestPair|TestTextureStore|TestRecorders|TestPresent|TestShaderTypes' ./... 2>&1 \
             | grep -E '^(---|    ---|ok|FAIL|PASS)|adapter:|max |panic'
