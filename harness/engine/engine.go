@@ -32,6 +32,8 @@ func New(name string) (Engine, error) {
 		return NewPDFium()
 	case "stilus":
 		return Stilus{}, nil
+	case "reference":
+		return Reference{}, nil
 	}
-	return nil, fmt.Errorf("unknown engine %q (pdfium, stilus)", name)
+	return nil, fmt.Errorf("unknown engine %q (pdfium, stilus, reference)", name)
 }
