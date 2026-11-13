@@ -3,6 +3,7 @@ package gpu
 import (
 	"encoding/binary"
 	"math"
+	"sync"
 
 	"github.com/timzifer/stilus"
 )
@@ -30,18 +31,54 @@ const (
 	meshCells    = 4096
 )
 
+// meshCacheMax bounds the bytes of the mesh records a target keeps.
+const meshCacheMax = 32 << 20
+
+// meshCacheOff makes every operation its mesh's record (benchmarks).
+var meshCacheOff = false
+
+// meshCache holds the mesh records of a target and its recorders, by the
+// generation of the mesh's triangles: a mesh is prepared once for every
+// band of a page that draws it, and again only after its shader's next
+// Set.
+type meshCache struct {
+	mu     sync.Mutex
+	recs   map[uint64][]byte
+	bytes  int
+	builds int // records made, for tests
+}
+
 // meshBlitter returns the blitter of a mesh shader the GPU shades.
 func (t *Target) meshBlitter(s *stilus.MeshShader) stilus.Blitter {
 	f, ok := s.Form()
 	if !ok {
 		return nothing{}
 	}
-	b := &t.grad
-	b.recOK, b.img = false, nil
-	b.rec = t.meshRecord(b.rec[:0], f)
-	if len(b.rec) > t.limit/4 {
+	c := t.meshes
+	c.mu.Lock()
+	rec, ok := c.recs[f.Gen()]
+	if meshCacheOff {
+		rec, ok = t.meshRecord(nil, f), true
+	}
+	if !ok {
+		rec = t.meshRecord(nil, f)
+		if c.bytes+len(rec) > meshCacheMax {
+			clear(c.recs)
+			c.bytes = 0
+		}
+		c.recs[f.Gen()] = rec
+		c.bytes += len(rec)
+		c.builds++
+	}
+	c.mu.Unlock()
+	if len(rec) > t.limit/4 {
 		return nil
 	}
+	b := &t.grad
+	b.recOK, b.img = false, nil
+	b.rec = append(b.rec[:0], rec...)
+	// Alpha is the shader's now, not its Gen's.
+	binary.LittleEndian.PutUint32(b.rec[4:], uint32(f.Alpha()))
 	return b
 }
 

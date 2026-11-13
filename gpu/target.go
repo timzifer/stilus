@@ -87,7 +87,8 @@ type Target struct {
 	words   []uint32         // a plane's row, converted
 	maskRow []uint8
 
-	meshStart, meshIDs, meshFill []int32 // a mesh's grid, while recorded
+	meshStart, meshIDs, meshFill []int32    // a mesh's grid, while recorded
+	meshes                       *meshCache // shared with the recorders
 
 	// parent is the target of a recorder, nil for a target; recorders are
 	// the recorders of a target, drawn after it.
@@ -108,6 +109,7 @@ func (d *Device) NewTarget(w, h int) (*Target, error) {
 		return nil, fmt.Errorf("gpu: target size %d×%d", w, h)
 	}
 	t := &Target{d: d, w: w, h: h, clear: true, masks: map[uint64]int{}, planes: map[*stilus.Plane]int{}}
+	t.meshes = &meshCache{recs: map[uint64][]byte{}}
 	t.limit = int(min(d.maxBind, 64<<20))
 	t.solid.t, t.grad.t, t.shaded.t = t, t, t
 	t.grad.flag = gradFlag

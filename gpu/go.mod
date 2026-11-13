@@ -7,7 +7,7 @@ replace github.com/timzifer/stilus => ../
 require (
 	github.com/gogpu/gputypes v0.8.2
 	github.com/gogpu/wgpu v0.34.14
-	github.com/timzifer/stilus v0.17.0
+	github.com/timzifer/stilus v0.18.0
 )
 
 require (

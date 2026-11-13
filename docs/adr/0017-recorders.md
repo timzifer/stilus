@@ -58,9 +58,30 @@ with readback, one canvas per band on its goroutine:
 - Scenes whose time is CPU work scale to about twice as fast at four
   bands; those bound by the GPU and the readback (images, gradients,
   patterns) stay flat.
-- Meshes get slower: every band writes the whole mesh's record and the
-  scenes set the shader up per band. Preparing the record once per page,
-  as `Shape` prepares geometry, would remove that.
+- Meshes get slower: every band wrote the whole mesh's record, and the
+  scenes set the shader up per band. See *Mesh records once per page*.
 - `gpu.TestRecorders` draws every scene but the layered one in four
   bands at once, twice, against the CPU canvas of the whole page, also
   under the race detector.
+
+## Mesh records once per page
+
+Added after the first measurements. `MeshForm.Gen` names a shader's
+triangles: a counter shared by all mesh shaders, taken by each `Set`.
+A target and its recorders share a cache of mesh records by generation,
+under a lock: the first band that draws a mesh makes its record, the
+others copy it, and later frames find it until the shader's next `Set`
+(Alpha, which may change without a `Set`, is written into the copy). The
+cache is bounded (32 MB) and emptied when full.
+
+`gpu.TestMeshCache`: 12 meshes in four bands over four frames, records
+made once per mesh and again after a `Set`, an Alpha changed without
+`Set` drawn, within 1/255 of the CPU canvas, also under the race
+detector. `gpu.BenchmarkMeshBands` (40 meshes of 384 triangles set up
+once per page, A3 at 150 dpi, with readback), Apple M4, the cache off
+and on: 1 band 6.6–8.4 / 6.7–7.3 ms, 4 bands 7.3–7.5 / 7.2–7.6 ms,
+8 bands 8.3–8.8 / 7.2–7.5 ms. Making the records was the smaller part:
+what remains is the meshes' `Set` on the CPU, once per page, and their
+pixels on the GPU, which bands do not divide. The meshes-40 scene sets
+its shaders up per band (each band draws its own copy of the scene), so
+it gains nothing from the cache.
