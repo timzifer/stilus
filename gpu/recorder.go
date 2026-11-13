@@ -22,9 +22,11 @@ import (
 // as bands do; where they overlap, the order between them is the order of
 // NewRecorder. A recorder grows its buffers instead of flushing, up to the
 // device's storage binding (ErrRecorderFull beyond, Err); a texture that
-// does not fit its store is shaded on the CPU. Layers are not drawn
-// through a recorder: compositing a layer reads what was drawn before,
-// which a recorder cannot flush (ErrLayer).
+// does not fit its store is shaded on the CPU. A layer operation, which
+// reads what was drawn before it, is a barrier in the recorder's spans:
+// the target's Flush draws the spans before it, copies the part of the
+// layer the operation reaches, then draws on, in rounds shared by all
+// recorders.
 type Recorder struct{ t *Target }
 
 // ErrRecorderFull is reported by Recorder.Err for spans dropped because
