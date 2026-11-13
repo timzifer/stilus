@@ -26,16 +26,27 @@ func (Stilus) Close() error { return nil }
 var ErrNoPDF = errors.New("stilus: no PDF front end yet, only synthetic scene pages")
 
 func (Stilus) Open(data []byte) (Doc, error) {
+	s, err := openScene(data)
+	if err != nil {
+		return nil, err
+	}
+	return &stilusDoc{s: s}, nil
+}
+
+// openScene returns the scene a synthetic page was written from.
+func openScene(data []byte) (*scenes.Scene, error) {
 	head := data[:min(len(data), 256)]
 	i := bytes.Index(head, []byte(sceneMarker))
 	if i < 0 {
 		return nil, ErrNoPDF
 	}
 	name := head[i+len(sceneMarker):]
-	name = name[:bytes.IndexByte(name, '\n')]
+	if j := bytes.IndexByte(name, '\n'); j >= 0 {
+		name = name[:j]
+	}
 	for _, s := range scenes.All() {
 		if s.Name == string(name) {
-			return &stilusDoc{s: s}, nil
+			return s, nil
 		}
 	}
 	return nil, ErrNoPDF

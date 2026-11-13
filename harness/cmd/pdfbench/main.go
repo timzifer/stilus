@@ -69,6 +69,7 @@ type config struct {
 	dirs     []string
 	engines  []string
 	ref      string
+	sceneRef string
 	dpi      float64
 	runs     int
 	maxPages int
@@ -94,6 +95,7 @@ func run(args []string) error {
 	dirs := fl.String("corpus", "corpus", "comma-separated directories searched for *.pdf")
 	engines := fl.String("engines", "stilus,pdfium", "engines to run")
 	fl.StringVar(&c.ref, "ref", "pdfium", "reference engine for the comparison")
+	fl.StringVar(&c.sceneRef, "scene-ref", "reference", "reference engine for synthetic scene pages (empty: -ref)")
 	fl.Float64Var(&c.dpi, "dpi", 150, "resolution (integer for pdfium)")
 	fl.IntVar(&c.runs, "runs", 3, "timed renders per page (after one warm-up)")
 	fl.IntVar(&c.maxPages, "pages", 5, "pages per document (0: all)")
@@ -103,8 +105,10 @@ func run(args []string) error {
 	fl.Parse(args)
 	c.dirs = strings.Split(*dirs, ",")
 	c.engines = strings.Split(*engines, ",")
-	if !slices.Contains(c.engines, c.ref) {
-		c.engines = append(c.engines, c.ref)
+	for _, e := range []string{c.ref, c.sceneRef} {
+		if e != "" && !slices.Contains(c.engines, e) {
+			c.engines = append(c.engines, e)
+		}
 	}
 
 	files, err := findPDFs(c.dirs, c.filter)
@@ -145,10 +149,15 @@ func run(args []string) error {
 			}
 			imgs[e.Name()] = gs
 		}
-		// Compare with the reference.
-		ref := imgs[c.ref]
+		// Compare with the reference: the scene reference where it renders
+		// the page, else -ref.
+		refName := c.ref
+		if g := imgs[c.sceneRef]; len(g) > 0 && g[0] != nil {
+			refName = c.sceneRef
+		}
+		ref := imgs[refName]
 		for _, e := range engs {
-			if e.Name() == c.ref {
+			if e.Name() == refName {
 				continue
 			}
 			for p, g := range imgs[e.Name()] {
@@ -188,7 +197,7 @@ func renderDoc(e engine.Engine, data []byte, c config, name, cat, file string) (
 		return e.Open(data)
 	}()
 	if err != nil {
-		return []row{{File: name, Category: cat, Engine: e.Name(), Page: 1, Err: "open: " + err.Error()}}, nil
+		return []row{{File: name, Category: cat, Engine: e.Name(), Page: 1, Mallocs: -1, AllocBytes: -1, Err: "open: " + err.Error()}}, nil
 	}
 	defer doc.Close()
 	n := doc.Pages()
@@ -210,9 +219,13 @@ func renderDoc(e engine.Engine, data []byte, c config, name, cat, file string) (
 			return img, time.Since(t), err
 		}
 		img, _, err := render() // warm-up
+		runs := c.runs
+		if e.Name() == c.sceneRef {
+			runs = 0 // a reference, not timed
+		}
 		var times []float64
 		if img != nil {
-			for i := 0; i < c.runs; i++ {
+			for i := 0; i < runs; i++ {
 				var ms0, ms1 runtime.MemStats
 				if e.GoHeap() && i == 0 {
 					runtime.ReadMemStats(&ms0)
@@ -375,6 +388,9 @@ func report(c config, rows []row) string {
 
 	b.WriteString("## Speed and allocations\n\n| engine | pages | unsupported | errors | median ms/page | p90 ms/page | total ms | median allocs/page | median MB alloc/page |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	for _, e := range c.engines {
+		if e == c.sceneRef {
+			continue // not timed
+		}
 		var ms, al, by []float64
 		var pages, errs, unsup int
 		var total float64
@@ -406,11 +422,16 @@ func report(c config, rows []row) string {
 		fmt.Fprintf(&b, "| %s | %d | %d | %d | %.1f | %.1f | %.0f | %s | %s |\n", e, pages, unsup, errs, median(ms), pct(ms, 0.9), total, alS, byS)
 	}
 
-	b.WriteString("\n## Accuracy against " + c.ref + "\n\nTarget: same size, mean < 1/255 and < 0.5 % of pixels deviating by more than 32/255.\n\n| engine | category | pages | pass | size mismatch | mean dev. (median) | >32/255 (median) | SSIM (median) |\n|---|---|---:|---:|---:|---:|---:|---:|\n")
+	against := c.ref
+	switch c.sceneRef {
+	case "":
+	case "reference":
+		against += fmt.Sprintf("; synthetic scenes against reference (each operation's coverage %d×%d supersampled)", engine.RefFactor, engine.RefFactor)
+	default:
+		against += "; synthetic scenes against " + c.sceneRef
+	}
+	b.WriteString("\n## Accuracy against " + against + "\n\nTarget: same size, mean < 1/255 and < 0.5 % of pixels deviating by more than 32/255.\n\n| engine | category | pages | pass | size mismatch | mean dev. (median) | >32/255 (median) | SSIM (median) |\n|---|---|---:|---:|---:|---:|---:|---:|\n")
 	for _, e := range c.engines {
-		if e == c.ref {
-			continue
-		}
 		bycat := map[string][]*metrics.Result{}
 		for _, r := range rows {
 			if r.Engine == e && r.Cmp != nil {
