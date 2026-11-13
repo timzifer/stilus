@@ -49,9 +49,13 @@ type Target struct {
 	uniform *wgpu.Buffer
 	spanBuf *wgpu.Buffer
 	dataBuf *wgpu.Buffer
-	bind    *wgpu.BindGroup
-	read    *wgpu.Buffer    // readback, made on first ReadRGBA
-	pbind   *wgpu.BindGroup // texture group of presenters, made on first Draw
+	// layerBuf holds the copies a layer operation reads (layer.go), at
+	// least layerNeed bytes.
+	layerBuf  *wgpu.Buffer
+	layerNeed int
+	bind      *wgpu.BindGroup
+	read      *wgpu.Buffer    // readback, made on first ReadRGBA
+	pbind     *wgpu.BindGroup // texture group of presenters, made on first Draw
 
 	spans   []byte // recorded spans, spanBytes each
 	data    []byte // coverage bytes and colours
@@ -79,6 +83,9 @@ type Target struct {
 	maskRow []uint8
 
 	meshStart, meshIDs, meshFill []int32 // a mesh's grid, while recorded
+
+	layerTmp []byte // an image's copy for the layer buffer
+	err      error  // the first layer operation that failed (Err)
 }
 
 // NewTarget makes a w × h target, cleared to transparent.
@@ -167,7 +174,8 @@ func (t *Target) Blitter(p *stilus.Paint) stilus.Blitter {
 
 // grow makes the GPU buffers hold at least spans and data bytes.
 func (t *Target) grow(spans, data int) error {
-	if t.spanBuf != nil && int(t.spanBuf.Size()) >= spans && int(t.dataBuf.Size()) >= data {
+	if t.spanBuf != nil && int(t.spanBuf.Size()) >= spans && int(t.dataBuf.Size()) >= data &&
+		int(t.layerBuf.Size()) >= t.layerNeed {
 		return nil
 	}
 	newBuf := func(old *wgpu.Buffer, n int, label string) (*wgpu.Buffer, error) {
@@ -200,6 +208,9 @@ func (t *Target) grow(spans, data int) error {
 	if t.dataBuf, err = newBuf(t.dataBuf, data, "stilus-data"); err != nil {
 		return err
 	}
+	if t.layerBuf, err = newBuf(t.layerBuf, t.layerNeed, "stilus-layer"); err != nil {
+		return err
+	}
 	if t.bind != nil {
 		t.bind.Release()
 	}
@@ -210,6 +221,7 @@ func (t *Target) grow(spans, data int) error {
 			{Binding: 0, Buffer: t.uniform},
 			{Binding: 1, Buffer: t.spanBuf},
 			{Binding: 2, Buffer: t.dataBuf},
+			{Binding: 3, Buffer: t.layerBuf},
 		},
 	})
 	if err != nil {
@@ -350,7 +362,7 @@ func (t *Target) ReadRGBA(dst *image.RGBA) error {
 
 // Close releases the target's GPU resources.
 func (t *Target) Close() {
-	for _, b := range []**wgpu.Buffer{&t.uniform, &t.spanBuf, &t.dataBuf, &t.read} {
+	for _, b := range []**wgpu.Buffer{&t.uniform, &t.spanBuf, &t.dataBuf, &t.layerBuf, &t.read} {
 		if *b != nil {
 			(*b).Release()
 			*b = nil

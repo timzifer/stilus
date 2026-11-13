@@ -16,7 +16,7 @@
 // computed per pixel from the record at the word offset color: a
 // gradient's (gradient.go), with bit 31 of its first word an image's
 // (image.go), with bit 30 a mesh's (mesh.go), with bit 28 a coverage
-// mask's (glyph.go).
+// mask's (glyph.go), with bit 27 a layer's (layer.go).
 
 struct Span {
     pos: u32,   // x0 | y0 << 16
@@ -33,6 +33,8 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var<storage, read> spans: array<Span>;
 @group(0) @binding(2) var<storage, read> words: array<u32>;
+// What a layer operation reads, copied before it (layer.go).
+@group(0) @binding(3) var<storage, read> layer: array<u32>;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -477,11 +479,284 @@ fn alphaMaskColor(r: u32, p: vec2<f32>) -> vec4<f32> {
     return unpack4x8unorm(c);
 }
 
+// ch returns channel i (0 R … 3 A) of a packed colour.
+fn ch(c: u32, i: u32) -> u32 {
+    return (c >> (i * 8u)) & 255u;
+}
+
+fn pack4(r: u32, g: u32, b: u32, a: u32) -> u32 {
+    return r | (g << 8u) | (b << 16u) | (a << 24u);
+}
+
+// sub8 is the complement a − c of a premultiplied channel, 0 above a.
+fn sub8(a: u32, c: u32) -> u32 {
+    if (c > a) {
+        return 0u;
+    }
+    return a - c;
+}
+
+fn hardLight(b: f32, s: f32) -> f32 {
+    if (s <= 0.5) {
+        return b * 2.0 * s;
+    }
+    let t = 2.0 * s - 1.0;
+    return b + t - b * t;
+}
+
+// blendChannel is B(b, s) of a separable mode.
+fn blendChannel(bm: u32, b: f32, s: f32) -> f32 {
+    switch (bm) {
+        case 1u: { return b * s; }
+        case 2u: { return b + s - b * s; }
+        case 3u: { return hardLight(s, b); }
+        case 4u: { return min(b, s); }
+        case 5u: { return max(b, s); }
+        case 6u: {
+            if (b == 0.0) { return 0.0; }
+            if (s >= 1.0) { return 1.0; }
+            return min(1.0, b / (1.0 - s));
+        }
+        case 7u: {
+            if (b >= 1.0) { return 1.0; }
+            if (s <= 0.0) { return 0.0; }
+            return 1.0 - min(1.0, (1.0 - b) / s);
+        }
+        case 8u: { return hardLight(b, s); }
+        case 9u: {
+            if (s <= 0.5) {
+                return b - (1.0 - 2.0 * s) * b * (1.0 - b);
+            }
+            var d = sqrt(b);
+            if (b <= 0.25) {
+                d = ((16.0 * b - 12.0) * b + 4.0) * b;
+            }
+            return b + (2.0 * s - 1.0) * (d - b);
+        }
+        case 10u: { return abs(b - s); }
+        case 11u: { return b + s - 2.0 * b * s; }
+        default: { return s; }
+    }
+}
+
+fn lum(c: vec3<f32>) -> f32 {
+    return 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
+}
+
+fn setLum(c0: vec3<f32>, l0: f32) -> vec3<f32> {
+    let d = l0 - lum(c0);
+    var c = c0 + vec3<f32>(d);
+    let l = lum(c);
+    let n = min(c.x, min(c.y, c.z));
+    let x = max(c.x, max(c.y, c.z));
+    var r: vec3<f32>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        var v = c[i];
+        if (n < 0.0 && l - n > 0.0) {
+            v = l + (v - l) * l / (l - n);
+        }
+        if (x > 1.0 && x - l > 0.0) {
+            v = l + (v - l) * (1.0 - l) / (x - l);
+        }
+        r[i] = clamp(v, 0.0, 1.0);
+    }
+    return r;
+}
+
+fn sat(c: vec3<f32>) -> f32 {
+    return max(c.x, max(c.y, c.z)) - min(c.x, min(c.y, c.z));
+}
+
+fn setSat(c: vec3<f32>, s: f32) -> vec3<f32> {
+    var lo = 0u;
+    var mid = 1u;
+    var hi = 2u;
+    if (c[lo] > c[mid]) { let t = lo; lo = mid; mid = t; }
+    if (c[mid] > c[hi]) { let t = mid; mid = hi; hi = t; }
+    if (c[lo] > c[mid]) { let t = lo; lo = mid; mid = t; }
+    var r = vec3<f32>(0.0);
+    if (c[hi] > c[lo]) {
+        r[mid] = (c[mid] - c[lo]) * s / (c[hi] - c[lo]);
+        r[hi] = s;
+    }
+    return r;
+}
+
+fn blendFn(bm: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    switch (bm) {
+        case 12u: { return setLum(setSat(cs, sat(cb)), lum(cb)); }
+        case 13u: { return setLum(setSat(cb, sat(cs)), lum(cb)); }
+        case 14u: { return setLum(cs, lum(cb)); }
+        case 15u: { return setLum(cb, lum(cs)); }
+        default: {
+            return vec3<f32>(blendChannel(bm, cb.x, cs.x), blendChannel(bm, cb.y, cs.y), blendChannel(bm, cb.z, cs.z));
+        }
+    }
+}
+
+// blendTab is stilus's blendTable: B of opaque 8-bit colours, rounded.
+fn blendTab(bm: u32, b: u32, s: u32) -> u32 {
+    let v = blendChannel(bm, f32(b) / 255.0, f32(s) / 255.0);
+    return u32(clamp(v, 0.0, 1.0) * 255.0 + 0.5);
+}
+
+// blendPixel is stilus's: the colour a premultiplied source s (alpha sa)
+// is drawn over the backdrop d (alpha da) with; the alpha stays.
+fn blendPixel(bm: u32, s: u32, d: u32) -> u32 {
+    let sa = ch(s, 3u);
+    let da = ch(d, 3u);
+    if (sa == 255u && da == 255u && bm < 12u) {
+        return pack4(blendTab(bm, ch(d, 0u), ch(s, 0u)), blendTab(bm, ch(d, 1u), ch(s, 1u)), blendTab(bm, ch(d, 2u), ch(s, 2u)), sa);
+    }
+    let as_ = f32(sa) / 255.0;
+    let ab = f32(da) / 255.0;
+    var cs: vec3<f32>;
+    var cb: vec3<f32>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        cs[i] = min(f32(ch(s, i)) / f32(sa), 1.0);
+        cb[i] = min(f32(ch(d, i)) / f32(da), 1.0);
+    }
+    let bl = blendFn(bm, cb, cs);
+    var o: array<u32, 3>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        let v = f32(ch(s, i)) * (1.0 - ab) + as_ * ab * bl[i] * 255.0;
+        o[i] = u32(min(max(v + 0.5, 0.0), f32(sa)));
+    }
+    return pack4(o[0], o[1], o[2], sa);
+}
+
+// removeBackdrop is stilus's: the layer's pixel v of a non-isolated group
+// without the backdrop b0, αgn being the alpha of alone.
+fn removeBackdrop(v: u32, b0: u32, alone: u32) -> u32 {
+    let an = ch(v, 3u);
+    let ga = ch(alone, 3u);
+    if ((ga & an) == 255u) {
+        return v;
+    }
+    if (ga == 0u || an == 0u) {
+        return 0u;
+    }
+    let a0 = ch(b0, 3u);
+    let g = ga;
+    let num = 255u * g + (255u - g) * a0;
+    let den = 255u * an;
+    let bb = mul8(b0, 255u - g);
+    var o: array<u32, 3>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        let q = (ch(v, i) * num + den / 2u) / den;
+        let b = ch(bb, i);
+        var c = 0u;
+        if (q > b) {
+            c = min(q - b, g);
+        }
+        o[i] = c;
+    }
+    return pack4(o[0], o[1], o[2], g);
+}
+
+// layerColor is LayerShader's colour s at pixel centre p, from the copies
+// of the layer operation (layer.go), which the canvas then composites
+// over the target with the coverage.
+fn layerColor(r: u32, p: vec2<f32>) -> vec4<f32> {
+    let flags = words[r];
+    let bm = flags & 255u;
+    let x = i32(floor(p.x)) - bitcast<i32>(words[r + 2u]);
+    let y = i32(floor(p.y)) - bitcast<i32>(words[r + 3u]);
+    if (x < 0 || y < 0 || u32(x) >= words[r + 4u] || u32(y) >= words[r + 5u]) {
+        return vec4<f32>(0.0);
+    }
+    let idx = u32(y) * words[r + 6u] + u32(x);
+    var v = layer[words[r + 7u] + idx];
+    if ((flags & 512u) != 0u) {
+        v = removeBackdrop(v, layer[words[r + 10u] + idx], layer[words[r + 11u] + idx]);
+    }
+    let alpha = words[r + 1u];
+    let masked = (flags & 256u) != 0u;
+    var m = 255u;
+    if (masked) {
+        m = layer[words[r + 9u] + idx] >> 24u;
+    }
+    if (bm == 0u) {
+        if (!masked) {
+            if (alpha != 255u) {
+                v = mul8(v, alpha);
+            }
+            return unpack4x8unorm(v);
+        }
+        v = mul8(v, div255(alpha * m));
+        if (ch(v, 3u) == 0u) {
+            return vec4<f32>(0.0);
+        }
+        return unpack4x8unorm(v);
+    }
+    let k = div255(alpha * m);
+    let d = layer[words[r + 8u] + idx];
+    let da = ch(d, 3u);
+    let subtractive = (flags & 1024u) != 0u;
+    if ((bm == 1u || bm == 2u) && !subtractive) {
+        if (k != 255u) {
+            v = mul8(v, k);
+        }
+        let sa = ch(v, 3u);
+        if (sa == 0u) {
+            return vec4<f32>(0.0);
+        }
+        if (da == 0u) {
+            return unpack4x8unorm(v);
+        }
+        let over = ch(v, 0u) > sa || ch(v, 1u) > sa || ch(v, 2u) > sa || ch(d, 0u) > da || ch(d, 1u) > da || ch(d, 2u) > da;
+        if (over) {
+            return unpack4x8unorm(blendPixel(bm, v, d));
+        }
+        var o: array<u32, 3>;
+        for (var i = 0u; i < 3u; i = i + 1u) {
+            let sc = ch(v, i);
+            if (bm == 2u) {
+                o[i] = div255(255u * sc + ch(d, i) * (sa - sc));
+            } else {
+                o[i] = div255(sc * (255u - da + ch(d, i)));
+            }
+        }
+        return unpack4x8unorm(pack4(o[0], o[1], o[2], sa));
+    }
+    if (k != 255u) {
+        v = mul8(v, k);
+    }
+    let a = ch(v, 3u);
+    if (a == 0u) {
+        return vec4<f32>(0.0);
+    }
+    if (da == 0u) {
+        return unpack4x8unorm(v);
+    }
+    if (bm == 255u) {
+        var o: array<u32, 3>;
+        for (var i = 0u; i < 3u; i = i + 1u) {
+            o[i] = min(div255(ch(v, i) * (255u - da) + a * ch(d, i)), a);
+        }
+        return unpack4x8unorm(pack4(o[0], o[1], o[2], a));
+    }
+    var s = v;
+    var q = d;
+    if (subtractive) {
+        s = pack4(sub8(a, ch(v, 0u)), sub8(a, ch(v, 1u)), sub8(a, ch(v, 2u)), a);
+        q = pack4(sub8(da, ch(d, 0u)), sub8(da, ch(d, 1u)), sub8(da, ch(d, 2u)), da);
+    }
+    var o = blendPixel(bm, s, q);
+    if (subtractive) {
+        o = pack4(sub8(a, ch(o, 0u)), sub8(a, ch(o, 1u)), sub8(a, ch(o, 2u)), a);
+    }
+    return unpack4x8unorm(o);
+}
+
 fn base(s: Span, p: vec2<f32>) -> vec4<f32> {
     if ((s.data & 0x20000000u) != 0u) {
         let kind = words[s.color];
         if ((kind & 0x10000000u) != 0u) {
             return alphaMaskColor(s.color, p);
+        }
+        if ((kind & 0x08000000u) != 0u) {
+            return layerColor(s.color, p);
         }
         if ((kind & 0x80000000u) != 0u) {
             return imageColor(s.color, p);
