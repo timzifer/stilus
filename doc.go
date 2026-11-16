@@ -45,7 +45,9 @@
 // Strokes are filled analytically between their corners: rows bounded only
 // by a segment's two parallel sides get each pixel's exact area in closed
 // form; only the rows around joins and caps go through the accumulator.
-// Strokes thinner than one device pixel are drawn one pixel wide.
+// Strokes of width 0 are drawn one device pixel wide, thin strokes at
+// their width (StrokeStyle.FullHairlines draws them one pixel wide too,
+// as PDFium does).
 // Rectangle clips cost nothing per pixel; other clips are rasterized once
 // into a mask over their bounds.
 //

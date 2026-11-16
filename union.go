@@ -126,7 +126,7 @@ func (u *Union) Shape(s *Shape) {
 // against the outlines of strokes under the identity: under a mirroring
 // transform, except for hairlines, which are outlined in device space.
 func strokeReversed(m Matrix, st *StrokeStyle, pr strokePrep) bool {
-	return m.Det() < 0 && !(st.Width*pr.sm < 1)
+	return m.Det() < 0 && !hairline(st, pr.sm)
 }
 
 // fillReversed reports whether p under m winds against stroke outlines

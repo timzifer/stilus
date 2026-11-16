@@ -29,6 +29,14 @@ type StrokeStyle struct {
 	MiterLimit float64   // PDF default 10; values < 1 are treated as 1
 	Dash       []float64 // on/off lengths; empty means solid
 	DashPhase  float64
+	// FullHairlines draws a stroke thinner than one device pixel one
+	// pixel wide in device space, at full coverage, as PDFium does: every
+	// line stays as dark at any scale. By default only a stroke of width
+	// 0 (the thinnest line the device can render) is drawn so; a thin
+	// stroke of non-zero width is drawn at its width, with the exact area
+	// it covers, as light as it is, as MuPDF and Ghostscript draw it, and
+	// thin lines close together do not merge into a solid blot.
+	FullHairlines bool
 }
 
 // LineSink receives device-space line segments. Segments emitted by the
@@ -172,11 +180,18 @@ func (s *Stroker) Truncated() bool { return s.truncated }
 // else 1.
 func (s *Stroker) Coverage() float64 { return s.coverage }
 
-// IsHairline reports whether st under m is thinner than one device pixel in
-// every direction. Such strokes are drawn one pixel wide in device space,
-// like PDFium.
+// IsHairline reports whether st under m is drawn as a hairline: one pixel
+// wide in device space, like PDFium. Such are strokes of width 0, and
+// with st.FullHairlines every stroke thinner than one device pixel in
+// every direction.
 func IsHairline(m Matrix, st *StrokeStyle) bool {
-	return st.Width*sigmaMax(m) < 1
+	return hairline(st, sigmaMax(m))
+}
+
+// hairline is IsHairline with sm = sigmaMax(m).
+func hairline(st *StrokeStyle, sm float64) bool {
+	w := st.Width * sm
+	return w < 1 && (w == 0 || st.FullHairlines)
 }
 
 // segmentFiller is the device side of the analytic stroke path (see
@@ -212,9 +227,9 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 		return
 	}
 	s.m, s.st = m, st
-	// Strokes thinner than a device pixel are drawn one pixel wide, like
-	// PDFium: their offsets are taken in device space.
-	s.dev = st.Width*sm < 1
+	// Hairlines are drawn one pixel wide, like PDFium: their offsets are
+	// taken in device space.
+	s.dev = hairline(st, sm)
 	s.dashFast = s.seg != nil && dashFastOK(m, st, s.dev, sm)
 	s.hw = st.Width / 2
 	r := s.hw * sm
@@ -887,7 +902,7 @@ func denseDashSM(st *StrokeStyle, sm float64) (float64, bool) {
 		return 1, false
 	}
 	scale, w := 1.0, st.Width
-	if st.Width*sm < 1 {
+	if hairline(st, sm) {
 		scale, w = sm, 1
 	}
 	return meanCoverage(pat, scale, w, st.Cap), true

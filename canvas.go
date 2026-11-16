@@ -346,8 +346,8 @@ func (c *Canvas) fillRect(p *Path, m Matrix, st *clipState, paint *Paint) bool {
 	return true
 }
 
-// Stroke strokes p with style st (in user space) under m. Strokes thinner
-// than a device pixel are drawn one device pixel wide.
+// Stroke strokes p with style st (in user space) under m. Hairlines
+// (IsHairline) are drawn one device pixel wide.
 func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	defer c.guard()
 	cs := c.top()

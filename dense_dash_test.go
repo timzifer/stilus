@@ -53,17 +53,19 @@ func TestDenseDashCanvas(t *testing.T) {
 		cap   Cap
 		dash  []float64
 		want  uint8 // alpha in the middle of the line
+		full  bool  // StrokeStyle.FullHairlines
 	}{
-		{2, ButtCap, []float64{0.002, 0.002}, 128},
-		{2, SquareCap, []float64{0.002, 0.002}, 255},
-		{2, RoundCap, []float64{0.002, 0.002}, 255},
-		{0.5, ButtCap, []float64{0.001, 0.003}, 32}, // hairline: half a pixel per row
-		{2, ButtCap, []float64{0.5, 0.004}, 254},    // off entry tiny, period > 1/4
-		{2, ButtCap, manyEntries(100, 0.005), 128},  // long pattern of tiny entries
+		{2, ButtCap, []float64{0.002, 0.002}, 128, false},
+		{2, SquareCap, []float64{0.002, 0.002}, 255, false},
+		{2, RoundCap, []float64{0.002, 0.002}, 255, false},
+		{0.5, ButtCap, []float64{0.001, 0.003}, 16, false}, // half a pixel wide, a quarter of it on
+		{0.5, ButtCap, []float64{0.001, 0.003}, 32, true},  // hairline at full coverage
+		{2, ButtCap, []float64{0.5, 0.004}, 254, false},    // off entry tiny, period > 1/4
+		{2, ButtCap, manyEntries(100, 0.005), 128, false},  // long pattern of tiny entries
 	} {
 		img := image.NewRGBA(image.Rect(0, 0, 2000, 10))
 		c := NewCanvas(img)
-		c.Stroke(&p, Identity, &StrokeStyle{Width: tc.width, Cap: tc.cap, Dash: tc.dash}, white)
+		c.Stroke(&p, Identity, &StrokeStyle{Width: tc.width, Cap: tc.cap, Dash: tc.dash, FullHairlines: tc.full}, white)
 		if c.Err() != nil {
 			t.Fatalf("%+v: %v", tc, c.Err())
 		}
