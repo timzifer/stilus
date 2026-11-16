@@ -25,9 +25,8 @@ import "image"
 //
 // Elements that cannot be summed are drawn on their own after the union,
 // as Canvas.Fill, Canvas.Stroke or Canvas.FillShape draw them: EvenOdd
-// fills, strokes whose dash pattern is too dense to resolve (drawn at the
-// pattern's mean coverage), and hairlines of non-zero width (drawn at a
-// coverage scaled by their width, unless StrokeStyle.FullHairlines).
+// fills, and strokes whose dash pattern is too dense to resolve (drawn at
+// the pattern's mean coverage).
 //
 // A Union keeps references to the paths, styles and shapes it is given;
 // they must not change until it is drawn. The zero value is empty; Reset
@@ -50,7 +49,7 @@ const (
 // once instead of per band.
 type unionOp struct {
 	kind unionKind
-	sep  bool // drawn on its own: EvenOdd, a dense dash pattern or a thin hairline
+	sep  bool // drawn on its own: EvenOdd, or a dense dash pattern
 	neg  bool // its edges are reversed to wind like the other elements
 	rule FillRule
 	p    *Path
@@ -98,7 +97,7 @@ func (u *Union) Stroke(p *Path, m Matrix, st *StrokeStyle) {
 	}
 	pr := prepStroke(m, st)
 	u.ops = append(u.ops, unionOp{
-		kind: unionStroke, sep: pr.scaled(), p: p, st: st, m: m, pr: pr,
+		kind: unionStroke, sep: pr.dense, p: p, st: st, m: m, pr: pr,
 		bb:  m.transformRect(p.Bounds()),
 		pad: strokePad(st, pr.sm),
 		neg: strokeReversed(m, st, pr),
@@ -115,7 +114,7 @@ func (u *Union) Shape(s *Shape) {
 		op.sep = s.rule != NonZero
 		op.neg = fillReversed(&s.path, s.m)
 	case shapeStroke:
-		op.sep = s.pr.scaled()
+		op.sep = s.pr.dense
 		op.neg = strokeReversed(s.m, &s.st, s.pr)
 	default:
 		return
@@ -127,7 +126,7 @@ func (u *Union) Shape(s *Shape) {
 // against the outlines of strokes under the identity: under a mirroring
 // transform, except for hairlines, which are outlined in device space.
 func strokeReversed(m Matrix, st *StrokeStyle, pr strokePrep) bool {
-	return m.Det() < 0 && !(st.Width*pr.sm < 1)
+	return m.Det() < 0 && !hairline(st, pr.sm)
 }
 
 // fillReversed reports whether p under m winds against stroke outlines

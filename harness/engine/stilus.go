@@ -46,7 +46,7 @@ func openScene(data []byte) (*scenes.Scene, error) {
 	}
 	for _, s := range scenes.All() {
 		if s.Name == string(name) {
-			// Hairlines at full coverage, as PDFium and the reference
+			// Thin strokes as hairlines, as PDFium and the reference
 			// draw them, so that the comparison measures the rasterizer
 			// and not the convention (stilus.StrokeStyle.FullHairlines).
 			// All builds the scene anew: its styles are its own.

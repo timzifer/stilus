@@ -29,14 +29,13 @@ type StrokeStyle struct {
 	MiterLimit float64   // PDF default 10; values < 1 are treated as 1
 	Dash       []float64 // on/off lengths; empty means solid
 	DashPhase  float64
-	// FullHairlines draws a stroke thinner than one device pixel at full
-	// coverage, as PDFium does. Such a stroke is drawn one device pixel
-	// wide either way (see IsHairline); by default its coverage is scaled
-	// by its width in device pixels, along the widest direction of the
-	// transform, so that a thin line looks as light as it is, as MuPDF
-	// and Ghostscript draw it, and many thin lines close together do not
-	// merge into a solid blot. A stroke of width 0, the thinnest line the
-	// device can render, is drawn at full coverage either way.
+	// FullHairlines draws a stroke thinner than one device pixel one
+	// pixel wide in device space, at full coverage, as PDFium does: every
+	// line stays as dark at any scale. By default only a stroke of width
+	// 0 (the thinnest line the device can render) is drawn so; a thin
+	// stroke of non-zero width is drawn at its width, with the exact area
+	// it covers, as light as it is, as MuPDF and Ghostscript draw it, and
+	// thin lines close together do not merge into a solid blot.
 	FullHairlines bool
 }
 
@@ -148,38 +147,13 @@ func sigmaMax(m Matrix) float64 {
 type strokePrep struct {
 	sm    float64 // sigmaMax(m)
 	dense bool    // denseDash: the pattern is drawn solid ...
-	f     float64 // ... at this mean coverage (1 when not dense)
-	// thin is the coverage of a hairline of non-zero width: its device
-	// width (thinCoverage); 1 for other strokes.
-	thin float64
+	f     float64 // ... at this mean coverage
 }
 
 func prepStroke(m Matrix, st *StrokeStyle) strokePrep {
 	sm := sigmaMax(m)
 	f, dense := denseDashSM(st, sm)
-	return strokePrep{sm: sm, dense: dense, f: f, thin: thinCoverage(st, sm)}
-}
-
-// thinCoverage returns the factor a stroke's coverage is scaled by, sm
-// being sigmaMax of its transform: its width in device pixels if it is
-// thinner than one but not of width 0, unless st.FullHairlines; else 1.
-func thinCoverage(st *StrokeStyle, sm float64) float64 {
-	if w := st.Width * sm; !st.FullHairlines && w > 0 && w < 1 {
-		return w
-	}
-	return 1
-}
-
-// scaled reports whether the stroke's coverage is scaled (by cov): a dense
-// dash pattern drawn solid, or a thin hairline.
-func (pr strokePrep) scaled() bool { return pr.dense || pr.thin < 1 }
-
-// cov returns the factor the stroke's coverage is scaled by.
-func (pr strokePrep) cov() float64 {
-	if pr.dense {
-		return pr.f * pr.thin
-	}
-	return pr.thin
+	return strokePrep{sm: sm, dense: dense, f: f}
 }
 
 // Stroke emits the outline of p stroked with st under m into sink.
@@ -203,16 +177,21 @@ func (s *Stroker) Truncated() bool { return s.truncated }
 
 // Coverage reports the factor to apply to the coverage of the last stroke's
 // outline: the mean on-fraction of a dash pattern emitted as a solid stroke,
-// times the device width of a hairline of non-zero width (see
-// StrokeStyle.FullHairlines), else 1.
+// else 1.
 func (s *Stroker) Coverage() float64 { return s.coverage }
 
-// IsHairline reports whether st under m is thinner than one device pixel in
-// every direction. Such strokes are drawn one pixel wide in device space,
-// like PDFium; unless st.FullHairlines, at a coverage scaled by their
-// width.
+// IsHairline reports whether st under m is drawn as a hairline: one pixel
+// wide in device space, like PDFium. Such are strokes of width 0, and
+// with st.FullHairlines every stroke thinner than one device pixel in
+// every direction.
 func IsHairline(m Matrix, st *StrokeStyle) bool {
-	return st.Width*sigmaMax(m) < 1
+	return hairline(st, sigmaMax(m))
+}
+
+// hairline is IsHairline with sm = sigmaMax(m).
+func hairline(st *StrokeStyle, sm float64) bool {
+	w := st.Width * sm
+	return w < 1 && (w == 0 || st.FullHairlines)
 }
 
 // segmentFiller is the device side of the analytic stroke path (see
@@ -248,11 +227,9 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 		return
 	}
 	s.m, s.st = m, st
-	s.coverage = pr.thin
-	// Strokes thinner than a device pixel are drawn one pixel wide, like
-	// PDFium: their offsets are taken in device space. Their coverage is
-	// scaled by their width (pr.thin) unless st.FullHairlines.
-	s.dev = st.Width*sm < 1
+	// Hairlines are drawn one pixel wide, like PDFium: their offsets are
+	// taken in device space.
+	s.dev = hairline(st, sm)
 	s.dashFast = s.seg != nil && dashFastOK(m, st, s.dev, sm)
 	s.hw = st.Width / 2
 	r := s.hw * sm
@@ -287,7 +264,7 @@ func (s *Stroker) run(p *Path, m Matrix, st *StrokeStyle, pr strokePrep) {
 				s.coverage = 0
 				return
 			}
-			dashed, s.coverage = false, pr.cov()
+			dashed, s.coverage = false, f
 		}
 	}
 
@@ -925,7 +902,7 @@ func denseDashSM(st *StrokeStyle, sm float64) (float64, bool) {
 		return 1, false
 	}
 	scale, w := 1.0, st.Width
-	if st.Width*sm < 1 {
+	if hairline(st, sm) {
 		scale, w = sm, 1
 	}
 	return meanCoverage(pat, scale, w, st.Cap), true

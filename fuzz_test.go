@@ -93,6 +93,7 @@ func FuzzStroke(f *testing.F) {
 		for _, st := range []*StrokeStyle{
 			{Width: w, Join: RoundJoin, Cap: RoundCap},
 			{Width: w, Join: MiterJoin, MiterLimit: 4, Cap: SquareCap, Dash: []float64{1, 0.5}},
+			{Width: w / 4096, Join: RoundJoin, Cap: RoundCap}, // thin, at its width
 		} {
 			c.Stroke(p, m, st, paint)
 			c.Stroke(p, m, st, opaque)

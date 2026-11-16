@@ -6,9 +6,9 @@ import (
 )
 
 // TestThinHairlines checks the coverage of strokes thinner than a device
-// pixel: drawn one pixel wide, at their device width unless
-// StrokeStyle.FullHairlines, at full coverage for width 0, through every
-// way a stroke is drawn.
+// pixel: drawn at their width unless StrokeStyle.FullHairlines, one pixel
+// wide at full coverage with it and for width 0, through every way a
+// stroke is drawn.
 func TestThinHairlines(t *testing.T) {
 	var p Path
 	p.MoveTo(10, 20.5)
@@ -24,7 +24,7 @@ func TestThinHairlines(t *testing.T) {
 		{"quarter", StrokeStyle{Width: 0.25}, Identity, 64},
 		{"quarter, full", StrokeStyle{Width: 0.25, FullHairlines: true}, Identity, 255},
 		{"half, scaled down", StrokeStyle{Width: 1}, Scale(0.5, 0.5), 128},
-		{"almost a pixel", StrokeStyle{Width: 0.99}, Identity, 252},
+		{"most of a pixel", StrokeStyle{Width: 0.9}, Identity, 230},
 		{"one pixel", StrokeStyle{Width: 1}, Identity, 255},
 		{"tiny", StrokeStyle{Width: 0.001}, Identity, 0},
 		{"tiny, full", StrokeStyle{Width: 0.001, FullHairlines: true}, Identity, 255},
@@ -73,22 +73,16 @@ func TestThinHairlines(t *testing.T) {
 			c.Fill(&r, Identity, NonZero, white)
 			c.PopClip()
 		})
-		var s Stroker
-		r := NewRasterizer(image.Rect(0, 0, 100, 40))
-		s.Stroke(r, &q, tc.m, &tc.st)
-		want := float64(tc.want) / 255
-		if tc.want == 0 {
-			want = 0.001
-		}
-		if d := s.Coverage() - want; d > 0.003 || d < -0.003 {
-			t.Errorf("%s: Stroker.Coverage %.4f, want %.4f", tc.name, s.Coverage(), want)
+		if got, want := IsHairline(tc.m, &tc.st), tc.st.Width == 0 || tc.st.FullHairlines && tc.st.Width*tc.m[0] < 1; got != want {
+			t.Errorf("%s: IsHairline %v, want %v", tc.name, got, want)
 		}
 	}
 }
 
 // TestThinHairlinesMerge checks the blot thin hairlines close together
 // make: dense lines, a third of a pixel apart and a sixth of a pixel wide,
-// stay grey by default, as their ink is, instead of covering every pixel.
+// cover half of every pixel by default, as their ink does, instead of all
+// of it.
 func TestThinHairlinesMerge(t *testing.T) {
 	var p Path
 	for y := float32(2); y < 38; y += 1.0 / 3 {
@@ -100,7 +94,7 @@ func TestThinHairlinesMerge(t *testing.T) {
 		c := NewCanvas(img)
 		c.Stroke(&p, Identity, &StrokeStyle{Width: 1.0 / 6, FullHairlines: full}, white)
 		a := img.RGBAAt(20, 20).A
-		if full && a != 255 || !full && a > 50 {
+		if full && a != 255 || !full && (a < 124 || a > 132) {
 			t.Errorf("full %v: alpha %d in the hatch", full, a)
 		}
 	}

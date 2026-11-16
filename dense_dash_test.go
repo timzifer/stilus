@@ -58,7 +58,7 @@ func TestDenseDashCanvas(t *testing.T) {
 		{2, ButtCap, []float64{0.002, 0.002}, 128, false},
 		{2, SquareCap, []float64{0.002, 0.002}, 255, false},
 		{2, RoundCap, []float64{0.002, 0.002}, 255, false},
-		{0.5, ButtCap, []float64{0.001, 0.003}, 16, false}, // hairline: half a pixel per row, at half coverage
+		{0.5, ButtCap, []float64{0.001, 0.003}, 16, false}, // half a pixel wide, a quarter of it on
 		{0.5, ButtCap, []float64{0.001, 0.003}, 32, true},  // hairline at full coverage
 		{2, ButtCap, []float64{0.5, 0.004}, 254, false},    // off entry tiny, period > 1/4
 		{2, ButtCap, manyEntries(100, 0.005), 128, false},  // long pattern of tiny entries

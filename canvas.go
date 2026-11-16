@@ -346,9 +346,8 @@ func (c *Canvas) fillRect(p *Path, m Matrix, st *clipState, paint *Paint) bool {
 	return true
 }
 
-// Stroke strokes p with style st (in user space) under m. Strokes thinner
-// than a device pixel are drawn one device pixel wide, at a coverage
-// scaled by their width unless st.FullHairlines.
+// Stroke strokes p with style st (in user space) under m. Hairlines
+// (IsHairline) are drawn one device pixel wide.
 func (c *Canvas) Stroke(p *Path, m Matrix, st *StrokeStyle, paint *Paint) {
 	defer c.guard()
 	cs := c.top()
@@ -404,10 +403,9 @@ func strokeMisses(bb Rect, pad float64, cb image.Rectangle) bool {
 // and false when a dense dash pattern leaves nothing to draw.
 func (c *Canvas) strokePaint(cs *clipState, paint *Paint, pr strokePrep) (Blitter, bool) {
 	b := c.paint(paint)
-	if pr.scaled() {
-		// A dense dash pattern is drawn as a solid stroke at the pattern's
-		// mean coverage, a thin hairline at its width.
-		c.scale.f, c.scale.next = uint32(math.Round(pr.cov()*255)), b
+	if pr.dense {
+		// Drawn as a solid stroke at the pattern's mean coverage.
+		c.scale.f, c.scale.next = uint32(math.Round(pr.f*255)), b
 		if c.scale.f == 0 {
 			return nil, false
 		}
@@ -421,7 +419,7 @@ func (c *Canvas) strokePaint(cs *clipState, paint *Paint, pr strokePrep) (Blitte
 // are mayOverlap and singleSegment of its path and style.
 func (c *Canvas) strokeFast(cs *clipState, b Blitter, paint *Paint, pr strokePrep, overlap, single bool) bool {
 	opaque := c.opaque(paint)
-	if pr.scaled() || !(opaque && (cs.mask == nil || !overlap) || single) {
+	if pr.dense || !(opaque && (cs.mask == nil || !overlap) || single) {
 		return false
 	}
 	// Opaque: the analytic middle rows may be composited separately from
@@ -677,8 +675,8 @@ func (c *Canvas) clipMask(p *Path, m Matrix, rule FillRule, st *StrokeStyle) {
 	// rectangle clips stay exact in rect and are applied when drawing.
 	var b Blitter = &c.writer
 	if st != nil {
-		if pr.scaled() {
-			c.scale.f, c.scale.next = uint32(math.Round(pr.cov()*255)), b
+		if pr.dense {
+			c.scale.f, c.scale.next = uint32(math.Round(pr.f*255)), b
 			b = &c.scale
 		}
 		c.s.stroke(&c.r, p, m, st, pr)

@@ -360,6 +360,7 @@ func unionCases() []unionCase {
 		{seams: true, name: "hatch", fills: hatch, m: Identity, stroke: &StrokeStyle{Width: 2.07}},
 		{seams: true, name: "hatch, mirrored", fills: hatch, m: Scale(-1, 1).Mul(Translate(40, 0)), stroke: &StrokeStyle{Width: 2.07}},
 		{name: "hatch, hairlines mirrored", fills: hair, m: Scale(1, -1).Mul(Translate(0, 40)), stroke: &StrokeStyle{Width: 0.5, FullHairlines: true}},
+		{name: "hatch, thin mirrored", fills: hair, m: Scale(1, -1).Mul(Translate(0, 40)), stroke: &StrokeStyle{Width: 0.5}},
 		{name: "polylines, round", fills: poly, m: Identity, stroke: &StrokeStyle{Width: 3.1, Join: RoundJoin, Cap: RoundCap}},
 		{name: "polylines, miter, dashed", fills: poly, m: Scale(1, -1).Mul(Translate(0, 40)),
 			stroke: &StrokeStyle{Width: 3.6, Join: MiterJoin, MiterLimit: 10, Cap: SquareCap, Dash: []float64{6, 1.5}}},

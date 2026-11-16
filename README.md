@@ -194,11 +194,11 @@ Saturation and Color, of the source for Luminosity).
   integrated over their touched cell range; wide rows use a dirty bitset
   and emit the constant stretches between edges as runs. The sweep zeroes
   what it reads – there is no clearing pass.
-- **Hairlines** (thinner than one device pixel) are stroked one pixel wide
-  in device space by the same stroker, with exact area coverage, scaled by
-  their width so that thin lines look as light as they are (as MuPDF and
-  Ghostscript draw them); `StrokeStyle.FullHairlines` keeps them at full
-  coverage, as PDFium does. Width 0 is always drawn at full coverage.
+- **Hairlines** (width 0) are stroked one pixel wide in device space by
+  the same stroker, with exact area coverage. Thin strokes of non-zero
+  width are drawn at their width, as light as they are (as MuPDF and
+  Ghostscript draw them); `StrokeStyle.FullHairlines` draws them as
+  hairlines, as PDFium does.
 - **Analytic strokes**: between the corners of a polyline (joins, caps,
   inner notches), each segment is bounded by two parallel lines, so each
   pixel's area is the difference of two closed-form half-plane areas – no
@@ -261,7 +261,8 @@ A3 landscape at 150 dpi (2481×1754 px), rectangle page clip, cloud Xeon
 
 Hairlines are drawn one device pixel wide with exact area coverage, like
 PDFium (an earlier approximation was faster but 14/255 off on dense
-hatching); the harness draws them with `FullHairlines`, as PDFium does.
+hatching); the harness draws thin strokes with `FullHairlines`, as PDFium
+does.
 Against PDFium on the synthetic drawings of the harness: mean
 deviation 0.3–1.5/255, SSIM ≥ 0.998 (see `harness/`).
 
@@ -346,8 +347,8 @@ avoided in `simd_amd64.go`:
 - Stroker: AGG-style outlines (inner corners at the offset intersection, no
   overlap on ordinary polylines), butt/round/square caps, miter/round/bevel
   joins with miter limit, dashes with phase and zero-length dots. Strokes
-  below one device pixel are drawn one pixel wide, like PDFium, at a
-  coverage scaled by their width unless `StrokeStyle.FullHairlines`.
+  of width 0 are drawn one pixel wide, and with `StrokeStyle.FullHairlines`
+  all below one device pixel, like PDFium.
 - NaN/Inf rejected, huge coordinates clipped analytically, budgets for
   edges per path, curve/arc subdivision, dash counts and clip depth. Canvas
   never panics; errors are reported through `Err()`.
