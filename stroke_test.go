@@ -126,7 +126,9 @@ func TestHairline(t *testing.T) {
 		p.LineTo(float32(x0+l*math.Cos(ang)), float32(y0+l*math.Sin(ang)))
 		checkArea(t, "diagonal", inkArea(strokeMask(&p, Identity, st, clip)), l, 0.02*l)
 		// Thin but non-zero width under scaling also takes the hairline path.
-		checkArea(t, "thin", inkArea(strokeMask(&p, Identity, &StrokeStyle{Width: 0.3}, clip)), l, 0.02*l)
+		checkArea(t, "thin, full", inkArea(strokeMask(&p, Identity, &StrokeStyle{Width: 0.3, FullHairlines: true}, clip)), l, 0.02*l)
+		// By default at a coverage scaled by its width.
+		checkArea(t, "thin", inkArea(strokeMask(&p, Identity, &StrokeStyle{Width: 0.3}, clip)), 0.3*l, 0.02*l)
 	}
 	// Clipped far outside.
 	p.Reset()
